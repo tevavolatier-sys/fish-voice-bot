@@ -1,9 +1,9 @@
 import { Bot, Context, InlineKeyboard, InputFile, webhookCallback } from "grammy";
 import { waitUntil } from "@vercel/functions";
 import {
+  ACTIVE_MODELS,
   ADMIN_ID,
   MAX_CHARS,
-  MODELS,
   VoiceModel,
   isAllowed,
   modelByKey,
@@ -32,7 +32,7 @@ bot.use(async (ctx, next) => {
 // ---------- Clavier de sélection ----------
 function modelKeyboard(): InlineKeyboard {
   const kb = new InlineKeyboard();
-  for (const m of MODELS) kb.text(`🎤 ${m.name}`, `voice:${m.key}`).row();
+  for (const m of ACTIVE_MODELS) kb.text(`🎤 ${m.name}`, `voice:${m.key}`).row();
   return kb;
 }
 
@@ -78,7 +78,7 @@ bot.command("stats", async (ctx) => {
 
   const stats = await readStats();
 
-  const modelLines = MODELS.map((m) => {
+  const modelLines = ACTIVE_MODELS.map((m) => {
     const gen = Number(stats.genByModel[m.key] ?? 0);
     const chars = Number(stats.charsByModel[m.key] ?? 0);
     return `• ${m.name} : ${gen} générations, ${chars} caractères`;

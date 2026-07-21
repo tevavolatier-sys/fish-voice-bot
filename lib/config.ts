@@ -48,6 +48,14 @@ export const ADMIN_ID = 8202292569; // @chattingtev
 /** Limite de caractères par génération */
 export const MAX_CHARS = 800;
 
+/**
+ * Voix réellement utilisables : celles dont le reference_id a été rempli.
+ * Les modèles encore en placeholder n'apparaissent pas dans le clavier.
+ */
+export const ACTIVE_MODELS: VoiceModel[] = MODELS.filter(
+  (m) => !m.referenceId.startsWith("REFERENCE_ID_")
+);
+
 const allowedUsers = new Set<number>(OPERATORS.map((o) => o.id));
 allowedUsers.add(ADMIN_ID);
 
@@ -61,7 +69,7 @@ export function isAllowed(userId: number, chatId?: number): boolean {
 }
 
 export function modelByKey(key: string): VoiceModel | undefined {
-  return MODELS.find((m) => m.key === key);
+  return ACTIVE_MODELS.find((m) => m.key === key);
 }
 
 export function operatorName(userId: number | string): string {
