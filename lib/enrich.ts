@@ -27,10 +27,12 @@ Tags autorisés (uniquement ceux-là) :
 
 Règles strictes :
 - Ne modifie JAMAIS les mots du texte : aucun mot ajouté, supprimé ou corrigé, ponctuation conservée.
-- Insère 1 à 4 tags maximum, seulement là où ils renforcent naturellement l'émotion.
+- Insère 2 à 6 tags, là où ils renforcent naturellement l'émotion.
 - Un tag se place juste avant la phrase ou le groupe de mots qu'il colore.
+- RESPIRATIONS : sois généreux avec [breath] — une voix qui respire est une voix crédible. Place un [breath] aux endroits où une vraie personne reprendrait son souffle (début de phrase intime, avant une confidence, après une question).
+- TEXTE SENSUEL OU SEXUALISÉ : accentue fortement la respiration et le souffle. Multiplie [breath], [panting], [sighing], utilise [whispering] ou [soft tone] pour les passages les plus intimes, et des pauses [break] pour faire monter la tension. C'est le cas où il faut mettre le PLUS de tags (jusqu'à 6).
 - Les pauses [break] sont utiles avant un changement de ton ou une confidence.
-- Si le texte est neutre et court, un seul tag suffit (souvent [soft tone] ou [breath]).
+- Si le texte est neutre et court, un ou deux tags suffisent (souvent [soft tone] ou [breath]).
 - Réponds UNIQUEMENT avec le texte final taggé, sans explication, sans guillemets.`;
 
 /** Nom du fournisseur actif (pour le diagnostic) */
@@ -146,7 +148,7 @@ export async function enrichWithEmotionTags(text: string): Promise<string> {
     // Garde-fou : si la réponse est vide ou aberrante (trop courte/longue
     // par rapport à l'original), on garde le texte brut.
     if (!enriched || enriched.length < text.length * 0.8) return text;
-    if (enriched.length > text.length + 150) return text;
+    if (enriched.length > text.length + 250) return text;
 
     return enriched;
   } catch (err) {
