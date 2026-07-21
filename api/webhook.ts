@@ -8,7 +8,7 @@ import {
   isAllowed,
   modelByKey,
   operatorName,
-} from "../lib/config";
+} from "../lib/config.js";
 import {
   getSelectedModel,
   hasRedisEnv,
@@ -16,8 +16,8 @@ import {
   recordGeneration,
   resetStats,
   setSelectedModel,
-} from "../lib/redis";
-import { FishError, generateVoice } from "../lib/fish";
+} from "../lib/redis.js";
+import { FishError, generateVoice } from "../lib/fish.js";
 
 export const maxDuration = 60;
 
