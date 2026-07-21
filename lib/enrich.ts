@@ -42,7 +42,9 @@ export function enrichProvider(): "gemini" | "groq" | "claude" | "aucun" {
 }
 
 async function enrichWithGemini(text: string, apiKey: string): Promise<string | null> {
-  const model = "gemini-2.5-flash-lite";
+  // Alias "latest" : suit automatiquement le dernier modèle flash-lite,
+  // évite les erreurs 404 quand Google retire un ancien modèle.
+  const model = "gemini-flash-lite-latest";
   const res = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
     {
