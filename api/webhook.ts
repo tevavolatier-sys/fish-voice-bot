@@ -10,15 +10,22 @@ import {
   operatorName,
 } from "../lib/config.js";
 import {
+  getIntensity,
   getSelectedModel,
   hasRedisEnv,
   readStats,
   recordGeneration,
   resetStats,
+  setIntensity,
   setSelectedModel,
 } from "../lib/redis.js";
 import { FishError, generateVoice } from "../lib/fish.js";
-import { enrichProvider, enrichWithEmotionTags } from "../lib/enrich.js";
+import {
+  DEFAULT_INTENSITY,
+  INTENSITY_LEVELS,
+  enrichProvider,
+  enrichWithEmotionTags,
+} from "../lib/enrich.js";
 
 export const maxDuration = 60;
 
@@ -33,18 +40,28 @@ async function sendModelPicker(ctx: Context, intro: string): Promise<void> {
   await ctx.reply(intro, { reply_markup: modelKeyboard() });
 }
 
+// ---------- Clavier d'intensité ----------
+function intensityKeyboard(): InlineKeyboard {
+  const kb = new InlineKeyboard();
+  for (const [level, cfg] of Object.entries(INTENSITY_LEVELS)) {
+    kb.text(cfg.label, `level:${level}`).row();
+  }
+  return kb;
+}
+
 // ---------- Génération TTS (exécutée après la réponse 200 via waitUntil) ----------
 async function generateAndReply(
   ctx: Context,
   model: VoiceModel,
   text: string,
   messageId: number,
-  userId: number
+  userId: number,
+  intensity: number
 ): Promise<void> {
   try {
     await ctx.replyWithChatAction("record_voice").catch(() => {});
     // Ajout automatique des tags d'émotion (texte brut conservé en cas d'échec)
-    const finalText = await enrichWithEmotionTags(text);
+    const finalText = await enrichWithEmotionTags(text, intensity);
     const audio = await generateVoice(finalText, model.referenceId);
     // Si des tags ont été ajoutés, on les montre en légende pour que
     // l'opérateur voie ce qui a été utilisé (limite caption Telegram : 1024)
@@ -87,6 +104,19 @@ function createBot(): Bot {
     );
   });
 
+  bot.command("niveau", async (ctx) => {
+    const current =
+      (await getIntensity(ctx.from!.id).catch(() => null)) ?? DEFAULT_INTENSITY;
+    const label = INTENSITY_LEVELS[current]?.label ?? "?";
+    await ctx.reply(
+      "🌡️ INTENSITÉ DES VOCAUX\n\n" +
+        `Niveau actuel : ${label}\n\n` +
+        "Plus le niveau est chaud, plus la voix aura de souffle, de gémissements et de pauses sensuelles.\n\n" +
+        "👇 Choisis le niveau :",
+      { reply_markup: intensityKeyboard() }
+    );
+  });
+
   bot.command("aide", async (ctx) => {
     await ctx.reply(
       "📖 TUTO — COMMENT FAIRE UN VOCAL\n\n" +
@@ -99,6 +129,9 @@ function createBot(): Bot {
         "✅ FAIS ÇA :\n" +
         "• Des phrases courtes, comme un vrai vocal\n" +
         "• Écris normalement, les émotions s'ajoutent TOUTES SEULES ✨\n\n" +
+        "🌡️ INTENSITÉ : tape /niveau pour régler à quel point la voix est sexuelle :\n" +
+        "🧊 Pas sexuel → 🌶️ Léger → 🌶️🌶️ Chaud → 🌶️🌶️🌶️ Très chaud\n" +
+        "Plus c'est chaud, plus il y a de souffle, de gémissements et de pauses.\n\n" +
         "❌ FAIS PAS ÇA :\n" +
         `• Un texte de plus de ${MAX_CHARS} caractères (le bot refusera)\n` +
         "• Écrire en mode robot (« Bonjour. Comment allez-vous. »)\n\n" +
@@ -168,6 +201,25 @@ function createBot(): Bot {
     );
   });
 
+  // Sélection du niveau d'intensité via bouton
+  bot.callbackQuery(/^level:(\d)$/, async (ctx) => {
+    const level = Number(ctx.match[1]);
+    const cfg = INTENSITY_LEVELS[level];
+    if (!cfg) {
+      await ctx.answerCallbackQuery({ text: "Niveau inconnu." });
+      return;
+    }
+    await setIntensity(ctx.from.id, level);
+    await ctx.answerCallbackQuery({ text: `Intensité : ${cfg.label}` });
+    await ctx
+      .editMessageText(
+        `✅ Intensité réglée : ${cfg.label}\n\n` +
+          "Tous tes prochains vocaux utiliseront ce niveau.\n" +
+          "(/niveau pour changer à tout moment)"
+      )
+      .catch(() => {});
+  });
+
   // Sélection d'une modèle via bouton
   bot.callbackQuery(/^voice:(.+)$/, async (ctx) => {
     const model = modelByKey(ctx.match[1]);
@@ -187,7 +239,7 @@ function createBot(): Bot {
           "Exemple :\n" +
           "Coucou toi, tu m'as manqué aujourd'hui...\n\n" +
           "📤 ÉTAPE 3 sur 3 : envoie ton message, attends quelques secondes, et tu reçois le vocal 🎤\n\n" +
-          "(/voix pour changer de fille • /aide pour le tuto complet)"
+          "(/voix changer de fille • /niveau régler l'intensité 🌶️ • /aide tuto)"
       )
       .catch(() => {});
   });
@@ -196,7 +248,9 @@ function createBot(): Bot {
     const text = ctx.message.text.trim();
 
     if (text.startsWith("/")) {
-      await ctx.reply("Commande inconnue. Utilise /voix, /aide ou /stats.");
+      await ctx.reply(
+        "Commande inconnue. Utilise /voix, /niveau, /aide ou /stats."
+      );
       return;
     }
 
@@ -207,7 +261,10 @@ function createBot(): Bot {
       return;
     }
 
-    const selectedKey = await getSelectedModel(ctx.from.id);
+    const [selectedKey, storedLevel] = await Promise.all([
+      getSelectedModel(ctx.from.id),
+      getIntensity(ctx.from.id).catch(() => null),
+    ]);
     const model = selectedKey ? modelByKey(selectedKey) : undefined;
     if (!model) {
       await sendModelPicker(
@@ -216,10 +273,18 @@ function createBot(): Bot {
       );
       return;
     }
+    const intensity = storedLevel ?? DEFAULT_INTENSITY;
 
     // Réponse 200 immédiate au webhook, génération en arrière-plan (Fluid Compute)
     waitUntil(
-      generateAndReply(ctx, model, text, ctx.message.message_id, ctx.from.id)
+      generateAndReply(
+        ctx,
+        model,
+        text,
+        ctx.message.message_id,
+        ctx.from.id,
+        intensity
+      )
     );
   });
 

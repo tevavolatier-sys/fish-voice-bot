@@ -46,6 +46,19 @@ export async function setSelectedModel(
   await getRedis().set(`voice:${userId}`, modelKey);
 }
 
+/** Niveau d'intensité (0-3) choisi par un opérateur via /niveau */
+export async function getIntensity(userId: number): Promise<number | null> {
+  const v = await getRedis().get<number | string>(`intensity:${userId}`);
+  return v === null || v === undefined ? null : Number(v);
+}
+
+export async function setIntensity(
+  userId: number,
+  level: number
+): Promise<void> {
+  await getRedis().set(`intensity:${userId}`, level);
+}
+
 /** Incrémente les compteurs après une génération réussie */
 export async function recordGeneration(
   userId: number,

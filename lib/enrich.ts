@@ -13,7 +13,47 @@ const EXISTING_TAG = /\[[a-zA-Z][a-zA-Z -]{0,25}\]/;
 
 const TIMEOUT_MS = 10_000;
 
-const SYSTEM_PROMPT = `Tu prépares des textes pour une synthèse vocale Fish Audio. Ce sont des messages vocaux chaleureux, séduisants ou complices envoyés par une femme à un admirateur.
+/** Niveaux d'intensité choisis par l'opérateur via /niveau (défaut : 1) */
+export const INTENSITY_LEVELS: Record<number, { label: string; instruction: string }> = {
+  0: {
+    label: "🧊 Pas sexuel",
+    instruction:
+      "NIVEAU D'INTENSITÉ : PAS SEXUEL DU TOUT. Le message doit sonner amical, affectueux ou neutre. " +
+      "Utilise uniquement des tags d'émotion simples ([soft tone], [breath], [chuckling], émotions selon le texte). " +
+      "INTERDIT d'utiliser [panting], [groaning], [whispering] et tout effet sensuel. " +
+      "1 à 3 tags maximum, respiration discrète.",
+  },
+  1: {
+    label: "🌶️ Léger",
+    instruction:
+      "NIVEAU D'INTENSITÉ : SÉDUCTION LÉGÈRE (1/3). Ton charmeur mais soft : [soft tone], quelques [breath], " +
+      "un [chuckling] ou [giggling] joueur. Pas de halètements ni de gémissements. 2 à 4 tags.",
+  },
+  2: {
+    label: "🌶️🌶️ Chaud",
+    instruction:
+      "NIVEAU D'INTENSITÉ : SENSUEL (2/3). Voix intime : [whispering] et [soft tone] sur les confidences, " +
+      "respirations marquées avec plusieurs [breath], des [sighing], des pauses [break] pour créer la tension. " +
+      "3 à 6 tags.",
+  },
+  3: {
+    label: "🌶️🌶️🌶️ Très chaud",
+    instruction:
+      "NIVEAU D'INTENSITÉ : TRÈS SENSUEL (3/3). Maximum de souffle et de gémissements : multiplie les [breath] partout, " +
+      "ajoute [panting] (halètements) et [groaning] (gémissements) sur les passages excitants, des [sighing], " +
+      "du [whispering] sur presque toutes les phrases, et des pauses [break] ou [long-break] pour faire monter le désir. " +
+      "5 à 8 tags.",
+  },
+};
+
+export const DEFAULT_INTENSITY = 1;
+
+function buildSystemPrompt(level: number): string {
+  const intensity =
+    INTENSITY_LEVELS[level]?.instruction ??
+    INTENSITY_LEVELS[DEFAULT_INTENSITY].instruction;
+
+  return `Tu prépares des textes pour une synthèse vocale Fish Audio. Ce sont des messages vocaux envoyés par une femme à un admirateur.
 
 Ta seule tâche : insérer des tags d'émotion entre crochets aux endroits naturels du texte pour rendre la voix vivante et crédible.
 
@@ -25,15 +65,15 @@ Tags autorisés (uniquement ceux-là) :
 - Sons et respirations : [laughing] [chuckling] [giggling] [sobbing] [crying loudly] [sighing] [breath] [panting] [groaning] [cough] [lip-smacking]
 - Pauses : [break] [long-break]
 
+${intensity}
+
 Règles strictes :
 - Ne modifie JAMAIS les mots du texte : aucun mot ajouté, supprimé ou corrigé, ponctuation conservée.
-- Insère 2 à 6 tags, là où ils renforcent naturellement l'émotion.
 - Un tag se place juste avant la phrase ou le groupe de mots qu'il colore.
-- RESPIRATIONS : sois généreux avec [breath] — une voix qui respire est une voix crédible. Place un [breath] aux endroits où une vraie personne reprendrait son souffle (début de phrase intime, avant une confidence, après une question).
-- TEXTE SENSUEL OU SEXUALISÉ : accentue fortement la respiration et le souffle. Multiplie [breath], [panting], [sighing], utilise [whispering] ou [soft tone] pour les passages les plus intimes, et des pauses [break] pour faire monter la tension. C'est le cas où il faut mettre le PLUS de tags (jusqu'à 6).
-- Les pauses [break] sont utiles avant un changement de ton ou une confidence.
-- Si le texte est neutre et court, un ou deux tags suffisent (souvent [soft tone] ou [breath]).
+- RESPIRATIONS : une voix qui respire est une voix crédible. Place les [breath] aux endroits où une vraie personne reprendrait son souffle.
+- Respecte STRICTEMENT le niveau d'intensité demandé ci-dessus, même si le texte semble plus ou moins sexuel que le niveau.
 - Réponds UNIQUEMENT avec le texte final taggé, sans explication, sans guillemets.`;
+}
 
 /** Nom du fournisseur actif (pour le diagnostic) */
 export function enrichProvider(): "gemini" | "groq" | "claude" | "aucun" {
@@ -43,7 +83,11 @@ export function enrichProvider(): "gemini" | "groq" | "claude" | "aucun" {
   return "aucun";
 }
 
-async function enrichWithGemini(text: string, apiKey: string): Promise<string | null> {
+async function enrichWithGemini(
+  text: string,
+  apiKey: string,
+  systemPrompt: string
+): Promise<string | null> {
   // Alias "latest" : suit automatiquement le dernier modèle flash-lite,
   // évite les erreurs 404 quand Google retire un ancien modèle.
   const model = "gemini-flash-lite-latest";
@@ -56,7 +100,7 @@ async function enrichWithGemini(text: string, apiKey: string): Promise<string | 
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+        systemInstruction: { parts: [{ text: systemPrompt }] },
         contents: [{ role: "user", parts: [{ text }] }],
         generationConfig: { temperature: 0.3, maxOutputTokens: 1024 },
         // Textes séduisants : on désactive les filtres pour éviter les blocages
@@ -82,7 +126,11 @@ async function enrichWithGemini(text: string, apiKey: string): Promise<string | 
   return out || null;
 }
 
-async function enrichWithGroq(text: string, apiKey: string): Promise<string | null> {
+async function enrichWithGroq(
+  text: string,
+  apiKey: string,
+  systemPrompt: string
+): Promise<string | null> {
   const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -94,7 +142,7 @@ async function enrichWithGroq(text: string, apiKey: string): Promise<string | nu
       max_tokens: 1024,
       temperature: 0.3,
       messages: [
-        { role: "system", content: SYSTEM_PROMPT },
+        { role: "system", content: systemPrompt },
         { role: "user", content: text },
       ],
     }),
@@ -110,12 +158,16 @@ async function enrichWithGroq(text: string, apiKey: string): Promise<string | nu
   return data.choices?.[0]?.message?.content?.trim() ?? null;
 }
 
-async function enrichWithClaude(text: string, apiKey: string): Promise<string | null> {
+async function enrichWithClaude(
+  text: string,
+  apiKey: string,
+  systemPrompt: string
+): Promise<string | null> {
   const client = new Anthropic({ apiKey, timeout: TIMEOUT_MS, maxRetries: 1 });
   const response = await client.messages.create({
     model: "claude-opus-4-8",
     max_tokens: 2000,
-    system: SYSTEM_PROMPT,
+    system: systemPrompt,
     messages: [{ role: "user", content: text }],
   });
   return (
@@ -124,13 +176,17 @@ async function enrichWithClaude(text: string, apiKey: string): Promise<string | 
 }
 
 /**
- * Ajoute automatiquement des tags d'émotion au texte.
+ * Ajoute automatiquement des tags d'émotion au texte, selon le niveau
+ * d'intensité choisi par l'opérateur (0 à 3).
  * Retourne le texte d'origine si :
  * - aucune clé LLM n'est configurée
  * - le texte contient déjà des tags (l'opérateur les a mis lui-même)
  * - l'appel au LLM échoue, dépasse le délai ou renvoie un résultat aberrant
  */
-export async function enrichWithEmotionTags(text: string): Promise<string> {
+export async function enrichWithEmotionTags(
+  text: string,
+  level: number = DEFAULT_INTENSITY
+): Promise<string> {
   if (EXISTING_TAG.test(text)) return text;
 
   const geminiKey = process.env.GEMINI_API_KEY;
@@ -138,17 +194,19 @@ export async function enrichWithEmotionTags(text: string): Promise<string> {
   const anthropicKey = process.env.ANTHROPIC_API_KEY;
   if (!geminiKey && !groqKey && !anthropicKey) return text;
 
+  const systemPrompt = buildSystemPrompt(level);
+
   try {
     const enriched = geminiKey
-      ? await enrichWithGemini(text, geminiKey)
+      ? await enrichWithGemini(text, geminiKey, systemPrompt)
       : groqKey
-        ? await enrichWithGroq(text, groqKey)
-        : await enrichWithClaude(text, anthropicKey!);
+        ? await enrichWithGroq(text, groqKey, systemPrompt)
+        : await enrichWithClaude(text, anthropicKey!, systemPrompt);
 
     // Garde-fou : si la réponse est vide ou aberrante (trop courte/longue
     // par rapport à l'original), on garde le texte brut.
     if (!enriched || enriched.length < text.length * 0.8) return text;
-    if (enriched.length > text.length + 250) return text;
+    if (enriched.length > text.length + 300) return text;
 
     return enriched;
   } catch (err) {
