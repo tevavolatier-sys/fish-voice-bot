@@ -18,7 +18,7 @@ import {
   setSelectedModel,
 } from "../lib/redis.js";
 import { FishError, generateVoice } from "../lib/fish.js";
-import { enrichWithEmotionTags } from "../lib/enrich.js";
+import { enrichProvider, enrichWithEmotionTags } from "../lib/enrich.js";
 
 export const maxDuration = 60;
 
@@ -256,8 +256,8 @@ export function GET(): Response {
       FISH_API_KEY: Boolean(process.env.FISH_API_KEY),
       TELEGRAM_WEBHOOK_SECRET: Boolean(process.env.TELEGRAM_WEBHOOK_SECRET),
       UPSTASH_REDIS: hasRedisEnv(),
-      ANTHROPIC_API_KEY: Boolean(process.env.ANTHROPIC_API_KEY),
     },
+    enrichissementEmotions: enrichProvider(),
     voixConfigurees: ACTIVE_MODELS.map((m) => m.name),
   });
 }

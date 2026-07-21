@@ -1,11 +1,16 @@
-// Enrichissement automatique du texte avec des tags d'émotion Fish Audio
-// via l'API Claude. En cas d'échec ou d'absence de clé, le texte brut est
-// utilisé tel quel : la génération vocale n'est jamais bloquée.
+// Enrichissement automatique du texte avec des tags d'émotion Fish Audio.
+// Fournisseur LLM par ordre de priorité :
+//   1. Groq (GROQ_API_KEY) — GRATUIT, Llama 3.3 70B, très rapide
+//   2. Claude (ANTHROPIC_API_KEY) — payant, léger coût par message
+//   3. Aucun -> le texte brut est utilisé tel quel
+// En cas d'échec quel qu'il soit, la génération vocale n'est jamais bloquée.
 
 import Anthropic from "@anthropic-ai/sdk";
 
-/** Détecte un tag déjà présent, ex. [whisper] — dans ce cas on ne touche à rien */
-const EXISTING_TAG = /\[[a-zA-Z][a-zA-Z ]{0,25}\]/;
+/** Détecte un tag déjà présent, ex. [whispering] — dans ce cas on ne touche à rien */
+const EXISTING_TAG = /\[[a-zA-Z][a-zA-Z -]{0,25}\]/;
+
+const TIMEOUT_MS = 10_000;
 
 const SYSTEM_PROMPT = `Tu prépares des textes pour une synthèse vocale Fish Audio. Ce sont des messages vocaux chaleureux, séduisants ou complices envoyés par une femme à un admirateur.
 
@@ -27,30 +32,72 @@ Règles strictes :
 - Si le texte est neutre et court, un seul tag suffit (souvent [soft tone] ou [breath]).
 - Réponds UNIQUEMENT avec le texte final taggé, sans explication, sans guillemets.`;
 
+/** Nom du fournisseur actif (pour le diagnostic) */
+export function enrichProvider(): "groq" | "claude" | "aucun" {
+  if (process.env.GROQ_API_KEY) return "groq";
+  if (process.env.ANTHROPIC_API_KEY) return "claude";
+  return "aucun";
+}
+
+async function enrichWithGroq(text: string, apiKey: string): Promise<string | null> {
+  const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "llama-3.3-70b-versatile",
+      max_tokens: 1024,
+      temperature: 0.3,
+      messages: [
+        { role: "system", content: SYSTEM_PROMPT },
+        { role: "user", content: text },
+      ],
+    }),
+    signal: AbortSignal.timeout(TIMEOUT_MS),
+  });
+  if (!res.ok) {
+    console.error(`Groq ${res.status}:`, await res.text().catch(() => ""));
+    return null;
+  }
+  const data = (await res.json()) as {
+    choices?: { message?: { content?: string } }[];
+  };
+  return data.choices?.[0]?.message?.content?.trim() ?? null;
+}
+
+async function enrichWithClaude(text: string, apiKey: string): Promise<string | null> {
+  const client = new Anthropic({ apiKey, timeout: TIMEOUT_MS, maxRetries: 1 });
+  const response = await client.messages.create({
+    model: "claude-opus-4-8",
+    max_tokens: 2000,
+    system: SYSTEM_PROMPT,
+    messages: [{ role: "user", content: text }],
+  });
+  return (
+    response.content.find((block) => block.type === "text")?.text.trim() ?? null
+  );
+}
+
 /**
  * Ajoute automatiquement des tags d'émotion au texte.
  * Retourne le texte d'origine si :
- * - ANTHROPIC_API_KEY n'est pas configurée
+ * - aucune clé LLM n'est configurée
  * - le texte contient déjà des tags (l'opérateur les a mis lui-même)
- * - l'appel à l'API Claude échoue ou dépasse le délai
+ * - l'appel au LLM échoue, dépasse le délai ou renvoie un résultat aberrant
  */
 export async function enrichWithEmotionTags(text: string): Promise<string> {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) return text;
   if (EXISTING_TAG.test(text)) return text;
 
-  try {
-    const client = new Anthropic({ apiKey, timeout: 10_000, maxRetries: 1 });
-    const response = await client.messages.create({
-      model: "claude-opus-4-8",
-      max_tokens: 2000,
-      system: SYSTEM_PROMPT,
-      messages: [{ role: "user", content: text }],
-    });
+  const groqKey = process.env.GROQ_API_KEY;
+  const anthropicKey = process.env.ANTHROPIC_API_KEY;
+  if (!groqKey && !anthropicKey) return text;
 
-    const enriched = response.content
-      .find((block) => block.type === "text")
-      ?.text.trim();
+  try {
+    const enriched = groqKey
+      ? await enrichWithGroq(text, groqKey)
+      : await enrichWithClaude(text, anthropicKey!);
 
     // Garde-fou : si la réponse est vide ou aberrante (trop courte/longue
     // par rapport à l'original), on garde le texte brut.
