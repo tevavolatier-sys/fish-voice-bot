@@ -16,33 +16,33 @@ function mapClientError(status: number, body: string): FishError {
     case 401:
     case 403:
       return new FishError(
-        "🔑 Clé API Fish Audio invalide ou révoquée. Vérifie FISH_API_KEY dans les réglages Vercel.",
+        "🔑 Invalid or revoked Fish Audio API key. Check FISH_API_KEY in the Vercel settings.",
         `Fish ${status}: ${body}`
       );
     case 402:
       return new FishError(
-        "💳 Crédits Fish Audio épuisés. Recharge le compte sur fish.audio puis réessaie.",
+        "💳 Fish Audio credits exhausted. Top up the account on fish.audio and try again.",
         `Fish 402: ${body}`
       );
     case 404:
       return new FishError(
-        "🎤 Voix introuvable : le reference_id de cette modèle est invalide. Vérifie lib/config.ts.",
+        "🎤 Voice not found: this model's reference_id is invalid. Check lib/config.ts.",
         `Fish 404: ${body}`
       );
     case 429:
       return new FishError(
-        "⏳ Quota ou limite de débit Fish Audio atteint. Attends un peu puis réessaie.",
+        "⏳ Fish Audio quota or rate limit reached. Wait a bit and try again.",
         `Fish 429: ${body}`
       );
     case 400:
     case 422:
       return new FishError(
-        "❌ Requête refusée par Fish Audio (reference_id invalide ou texte non accepté).",
+        "❌ Request rejected by Fish Audio (invalid reference_id or unsupported text).",
         `Fish ${status}: ${body}`
       );
     default:
       return new FishError(
-        `❌ Erreur Fish Audio (code ${status}). Réessaie ; si ça persiste, préviens l'admin.`,
+        `❌ Fish Audio error (code ${status}). Try again; if it keeps happening, tell the admin.`,
         `Fish ${status}: ${body}`
       );
   }
@@ -80,7 +80,7 @@ export async function generateVoice(
     } catch (err) {
       // Timeout ou erreur réseau -> on retente une fois
       lastError = new FishError(
-        "⚠️ Fish Audio ne répond pas (timeout). Réessaie dans quelques instants.",
+        "⚠️ Fish Audio is not responding (timeout). Try again in a moment.",
         `Tentative ${attempt}: ${String(err)}`
       );
       continue;
@@ -94,7 +94,7 @@ export async function generateVoice(
     if (res.status >= 500) {
       // Erreur serveur -> on retente une fois
       lastError = new FishError(
-        "⚠️ Fish Audio est momentanément indisponible (erreur serveur). Réessaie dans quelques instants.",
+        "⚠️ Fish Audio is temporarily unavailable (server error). Try again in a moment.",
         `Tentative ${attempt}, Fish ${res.status}: ${body}`
       );
       continue;

@@ -13,36 +13,28 @@ const EXISTING_TAG = /\[[a-zA-Z][a-zA-Z -]{0,25}\]/;
 
 const TIMEOUT_MS = 10_000;
 
-/** Niveaux d'intensité choisis par l'opérateur via /niveau (défaut : 1) */
+/** Intensity levels picked by the operator via /level (default: 1) */
 export const INTENSITY_LEVELS: Record<number, { label: string; instruction: string }> = {
-  0: {
-    label: "🧊 Pas sexuel",
-    instruction:
-      "NIVEAU D'INTENSITÉ : PAS SEXUEL DU TOUT. Le message doit sonner amical, affectueux ou neutre. " +
-      "Utilise uniquement des tags d'émotion simples ([soft tone], [breath], [chuckling], émotions selon le texte). " +
-      "INTERDIT d'utiliser [panting], [groaning], [whispering] et tout effet sensuel. " +
-      "1 à 3 tags maximum, respiration discrète.",
-  },
   1: {
-    label: "🌶️ Léger",
+    label: "🌶️ Light",
     instruction:
-      "NIVEAU D'INTENSITÉ : SÉDUCTION LÉGÈRE (1/3). Ton charmeur mais soft : [soft tone], quelques [breath], " +
-      "un [chuckling] ou [giggling] joueur. Pas de halètements ni de gémissements. 2 à 4 tags.",
+      "INTENSITY LEVEL: LIGHT FLIRTING (1/3). Charming but soft tone: [soft tone], a few [breath], " +
+      "a playful [chuckling] or [giggling]. No panting, no moaning. 2 to 4 tags.",
   },
   2: {
-    label: "🌶️🌶️ Chaud",
+    label: "🌶️🌶️ Hot",
     instruction:
-      "NIVEAU D'INTENSITÉ : SENSUEL (2/3). Voix intime : [whispering] et [soft tone] sur les confidences, " +
-      "respirations marquées avec plusieurs [breath], des [sighing], des pauses [break] pour créer la tension. " +
-      "3 à 6 tags.",
+      "INTENSITY LEVEL: SENSUAL (2/3). Intimate voice: [whispering] and [soft tone] on confessions, " +
+      "marked breathing with several [breath], some [sighing], and [break] pauses to build tension. " +
+      "3 to 6 tags.",
   },
   3: {
-    label: "🌶️🌶️🌶️ Très chaud",
+    label: "🌶️🌶️🌶️ Very hot",
     instruction:
-      "NIVEAU D'INTENSITÉ : TRÈS SENSUEL (3/3). Maximum de souffle et de gémissements : multiplie les [breath] partout, " +
-      "ajoute [panting] (halètements) et [groaning] (gémissements) sur les passages excitants, des [sighing], " +
-      "du [whispering] sur presque toutes les phrases, et des pauses [break] ou [long-break] pour faire monter le désir. " +
-      "5 à 8 tags.",
+      "INTENSITY LEVEL: VERY SENSUAL (3/3). Maximum breath and moaning: multiply [breath] everywhere, " +
+      "add [panting] and [groaning] (moaning) on the exciting parts, some [sighing], " +
+      "[whispering] on almost every sentence, and [break] or [long-break] pauses to build desire. " +
+      "5 to 8 tags.",
   },
 };
 
@@ -53,26 +45,26 @@ function buildSystemPrompt(level: number): string {
     INTENSITY_LEVELS[level]?.instruction ??
     INTENSITY_LEVELS[DEFAULT_INTENSITY].instruction;
 
-  return `Tu prépares des textes pour une synthèse vocale Fish Audio. Ce sont des messages vocaux envoyés par une femme à un admirateur.
+  return `You prepare texts for Fish Audio voice synthesis. These are warm, flirty or intimate voice messages sent by a woman to an admirer.
 
-Ta seule tâche : insérer des tags d'émotion entre crochets aux endroits naturels du texte pour rendre la voix vivante et crédible.
+Your only task: insert emotion tags in brackets at natural spots in the text to make the voice feel alive and believable.
 
-Tags autorisés (uniquement ceux-là) :
-- Émotions positives : [excited] [delighted] [joyful] [satisfied] [proud] [confident] [relaxed] [grateful] [moved] [amused] [curious] [interested]
-- Émotions négatives : [sad] [unhappy] [upset] [depressed] [worried] [anxious] [nervous] [scared] [panicked] [angry] [furious] [frustrated] [impatient] [guilty] [embarrassed] [awkward] [hesitating]
-- Autres émotions : [surprised] [astonished] [confused] [serious] [sincere] [comforting] [empathetic] [sarcastic]
-- Façons de parler : [whispering] [soft tone] [shouting] [screaming] [in a hurry tone]
-- Sons et respirations : [laughing] [chuckling] [giggling] [sobbing] [crying loudly] [sighing] [breath] [panting] [groaning] [cough] [lip-smacking]
-- Pauses : [break] [long-break]
+Allowed tags (only these):
+- Positive emotions: [excited] [delighted] [joyful] [satisfied] [proud] [confident] [relaxed] [grateful] [moved] [amused] [curious] [interested]
+- Negative emotions: [sad] [unhappy] [upset] [depressed] [worried] [anxious] [nervous] [scared] [panicked] [angry] [furious] [frustrated] [impatient] [guilty] [embarrassed] [awkward] [hesitating]
+- Other emotions: [surprised] [astonished] [confused] [serious] [sincere] [comforting] [empathetic] [sarcastic]
+- Speaking styles: [whispering] [soft tone] [shouting] [screaming] [in a hurry tone]
+- Sounds and breathing: [laughing] [chuckling] [giggling] [sobbing] [crying loudly] [sighing] [breath] [panting] [groaning] [cough] [lip-smacking]
+- Pauses: [break] [long-break]
 
 ${intensity}
 
-Règles strictes :
-- Ne modifie JAMAIS les mots du texte : aucun mot ajouté, supprimé ou corrigé, ponctuation conservée.
-- Un tag se place juste avant la phrase ou le groupe de mots qu'il colore.
-- RESPIRATIONS : une voix qui respire est une voix crédible. Place les [breath] aux endroits où une vraie personne reprendrait son souffle.
-- Respecte STRICTEMENT le niveau d'intensité demandé ci-dessus, même si le texte semble plus ou moins sexuel que le niveau.
-- Réponds UNIQUEMENT avec le texte final taggé, sans explication, sans guillemets.`;
+Strict rules:
+- NEVER change the words of the text: no word added, removed or corrected, punctuation preserved.
+- A tag goes right before the sentence or group of words it colors.
+- BREATHING: a voice that breathes is a believable voice. Place [breath] where a real person would catch their breath.
+- STRICTLY respect the requested intensity level above, even if the text seems more or less sexual than the level.
+- Reply ONLY with the final tagged text, no explanation, no quotes.`;
 }
 
 /** Nom du fournisseur actif (pour le diagnostic) */

@@ -77,7 +77,7 @@ async function generateAndReply(
     const msg =
       err instanceof FishError
         ? err.userMessage
-        : "❌ Erreur inattendue pendant la génération. Réessaie ; si ça persiste, préviens l'admin.";
+        : "❌ Unexpected error during generation. Try again; if it keeps happening, tell the admin.";
     await ctx.reply(msg).catch(() => {});
   }
 }
@@ -96,68 +96,70 @@ function createBot(): Bot {
     await next();
   });
 
-  bot.command(["start", "voix"], async (ctx) => {
+  bot.command(["start", "voice", "voix"], async (ctx) => {
     await sendModelPicker(
       ctx,
-      "🎙️ ÉTAPE 1 sur 3\n\n" +
-        "👇 Clique sur la fille dont tu veux la voix :"
+      "🎙️ STEP 1 of 3\n\n" +
+        "👇 Tap the girl whose voice you want:"
     );
   });
 
-  bot.command("niveau", async (ctx) => {
+  bot.command(["level", "niveau"], async (ctx) => {
     const current =
       (await getIntensity(ctx.from!.id).catch(() => null)) ?? DEFAULT_INTENSITY;
-    const label = INTENSITY_LEVELS[current]?.label ?? "?";
+    const label =
+      INTENSITY_LEVELS[current]?.label ??
+      INTENSITY_LEVELS[DEFAULT_INTENSITY].label;
     await ctx.reply(
-      "🌡️ INTENSITÉ DES VOCAUX\n\n" +
-        `Niveau actuel : ${label}\n\n` +
-        "Plus le niveau est chaud, plus la voix aura de souffle, de gémissements et de pauses sensuelles.\n\n" +
-        "👇 Choisis le niveau :",
+      "🌡️ VOICE INTENSITY\n\n" +
+        `Current level: ${label}\n\n` +
+        "The hotter the level, the more breathing, moaning and sensual pauses in the voice.\n\n" +
+        "👇 Pick a level:",
       { reply_markup: intensityKeyboard() }
     );
   });
 
-  bot.command("aide", async (ctx) => {
+  bot.command(["help", "aide"], async (ctx) => {
     await ctx.reply(
-      "📖 TUTO — COMMENT FAIRE UN VOCAL\n\n" +
-        "1️⃣ Tape /voix\n" +
-        "2️⃣ Clique sur la fille\n" +
-        "3️⃣ Écris ton message comme si c'était ELLE qui parlait\n" +
-        "4️⃣ Envoie le message\n" +
-        "5️⃣ Attends quelques secondes\n" +
-        "6️⃣ Tu reçois le vocal 🎤 → transfère-le au client\n\n" +
-        "✅ FAIS ÇA :\n" +
-        "• Des phrases courtes, comme un vrai vocal\n" +
-        "• Écris normalement, les émotions s'ajoutent TOUTES SEULES ✨\n\n" +
-        "🌡️ INTENSITÉ : tape /niveau pour régler à quel point la voix est sexuelle :\n" +
-        "🧊 Pas sexuel → 🌶️ Léger → 🌶️🌶️ Chaud → 🌶️🌶️🌶️ Très chaud\n" +
-        "Plus c'est chaud, plus il y a de souffle, de gémissements et de pauses.\n\n" +
-        "❌ FAIS PAS ÇA :\n" +
-        `• Un texte de plus de ${MAX_CHARS} caractères (le bot refusera)\n` +
-        "• Écrire en mode robot (« Bonjour. Comment allez-vous. »)\n\n" +
+      "📖 TUTORIAL — HOW TO MAKE A VOICE NOTE\n\n" +
+        "1️⃣ Type /voice\n" +
+        "2️⃣ Tap the girl\n" +
+        "3️⃣ Write your message as if SHE was the one talking\n" +
+        "4️⃣ Send the message\n" +
+        "5️⃣ Wait a few seconds\n" +
+        "6️⃣ You receive the voice note 🎤 → send it to the client\n\n" +
+        "✅ DO THIS:\n" +
+        "• Short sentences, like a real voice note\n" +
+        "• Write normally, emotions are added AUTOMATICALLY ✨\n\n" +
+        "🌡️ INTENSITY: type /level to set how sexual the voice sounds:\n" +
+        "🌶️ Light → 🌶️🌶️ Hot → 🌶️🌶️🌶️ Very hot\n" +
+        "The hotter, the more breathing, moaning and pauses.\n\n" +
+        "❌ DON'T DO THIS:\n" +
+        `• A text longer than ${MAX_CHARS} characters (the bot will refuse)\n` +
+        "• Writing like a robot (\"Hello. How are you.\")\n\n" +
         "————————————\n" +
-        "🎭 MODE PRO (pas obligé !)\n" +
-        "Tu peux placer toi-même des tags [comme ça] dans ton texte.\n" +
-        "Si tu en mets, le bot n'ajoute rien et respecte tes tags.\n\n" +
-        "😊 Émotions positives :\n" +
+        "🎭 PRO MODE (optional!)\n" +
+        "You can place tags [like this] in your text yourself.\n" +
+        "If you do, the bot adds nothing and keeps your tags as-is.\n\n" +
+        "😊 Positive emotions:\n" +
         "[excited] [delighted] [joyful] [satisfied] [proud] [confident]\n" +
         "[relaxed] [grateful] [moved] [amused] [curious] [interested]\n\n" +
-        "😢 Émotions négatives :\n" +
+        "😢 Negative emotions:\n" +
         "[sad] [unhappy] [upset] [depressed] [worried] [anxious]\n" +
         "[nervous] [scared] [panicked] [angry] [furious] [frustrated]\n" +
         "[impatient] [guilty] [embarrassed] [awkward] [hesitating]\n\n" +
-        "😲 Autres émotions :\n" +
+        "😲 Other emotions:\n" +
         "[surprised] [astonished] [confused] [serious] [sincere]\n" +
         "[comforting] [empathetic] [sarcastic]\n\n" +
-        "🗣️ Façons de parler :\n" +
+        "🗣️ Speaking styles:\n" +
         "[whispering] [soft tone] [shouting] [screaming] [in a hurry tone]\n\n" +
-        "🔊 Sons et respirations :\n" +
+        "🔊 Sounds and breathing:\n" +
         "[laughing] [chuckling] [giggling] [sobbing] [crying loudly]\n" +
         "[sighing] [breath] [panting] [groaning] [cough] [lip-smacking]\n\n" +
-        "⏸️ Pauses :\n" +
+        "⏸️ Pauses:\n" +
         "[break] [long-break]\n\n" +
-        "Exemple :\n" +
-        "[whispering] Coucou toi... [break] [excited] j'ai une surprise pour toi !"
+        "Example:\n" +
+        "[whispering] Hey you... [break] [excited] I have a surprise for you!"
     );
   });
 
@@ -166,7 +168,7 @@ function createBot(): Bot {
 
     if (ctx.match?.trim().toLowerCase() === "reset") {
       await resetStats();
-      await ctx.reply("🧹 Statistiques remises à zéro.");
+      await ctx.reply("🧹 Stats reset to zero.");
       return;
     }
 
@@ -175,7 +177,7 @@ function createBot(): Bot {
     const modelLines = ACTIVE_MODELS.map((m) => {
       const gen = Number(stats.genByModel[m.key] ?? 0);
       const chars = Number(stats.charsByModel[m.key] ?? 0);
-      return `• ${m.name} : ${gen} générations, ${chars} caractères`;
+      return `• ${m.name}: ${gen} voice notes, ${chars} characters`;
     }).join("\n");
 
     const userIds = new Set([
@@ -187,17 +189,17 @@ function createBot(): Bot {
         .map((id) => {
           const gen = Number(stats.genByUser[id] ?? 0);
           const chars = Number(stats.charsByUser[id] ?? 0);
-          return `• ${operatorName(id)} : ${gen} générations, ${chars} caractères`;
+          return `• ${operatorName(id)}: ${gen} voice notes, ${chars} characters`;
         })
-        .join("\n") || "• Aucune génération pour l'instant";
+        .join("\n") || "• No voice notes yet";
 
     await ctx.reply(
-      "📊 Statistiques (cumul global)\n\n" +
-        "Par modèle :\n" +
+      "📊 Stats (all-time)\n\n" +
+        "By model:\n" +
         modelLines +
-        "\n\nPar opérateur :\n" +
+        "\n\nBy operator:\n" +
         userLines +
-        "\n\n(/stats reset pour remettre à zéro)"
+        "\n\n(/stats reset to reset counters)"
     );
   });
 
@@ -206,16 +208,16 @@ function createBot(): Bot {
     const level = Number(ctx.match[1]);
     const cfg = INTENSITY_LEVELS[level];
     if (!cfg) {
-      await ctx.answerCallbackQuery({ text: "Niveau inconnu." });
+      await ctx.answerCallbackQuery({ text: "Unknown level." });
       return;
     }
     await setIntensity(ctx.from.id, level);
-    await ctx.answerCallbackQuery({ text: `Intensité : ${cfg.label}` });
+    await ctx.answerCallbackQuery({ text: `Intensity: ${cfg.label}` });
     await ctx
       .editMessageText(
-        `✅ Intensité réglée : ${cfg.label}\n\n` +
-          "Tous tes prochains vocaux utiliseront ce niveau.\n" +
-          "(/niveau pour changer à tout moment)"
+        `✅ Intensity set: ${cfg.label}\n\n` +
+          "All your next voice notes will use this level.\n" +
+          "(/level to change it anytime)"
       )
       .catch(() => {});
   });
@@ -224,22 +226,22 @@ function createBot(): Bot {
   bot.callbackQuery(/^voice:(.+)$/, async (ctx) => {
     const model = modelByKey(ctx.match[1]);
     if (!model) {
-      await ctx.answerCallbackQuery({ text: "Modèle inconnue." });
+      await ctx.answerCallbackQuery({ text: "Unknown voice." });
       return;
     }
     await setSelectedModel(ctx.from.id, model.key);
-    await ctx.answerCallbackQuery({ text: `Voix sélectionnée : ${model.name}` });
+    await ctx.answerCallbackQuery({ text: `Voice selected: ${model.name}` });
     await ctx
       .editMessageText(
-        `✅ Voix choisie : ${model.name}\n\n` +
-          "📝 ÉTAPE 2 sur 3 : écris ton message\n" +
-          `• Écris comme si c'était ELLE qui parlait\n` +
-          "• Des phrases courtes et naturelles\n" +
-          "• Écris normalement : les émotions sont ajoutées TOUTES SEULES ✨\n\n" +
-          "Exemple :\n" +
-          "Coucou toi, tu m'as manqué aujourd'hui...\n\n" +
-          "📤 ÉTAPE 3 sur 3 : envoie ton message, attends quelques secondes, et tu reçois le vocal 🎤\n\n" +
-          "(/voix changer de fille • /niveau régler l'intensité 🌶️ • /aide tuto)"
+        `✅ Voice selected: ${model.name}\n\n` +
+          "📝 STEP 2 of 3: write your message\n" +
+          "• Write as if SHE was the one talking\n" +
+          "• Short, natural sentences\n" +
+          "• Write normally: emotions are added AUTOMATICALLY ✨\n\n" +
+          "Example:\n" +
+          "Hey you, I missed you today...\n\n" +
+          "📤 STEP 3 of 3: send your message, wait a few seconds, and you get the voice note 🎤\n\n" +
+          "(/voice change girl • /level set intensity 🌶️ • /help tutorial)"
       )
       .catch(() => {});
   });
@@ -248,15 +250,13 @@ function createBot(): Bot {
     const text = ctx.message.text.trim();
 
     if (text.startsWith("/")) {
-      await ctx.reply(
-        "Commande inconnue. Utilise /voix, /niveau, /aide ou /stats."
-      );
+      await ctx.reply("Unknown command. Use /voice, /level, /help or /stats.");
       return;
     }
 
     if (text.length > MAX_CHARS) {
       await ctx.reply(
-        `❌ Texte trop long : ${text.length}/${MAX_CHARS} caractères. Raccourcis-le ou découpe-le en plusieurs messages.`
+        `❌ Text too long: ${text.length}/${MAX_CHARS} characters. Shorten it or split it into several messages.`
       );
       return;
     }
@@ -269,7 +269,7 @@ function createBot(): Bot {
     if (!model) {
       await sendModelPicker(
         ctx,
-        "⚠️ STOP ! Il faut d'abord choisir la fille.\n\n👇 Clique sur un bouton, PUIS renvoie ton texte :"
+        "⚠️ STOP! Pick the girl first.\n\n👇 Tap a button, THEN send your text again:"
       );
       return;
     }
@@ -290,9 +290,7 @@ function createBot(): Bot {
 
   // Autres types de messages (photo, vocal, etc.)
   bot.on("message", async (ctx) => {
-    await ctx.reply(
-      "🎙️ Envoie-moi uniquement du texte à transformer en voice note."
-    );
+    await ctx.reply("🎙️ Send me text only — I'll turn it into a voice note.");
   });
 
   return bot;
