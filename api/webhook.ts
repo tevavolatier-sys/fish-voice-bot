@@ -77,29 +77,49 @@ function createBot(): Bot {
   bot.command(["start", "voix"], async (ctx) => {
     await sendModelPicker(
       ctx,
-      "🎙️ Choisis la modèle dont tu veux générer la voix :\n\n" +
-        "Ensuite, envoie simplement ton texte (max " +
-        MAX_CHARS +
-        " caractères) et tu recevras la voice note.\n" +
-        "Tape /aide pour la liste des tags d'émotion."
+      "🎙️ ÉTAPE 1 sur 3\n\n" +
+        "👇 Clique sur la fille dont tu veux la voix :"
     );
   });
 
   bot.command("aide", async (ctx) => {
     await ctx.reply(
-      "ℹ️ Mode d'emploi\n\n" +
-        "1. /voix pour choisir une modèle\n" +
-        "2. Envoie ton texte, tu reçois la voice note\n\n" +
-        "✨ Les émotions sont ajoutées AUTOMATIQUEMENT à ton texte.\n" +
-        "Écris normalement, c'est tout !\n\n" +
-        "🎭 Pour les pros : tu peux placer toi-même des tags dans le texte,\n" +
-        "ils seront utilisés tels quels (dans ce cas rien n'est ajouté) :\n" +
-        "[excited] [whisper] [sad] [angry] [surprised] [nervous]\n" +
-        "[laughing] [chuckling] [sighing] [crying] [breath]\n" +
-        "[soft tone] [shouting] [in a hurry tone]\n\n" +
+      "📖 TUTO — COMMENT FAIRE UN VOCAL\n\n" +
+        "1️⃣ Tape /voix\n" +
+        "2️⃣ Clique sur la fille\n" +
+        "3️⃣ Écris ton message comme si c'était ELLE qui parlait\n" +
+        "4️⃣ Envoie le message\n" +
+        "5️⃣ Attends quelques secondes\n" +
+        "6️⃣ Tu reçois le vocal 🎤 → transfère-le au client\n\n" +
+        "✅ FAIS ÇA :\n" +
+        "• Des phrases courtes, comme un vrai vocal\n" +
+        "• Écris normalement, les émotions s'ajoutent TOUTES SEULES ✨\n\n" +
+        "❌ FAIS PAS ÇA :\n" +
+        `• Un texte de plus de ${MAX_CHARS} caractères (le bot refusera)\n` +
+        "• Écrire en mode robot (« Bonjour. Comment allez-vous. »)\n\n" +
+        "————————————\n" +
+        "🎭 MODE PRO (pas obligé !)\n" +
+        "Tu peux placer toi-même des tags [comme ça] dans ton texte.\n" +
+        "Si tu en mets, le bot n'ajoute rien et respecte tes tags.\n\n" +
+        "😊 Émotions positives :\n" +
+        "[excited] [delighted] [joyful] [satisfied] [proud] [confident]\n" +
+        "[relaxed] [grateful] [moved] [amused] [curious] [interested]\n\n" +
+        "😢 Émotions négatives :\n" +
+        "[sad] [unhappy] [upset] [depressed] [worried] [anxious]\n" +
+        "[nervous] [scared] [panicked] [angry] [furious] [frustrated]\n" +
+        "[impatient] [guilty] [embarrassed] [awkward] [hesitating]\n\n" +
+        "😲 Autres émotions :\n" +
+        "[surprised] [astonished] [confused] [serious] [sincere]\n" +
+        "[comforting] [empathetic] [sarcastic]\n\n" +
+        "🗣️ Façons de parler :\n" +
+        "[whispering] [soft tone] [shouting] [screaming] [in a hurry tone]\n\n" +
+        "🔊 Sons et respirations :\n" +
+        "[laughing] [chuckling] [giggling] [sobbing] [crying loudly]\n" +
+        "[sighing] [breath] [panting] [groaning] [cough] [lip-smacking]\n\n" +
+        "⏸️ Pauses :\n" +
+        "[break] [long-break]\n\n" +
         "Exemple :\n" +
-        "[whisper] Coucou toi... [excited] j'ai une surprise pour toi !\n\n" +
-        `⚠️ Limite : ${MAX_CHARS} caractères par message.`
+        "[whispering] Coucou toi... [break] [excited] j'ai une surprise pour toi !"
     );
   });
 
@@ -154,7 +174,15 @@ function createBot(): Bot {
     await ctx.answerCallbackQuery({ text: `Voix sélectionnée : ${model.name}` });
     await ctx
       .editMessageText(
-        `✅ Modèle active : ${model.name}\n\nEnvoie ton texte pour générer une voice note. /voix pour changer.`
+        `✅ Voix choisie : ${model.name}\n\n` +
+          "📝 ÉTAPE 2 sur 3 : écris ton message\n" +
+          `• Écris comme si c'était ELLE qui parlait\n` +
+          "• Des phrases courtes et naturelles\n" +
+          "• Écris normalement : les émotions sont ajoutées TOUTES SEULES ✨\n\n" +
+          "Exemple :\n" +
+          "Coucou toi, tu m'as manqué aujourd'hui...\n\n" +
+          "📤 ÉTAPE 3 sur 3 : envoie ton message, attends quelques secondes, et tu reçois le vocal 🎤\n\n" +
+          "(/voix pour changer de fille • /aide pour le tuto complet)"
       )
       .catch(() => {});
   });
@@ -177,7 +205,10 @@ function createBot(): Bot {
     const selectedKey = await getSelectedModel(ctx.from.id);
     const model = selectedKey ? modelByKey(selectedKey) : undefined;
     if (!model) {
-      await sendModelPicker(ctx, "⚠️ Choisis d'abord une modèle :");
+      await sendModelPicker(
+        ctx,
+        "⚠️ STOP ! Il faut d'abord choisir la fille.\n\n👇 Clique sur un bouton, PUIS renvoie ton texte :"
+      );
       return;
     }
 
