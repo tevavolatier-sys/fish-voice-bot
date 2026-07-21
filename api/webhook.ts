@@ -46,8 +46,13 @@ async function generateAndReply(
     // Ajout automatique des tags d'émotion (texte brut conservé en cas d'échec)
     const finalText = await enrichWithEmotionTags(text);
     const audio = await generateVoice(finalText, model.referenceId);
+    // Si des tags ont été ajoutés, on les montre en légende pour que
+    // l'opérateur voie ce qui a été utilisé (limite caption Telegram : 1024)
+    const caption =
+      finalText !== text ? `🎭 ${finalText}`.slice(0, 1024) : undefined;
     await ctx.replyWithVoice(new InputFile(audio, "voice.mp3"), {
       reply_parameters: { message_id: messageId },
+      caption,
     });
     await recordGeneration(userId, model.key, text.length);
   } catch (err) {
