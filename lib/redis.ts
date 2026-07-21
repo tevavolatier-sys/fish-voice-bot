@@ -2,17 +2,30 @@ import { Redis } from "@upstash/redis";
 
 // L'intégration Upstash du Marketplace Vercel injecte UPSTASH_REDIS_REST_*.
 // Certaines versions de l'intégration utilisent le préfixe KV_* : on accepte les deux.
-const url = process.env.UPSTASH_REDIS_REST_URL ?? process.env.KV_REST_API_URL;
-const token =
-  process.env.UPSTASH_REDIS_REST_TOKEN ?? process.env.KV_REST_API_TOKEN;
+// Initialisation paresseuse pour que la fonction démarre même si les variables
+// manquent (l'erreur claire est renvoyée au moment de l'utilisation).
+let client: Redis | null = null;
 
-if (!url || !token) {
-  throw new Error(
-    "Variables Upstash Redis manquantes (UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN)"
-  );
+function getRedis(): Redis {
+  if (client) return client;
+  const url = process.env.UPSTASH_REDIS_REST_URL ?? process.env.KV_REST_API_URL;
+  const token =
+    process.env.UPSTASH_REDIS_REST_TOKEN ?? process.env.KV_REST_API_TOKEN;
+  if (!url || !token) {
+    throw new Error(
+      "Variables Upstash Redis manquantes (UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN)"
+    );
+  }
+  client = new Redis({ url, token });
+  return client;
 }
 
-export const redis = new Redis({ url, token });
+export function hasRedisEnv(): boolean {
+  return Boolean(
+    (process.env.UPSTASH_REDIS_REST_URL ?? process.env.KV_REST_API_URL) &&
+      (process.env.UPSTASH_REDIS_REST_TOKEN ?? process.env.KV_REST_API_TOKEN)
+  );
+}
 
 const STATS_KEYS = [
   "stats:gen:model",
@@ -23,14 +36,14 @@ const STATS_KEYS = [
 
 /** Modèle actuellement sélectionnée par un opérateur */
 export async function getSelectedModel(userId: number): Promise<string | null> {
-  return redis.get<string>(`voice:${userId}`);
+  return getRedis().get<string>(`voice:${userId}`);
 }
 
 export async function setSelectedModel(
   userId: number,
   modelKey: string
 ): Promise<void> {
-  await redis.set(`voice:${userId}`, modelKey);
+  await getRedis().set(`voice:${userId}`, modelKey);
 }
 
 /** Incrémente les compteurs après une génération réussie */
@@ -39,7 +52,7 @@ export async function recordGeneration(
   modelKey: string,
   chars: number
 ): Promise<void> {
-  const p = redis.pipeline();
+  const p = getRedis().pipeline();
   p.hincrby("stats:gen:model", modelKey, 1);
   p.hincrby("stats:chars:model", modelKey, chars);
   p.hincrby("stats:gen:user", String(userId), 1);
@@ -55,6 +68,7 @@ export interface Stats {
 }
 
 export async function readStats(): Promise<Stats> {
+  const redis = getRedis();
   const [genByModel, charsByModel, genByUser, charsByUser] = await Promise.all(
     STATS_KEYS.map((k) => redis.hgetall<Record<string, number>>(k))
   );
@@ -67,5 +81,5 @@ export async function readStats(): Promise<Stats> {
 }
 
 export async function resetStats(): Promise<void> {
-  await redis.del(...STATS_KEYS);
+  await getRedis().del(...STATS_KEYS);
 }
