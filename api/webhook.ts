@@ -18,6 +18,7 @@ import {
   setSelectedModel,
 } from "../lib/redis.js";
 import { FishError, generateVoice } from "../lib/fish.js";
+import { enrichWithEmotionTags } from "../lib/enrich.js";
 
 export const maxDuration = 60;
 
@@ -42,7 +43,9 @@ async function generateAndReply(
 ): Promise<void> {
   try {
     await ctx.replyWithChatAction("record_voice").catch(() => {});
-    const audio = await generateVoice(text, model.referenceId);
+    // Ajout automatique des tags d'émotion (texte brut conservé en cas d'échec)
+    const finalText = await enrichWithEmotionTags(text);
+    const audio = await generateVoice(finalText, model.referenceId);
     await ctx.replyWithVoice(new InputFile(audio, "voice.mp3"), {
       reply_parameters: { message_id: messageId },
     });
@@ -87,7 +90,10 @@ function createBot(): Bot {
       "ℹ️ Mode d'emploi\n\n" +
         "1. /voix pour choisir une modèle\n" +
         "2. Envoie ton texte, tu reçois la voice note\n\n" +
-        "🎭 Tags d'émotion Fish Audio (à insérer librement dans le texte) :\n" +
+        "✨ Les émotions sont ajoutées AUTOMATIQUEMENT à ton texte.\n" +
+        "Écris normalement, c'est tout !\n\n" +
+        "🎭 Pour les pros : tu peux placer toi-même des tags dans le texte,\n" +
+        "ils seront utilisés tels quels (dans ce cas rien n'est ajouté) :\n" +
         "[excited] [whisper] [sad] [angry] [surprised] [nervous]\n" +
         "[laughing] [chuckling] [sighing] [crying] [breath]\n" +
         "[soft tone] [shouting] [in a hurry tone]\n\n" +
@@ -219,6 +225,7 @@ export function GET(): Response {
       FISH_API_KEY: Boolean(process.env.FISH_API_KEY),
       TELEGRAM_WEBHOOK_SECRET: Boolean(process.env.TELEGRAM_WEBHOOK_SECRET),
       UPSTASH_REDIS: hasRedisEnv(),
+      ANTHROPIC_API_KEY: Boolean(process.env.ANTHROPIC_API_KEY),
     },
     voixConfigurees: ACTIVE_MODELS.map((m) => m.name),
   });
