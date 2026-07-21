@@ -1,0 +1,14 @@
+# Dépendances
+node_modules/
+
+# Secrets — ne JAMAIS commiter
+.env
+.env.*
+!.env.example
+
+# Vercel
+.vercel/
+
+# Divers
+*.log
+.DS_Store
