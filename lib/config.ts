@@ -17,7 +17,7 @@ export interface VoiceModel {
 /** Les modèles et leur clone vocal Fish Audio */
 export const MODELS: VoiceModel[] = [
   { key: "lea", name: "Lea", referenceId: "REFERENCE_ID_LEA" },
-  { key: "jade", name: "Jade", referenceId: "REFERENCE_ID_JADE" },
+  { key: "jade", name: "Jade", referenceId: "106e5e3c22f5471d96a9401095ae50be" },
   { key: "olivia", name: "Olivia", referenceId: "REFERENCE_ID_OLIVIA" },
   { key: "marie", name: "Marie US", referenceId: "REFERENCE_ID_MARIE_US" },
   { key: "sienna", name: "Sienna", referenceId: "REFERENCE_ID_SIENNA" },
