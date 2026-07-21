@@ -1,8 +1,9 @@
 // Enrichissement automatique du texte avec des tags d'émotion Fish Audio.
 // Fournisseur LLM par ordre de priorité :
-//   1. Groq (GROQ_API_KEY) — GRATUIT, Llama 3.3 70B, très rapide
-//   2. Claude (ANTHROPIC_API_KEY) — payant, léger coût par message
-//   3. Aucun -> le texte brut est utilisé tel quel
+//   1. Google Gemini (GEMINI_API_KEY) — GRATUIT, clé via aistudio.google.com
+//   2. Groq (GROQ_API_KEY) — GRATUIT, Llama 3.3 70B, très rapide
+//   3. Claude (ANTHROPIC_API_KEY) — payant, léger coût par message
+//   4. Aucun -> le texte brut est utilisé tel quel
 // En cas d'échec quel qu'il soit, la génération vocale n'est jamais bloquée.
 
 import Anthropic from "@anthropic-ai/sdk";
@@ -33,10 +34,48 @@ Règles strictes :
 - Réponds UNIQUEMENT avec le texte final taggé, sans explication, sans guillemets.`;
 
 /** Nom du fournisseur actif (pour le diagnostic) */
-export function enrichProvider(): "groq" | "claude" | "aucun" {
+export function enrichProvider(): "gemini" | "groq" | "claude" | "aucun" {
+  if (process.env.GEMINI_API_KEY) return "gemini";
   if (process.env.GROQ_API_KEY) return "groq";
   if (process.env.ANTHROPIC_API_KEY) return "claude";
   return "aucun";
+}
+
+async function enrichWithGemini(text: string, apiKey: string): Promise<string | null> {
+  const model = "gemini-2.5-flash-lite";
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+    {
+      method: "POST",
+      headers: {
+        "x-goog-api-key": apiKey,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+        contents: [{ role: "user", parts: [{ text }] }],
+        generationConfig: { temperature: 0.3, maxOutputTokens: 1024 },
+        // Textes séduisants : on désactive les filtres pour éviter les blocages
+        safetySettings: [
+          { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
+          { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
+          { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
+          { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" },
+        ],
+      }),
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    }
+  );
+  if (!res.ok) {
+    console.error(`Gemini ${res.status}:`, await res.text().catch(() => ""));
+    return null;
+  }
+  const data = (await res.json()) as {
+    candidates?: { content?: { parts?: { text?: string }[] } }[];
+  };
+  const parts = data.candidates?.[0]?.content?.parts;
+  const out = parts?.map((p) => p.text ?? "").join("").trim();
+  return out || null;
 }
 
 async function enrichWithGroq(text: string, apiKey: string): Promise<string | null> {
@@ -90,14 +129,17 @@ async function enrichWithClaude(text: string, apiKey: string): Promise<string | 
 export async function enrichWithEmotionTags(text: string): Promise<string> {
   if (EXISTING_TAG.test(text)) return text;
 
+  const geminiKey = process.env.GEMINI_API_KEY;
   const groqKey = process.env.GROQ_API_KEY;
   const anthropicKey = process.env.ANTHROPIC_API_KEY;
-  if (!groqKey && !anthropicKey) return text;
+  if (!geminiKey && !groqKey && !anthropicKey) return text;
 
   try {
-    const enriched = groqKey
-      ? await enrichWithGroq(text, groqKey)
-      : await enrichWithClaude(text, anthropicKey!);
+    const enriched = geminiKey
+      ? await enrichWithGemini(text, geminiKey)
+      : groqKey
+        ? await enrichWithGroq(text, groqKey)
+        : await enrichWithClaude(text, anthropicKey!);
 
     // Garde-fou : si la réponse est vide ou aberrante (trop courte/longue
     // par rapport à l'original), on garde le texte brut.
