@@ -41,11 +41,15 @@ async function sendModelPicker(ctx: Context, intro: string): Promise<void> {
 }
 
 // ---------- Clavier d'intensité ----------
-function intensityKeyboard(): InlineKeyboard {
+// Affiché sous chaque vocal et sous le choix de voix : le niveau actif porte un ✅.
+function intensityKeyboard(current?: number): InlineKeyboard {
   const kb = new InlineKeyboard();
-  for (const [level, cfg] of Object.entries(INTENSITY_LEVELS)) {
-    kb.text(cfg.label, `level:${level}`).row();
-  }
+  const entries = Object.entries(INTENSITY_LEVELS);
+  entries.forEach(([level, cfg], i) => {
+    const active = Number(level) === current;
+    kb.text(`${active ? "✅ " : ""}${cfg.label}`, `level:${level}`);
+    if (i % 2 === 1) kb.row();
+  });
   return kb;
 }
 
@@ -67,9 +71,11 @@ async function generateAndReply(
     // l'opérateur voie ce qui a été utilisé (limite caption Telegram : 1024)
     const caption =
       finalText !== text ? `🎭 ${finalText}`.slice(0, 1024) : undefined;
+    // Boutons d'intensité sous chaque vocal : changement en un tap
     await ctx.replyWithVoice(new InputFile(audio, "voice.mp3"), {
       reply_parameters: { message_id: messageId },
       caption,
+      reply_markup: intensityKeyboard(intensity),
     });
     await recordGeneration(userId, model.key, text.length);
   } catch (err) {
@@ -129,9 +135,10 @@ function createBot(): Bot {
     await ctx.reply(
       "🌡️ VOICE INTENSITY\n\n" +
         `Current level: ${label}\n\n` +
-        "The hotter the level, the more breathing, moaning and sensual pauses in the voice.\n\n" +
+        "😇 Normal = no sexualization at all.\n" +
+        "The hotter the level, the more breathing, moaning and sensual pauses.\n\n" +
         "👇 Pick a level:",
-      { reply_markup: intensityKeyboard() }
+      { reply_markup: intensityKeyboard(current) }
     );
   });
 
@@ -147,8 +154,8 @@ function createBot(): Bot {
         "✅ DO THIS:\n" +
         "• Short sentences, like a real voice note\n" +
         "• Write normally, emotions are added AUTOMATICALLY ✨\n\n" +
-        "🌡️ INTENSITY: type /level to set how sexual the voice sounds:\n" +
-        "🌶️ Light → 🌶️🌶️ Hot → 🌶️🌶️🌶️ Very hot\n" +
+        "🌡️ INTENSITY: use the buttons under each voice note (or /level):\n" +
+        "😇 Normal (no sexualization) → 🌶️ Light → 🌶️🌶️ Hot → 🌶️🌶️🌶️ Very hot\n" +
         "The hotter, the more breathing, moaning and pauses.\n\n" +
         "❌ DON'T DO THIS:\n" +
         `• A text longer than ${MAX_CHARS} characters (the bot will refuse)\n` +
@@ -228,13 +235,13 @@ function createBot(): Bot {
       return;
     }
     await setIntensity(ctx.from.id, level);
-    await ctx.answerCallbackQuery({ text: `Intensity: ${cfg.label}` });
+    await ctx.answerCallbackQuery({
+      text: `${cfg.label} — applies to your next voice notes`,
+    });
+    // Le clavier peut être sous un message texte OU sous un vocal :
+    // on met juste à jour les boutons (déplacement du ✅).
     await ctx
-      .editMessageText(
-        `✅ Intensity set: ${cfg.label}\n\n` +
-          "All your next voice notes will use this level.\n" +
-          "(/level to change it anytime)"
-      )
+      .editMessageReplyMarkup({ reply_markup: intensityKeyboard(level) })
       .catch(() => {});
   });
 
@@ -247,6 +254,8 @@ function createBot(): Bot {
     }
     await setSelectedModel(ctx.from.id, model.key);
     await ctx.answerCallbackQuery({ text: `Voice selected: ${model.name}` });
+    const currentLevel =
+      (await getIntensity(ctx.from.id).catch(() => null)) ?? DEFAULT_INTENSITY;
     await ctx
       .editMessageText(
         `✅ Voice selected: ${model.name}\n\n` +
@@ -257,7 +266,8 @@ function createBot(): Bot {
           "Example:\n" +
           "Hey you, I missed you today...\n\n" +
           "📤 STEP 3 of 3: send your message, wait a few seconds, and you get the voice note 🎤\n\n" +
-          "(/voice change girl • /level set intensity 🌶️ • /help tutorial)"
+          "🌡️ Intensity of the voice — tap to change:",
+        { reply_markup: intensityKeyboard(currentLevel) }
       )
       .catch(() => {});
   });

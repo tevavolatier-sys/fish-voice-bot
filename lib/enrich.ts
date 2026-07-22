@@ -15,6 +15,14 @@ const TIMEOUT_MS = 10_000;
 
 /** Intensity levels picked by the operator via /level (default: 1) */
 export const INTENSITY_LEVELS: Record<number, { label: string; instruction: string }> = {
+  0: {
+    label: "😇 Normal",
+    instruction:
+      "INTENSITY LEVEL: NORMAL — NO SEXUALIZATION AT ALL. The message must sound friendly, warm or neutral. " +
+      "Use only simple emotion tags ([soft tone], [breath], [chuckling], emotions matching the text). " +
+      "FORBIDDEN: [panting], [groaning], [whispering] and any sensual effect. " +
+      "1 to 3 tags max, discreet breathing.",
+  },
   1: {
     label: "🌶️ Light",
     instruction:
