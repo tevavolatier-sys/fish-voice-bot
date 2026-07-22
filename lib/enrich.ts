@@ -86,7 +86,8 @@ export function enrichProvider(): "gemini" | "groq" | "claude" | "aucun" {
 async function enrichWithGemini(
   text: string,
   apiKey: string,
-  systemPrompt: string
+  systemPrompt: string,
+  variety = false
 ): Promise<string | null> {
   // Alias "latest" : suit automatiquement le dernier modèle flash-lite,
   // évite les erreurs 404 quand Google retire un ancien modèle.
@@ -102,7 +103,8 @@ async function enrichWithGemini(
       body: JSON.stringify({
         systemInstruction: { parts: [{ text: systemPrompt }] },
         contents: [{ role: "user", parts: [{ text }] }],
-        generationConfig: { temperature: 0.3, maxOutputTokens: 1024 },
+        // variety = « nouvelles émotions » : température haute pour varier les tags
+        generationConfig: { temperature: variety ? 1.1 : 0.3, maxOutputTokens: 1024 },
         // Textes séduisants : on désactive les filtres pour éviter les blocages
         safetySettings: [
           { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
@@ -185,7 +187,8 @@ async function enrichWithClaude(
  */
 export async function enrichWithEmotionTags(
   text: string,
-  level: number = DEFAULT_INTENSITY
+  level: number = DEFAULT_INTENSITY,
+  variety = false
 ): Promise<string> {
   if (EXISTING_TAG.test(text)) return text;
 
@@ -198,7 +201,7 @@ export async function enrichWithEmotionTags(
 
   try {
     const enriched = geminiKey
-      ? await enrichWithGemini(text, geminiKey, systemPrompt)
+      ? await enrichWithGemini(text, geminiKey, systemPrompt, variety)
       : groqKey
         ? await enrichWithGroq(text, groqKey, systemPrompt)
         : await enrichWithClaude(text, anthropicKey!, systemPrompt);
