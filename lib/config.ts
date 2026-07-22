@@ -39,7 +39,9 @@ export const OPERATORS: { id: number; name: string }[] = [
  * L'ID d'un groupe est un nombre négatif, ex. -1001234567890.
  */
 export const ALLOWED_GROUP_IDS: number[] = [
-  -5405936450, // Groupe "FrenchInfluenceVoice BOT"
+  // "VOICE BOT - French Influence Agency" (supergroupe — l'ancien groupe
+  // -5405936450 a été converti par Telegram, son ID a changé)
+  -1004454486728,
 ];
 
 /** ID Telegram de l'admin (seul autorisé à utiliser /stats) */

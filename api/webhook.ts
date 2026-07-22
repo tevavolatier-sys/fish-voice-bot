@@ -96,6 +96,22 @@ function createBot(): Bot {
     await next();
   });
 
+  // Groupes en mode "Topics" (forum) : les réponses doivent partir dans le
+  // même sujet que le message d'origine, sinon elles atterrissent dans General.
+  bot.use(async (ctx, next) => {
+    const msg = ctx.msg ?? ctx.callbackQuery?.message;
+    const threadId = msg?.is_topic_message ? msg.message_thread_id : undefined;
+    if (threadId) {
+      ctx.api.config.use(async (prev, method, payload, signal) => {
+        if (method.startsWith("send") && !("message_thread_id" in payload)) {
+          (payload as Record<string, unknown>).message_thread_id = threadId;
+        }
+        return prev(method, payload, signal);
+      });
+    }
+    await next();
+  });
+
   bot.command(["start", "voice", "voix"], async (ctx) => {
     await sendModelPicker(
       ctx,
