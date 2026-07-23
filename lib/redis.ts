@@ -59,6 +59,29 @@ export async function setIntensity(
   await getRedis().set(`intensity:${userId}`, level);
 }
 
+/**
+ * Dernier texte envoyé par un opérateur, en attente de son choix d'ambiance
+ * (boutons 🎭). Conservé 30 min : les boutons sous le vocal permettent de
+ * régénérer le même texte dans une autre ambiance pendant ce délai.
+ */
+export interface PendingVoice {
+  text: string;
+  messageId: number;
+}
+
+export async function setPendingVoice(
+  userId: number,
+  pending: PendingVoice
+): Promise<void> {
+  await getRedis().set(`pending:${userId}`, pending, { ex: 1800 });
+}
+
+export async function getPendingVoice(
+  userId: number
+): Promise<PendingVoice | null> {
+  return getRedis().get<PendingVoice>(`pending:${userId}`);
+}
+
 /** Incrémente les compteurs après une génération réussie */
 export async function recordGeneration(
   userId: number,

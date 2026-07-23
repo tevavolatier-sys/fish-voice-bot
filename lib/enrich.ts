@@ -48,14 +48,83 @@ export const INTENSITY_LEVELS: Record<number, { label: string; instruction: stri
 
 export const DEFAULT_INTENSITY = 1;
 
-function buildSystemPrompt(level: number): string {
+/**
+ * Ambiances choisies PAR BOUTON par l'opérateur avant chaque vocal.
+ * `auto` = le LLM lit le texte et choisit lui-même (comportement historique).
+ * Chaque instruction pilote l'intonation au niveau du MOT (tags ciblés +
+ * sculpture légère : étirements, « mmh », « ... », virgules).
+ */
+export const MOODS: Record<string, { label: string; instruction: string | null }> = {
+  auto: { label: "🎲 Auto", instruction: null },
+  sweet: {
+    label: "🥰 Sweet",
+    instruction:
+      "MOOD PICKED BY THE OPERATOR: SWEET & LOVING — warm, tender, affectionate. " +
+      "[soft tone] on tender confessions, gentle [breath] between phrases, maybe [moved] or a soft [giggling]. " +
+      "Stretch the affectionate key words (« soooo sweet », « miss youuuu »).",
+  },
+  playful: {
+    label: "😏 Playful",
+    instruction:
+      "MOOD PICKED BY THE OPERATOR: PLAYFUL & TEASING — mischievous, flirty-funny. " +
+      "[amused] tone, [chuckling] or [giggling] on the jokes, a teasing « ... » right before the punchline, " +
+      "[curious] on the questions. Light and bouncy delivery.",
+  },
+  hot: {
+    label: "🔥 Hot",
+    instruction:
+      "MOOD PICKED BY THE OPERATOR: HOT & SENSUAL — intimate, heated. " +
+      "[whispering] on the intimate words, heavy [breath] between phrases, [sighing] or [panting] where it burns, " +
+      "[break] to build tension, and stretch THE hottest word of each sentence.",
+  },
+  sleepy: {
+    label: "😴 Sleepy",
+    instruction:
+      "MOOD PICKED BY THE OPERATOR: SLEEPY & COZY — just woke up or falling asleep. " +
+      "[soft tone] everywhere, slow lazy rhythm: « ... » between word groups, [sighing] and [breath], " +
+      "stretched soft words (« mmmh », « sooo comfy »).",
+  },
+  sad: {
+    label: "😢 Sad",
+    instruction:
+      "MOOD PICKED BY THE OPERATOR: SAD & FRAGILE — moved, vulnerable. " +
+      "[sad] or [moved] on the painful words, [hesitating] before the hard confessions, trembling [breath], " +
+      "« ... » to let the emotion sink. [sobbing] only if the text clearly goes there.",
+  },
+  laughing: {
+    label: "😂 Laughing",
+    instruction:
+      "MOOD PICKED BY THE OPERATOR: LAUGHING — she can barely hold it together. " +
+      "[laughing], [chuckling] and [giggling] spread through the text, [breath] to catch air after the laughs, " +
+      "playful stretched words.",
+  },
+  shy: {
+    label: "😳 Shy",
+    instruction:
+      "MOOD PICKED BY THE OPERATOR: SHY & EMBARRASSED — blushing, hesitant. " +
+      "[embarrassed], [awkward] or [hesitating] right before the daring words, small nervous [giggling], " +
+      "« ... » hesitations mid-sentence, quiet [soft tone].",
+  },
+  excited: {
+    label: "⚡ Excited",
+    instruction:
+      "MOOD PICKED BY THE OPERATOR: SUPER EXCITED — big news energy. " +
+      "[excited] and [delighted] from the start, enthusiastic bursts, [laughing] joy, " +
+      "stretched emphasis on the key words (« noooo waaay »), quick [breath] between bursts.",
+  },
+};
+
+export const DEFAULT_MOOD = "auto";
+
+function buildSystemPrompt(level: number, moodKey: string = DEFAULT_MOOD): string {
   const intensity =
     INTENSITY_LEVELS[level]?.instruction ??
     INTENSITY_LEVELS[DEFAULT_INTENSITY].instruction;
+  const mood = MOODS[moodKey]?.instruction ?? null;
 
   return `You prepare texts for Fish Audio voice synthesis. These are warm, flirty or intimate voice messages sent by a woman to an admirer.
 
-Your only task: insert emotion tags in brackets at natural spots in the text to make the voice feel alive and believable.
+Your task: make the voice feel alive, believable and precisely acted — by inserting emotion tags in brackets AND lightly sculpting how the words sound.
 
 Allowed tags (only these):
 - Positive emotions: [excited] [delighted] [joyful] [satisfied] [proud] [confident] [relaxed] [grateful] [moved] [amused] [curious] [interested]
@@ -65,13 +134,21 @@ Allowed tags (only these):
 - Sounds and breathing: [laughing] [chuckling] [giggling] [sobbing] [crying loudly] [sighing] [breath] [panting] [groaning] [cough] [lip-smacking]
 - Pauses: [break] [long-break]
 
-${intensity}
+${mood ?? "No specific mood was picked: read the text and choose the most believable emotional delivery yourself."}
+
+${intensity}${mood ? "\n(The intensity level caps how sexual the delivery gets; the picked mood drives the emotional color.)" : ""}
+
+WORD-LEVEL PRECISION — this is what makes the voice sound human:
+- A tag colors what FOLLOWS it: place it right before the EXACT word to color, not only at sentence start. Example: « I [break] really [whispering] missed you ».
+- You may lightly sculpt HOW words sound, without changing the words themselves:
+  · stretch the letters of ONE key word per sentence to slow it down (« so » → « soooo », « yes » → « yesss »)
+  · add breathy interjections between word groups: « mmh », « ahh », « hmm »
+  · add « ... » for hesitation or tension, and commas to force micro-pauses
+- NEVER add, remove or replace real words. Only letter-stretching, mmh/ahh/hmm interjections, punctuation and tags.
 
 Strict rules:
-- NEVER change the words of the text: no word added, removed or corrected, punctuation preserved.
-- A tag goes right before the sentence or group of words it colors.
+- STRICTLY respect the requested intensity level, even if the text seems more or less sexual than the level.
 - BREATHING: a voice that breathes is a believable voice. Place [breath] where a real person would catch their breath.
-- STRICTLY respect the requested intensity level above, even if the text seems more or less sexual than the level.
 - Reply ONLY with the final tagged text, no explanation, no quotes.`;
 }
 
@@ -188,7 +265,8 @@ async function enrichWithClaude(
 export async function enrichWithEmotionTags(
   text: string,
   level: number = DEFAULT_INTENSITY,
-  variety = false
+  variety = false,
+  moodKey: string = DEFAULT_MOOD
 ): Promise<string> {
   if (EXISTING_TAG.test(text)) return text;
 
@@ -197,7 +275,7 @@ export async function enrichWithEmotionTags(
   const anthropicKey = process.env.ANTHROPIC_API_KEY;
   if (!geminiKey && !groqKey && !anthropicKey) return text;
 
-  const systemPrompt = buildSystemPrompt(level);
+  const systemPrompt = buildSystemPrompt(level, moodKey);
 
   try {
     const enriched = geminiKey
@@ -207,9 +285,10 @@ export async function enrichWithEmotionTags(
         : await enrichWithClaude(text, anthropicKey!, systemPrompt);
 
     // Garde-fou : si la réponse est vide ou aberrante (trop courte/longue
-    // par rapport à l'original), on garde le texte brut.
+    // par rapport à l'original), on garde le texte brut. La marge haute
+    // couvre les tags + la sculpture (étirements, « mmh », « ... »).
     if (!enriched || enriched.length < text.length * 0.8) return text;
-    if (enriched.length > text.length + 300) return text;
+    if (enriched.length > text.length + 400) return text;
 
     return enriched;
   } catch (err) {
