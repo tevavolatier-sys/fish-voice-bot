@@ -3,11 +3,11 @@
 const FISH_TTS_URL = "https://api.fish.audio/v1/tts";
 const ATTEMPT_TIMEOUT_MS = 25_000;
 
-// Modèle TTS Fish Audio. Le défaut est le modèle GRATUIT ; pour un rendu
-// NSFW nettement meilleur (gémissements, respirations), mettre FISH_MODEL=s1
-// dans les variables Vercel (payant, facturé aux crédits par génération).
+// Modèle TTS Fish Audio. Défaut : s1 (premium, payant aux crédits — rendu
+// NSFW bien meilleur que le gratuit, choix Teva 2026-07-23). Pour revenir au
+// gratuit sans toucher au code : FISH_MODEL=s2.1-pro-free dans Vercel.
 function fishModel(): string {
-  return process.env.FISH_MODEL?.trim() || "s2.1-pro-free";
+  return process.env.FISH_MODEL?.trim() || "s1";
 }
 
 /** Erreur avec un message clair destiné à l'opérateur (en français) */
