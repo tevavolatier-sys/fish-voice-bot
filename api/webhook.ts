@@ -11,15 +11,18 @@ import {
 } from "../lib/config.js";
 import {
   getIntensity,
+  getLastText,
   getSelectedModel,
   hasRedisEnv,
   readStats,
   recordGeneration,
   resetStats,
   setIntensity,
+  setLastText,
   setSelectedModel,
+  shouldWarnCredits,
 } from "../lib/redis.js";
-import { FishError, generateVoice } from "../lib/fish.js";
+import { FishError, generateVoice, getFishCredits } from "../lib/fish.js";
 import {
   DEFAULT_INTENSITY,
   INTENSITY_LEVELS,
@@ -53,6 +56,35 @@ function intensityKeyboard(current?: number): InlineKeyboard {
   return kb;
 }
 
+// ---------- Découpage des textes longs ----------
+// Un texte > MAX_CHARS est découpé en morceaux ≤ MAX_CHARS aux fins de
+// phrases → plusieurs voice notes numérotées au lieu d'un refus sec.
+const MAX_PARTS = 3;
+
+function splitLongText(text: string, max: number): string[] {
+  if (text.length <= max) return [text];
+  const sentences = text.match(/[^.!?\n…]+[.!?\n…]*\s*/g) ?? [text];
+  const chunks: string[] = [];
+  let current = "";
+  for (const sentence of sentences) {
+    let s = sentence;
+    // Phrase unique plus longue que la limite : coupe dure (cas très rare)
+    while (s.length > max) {
+      if (current.trim() !== "") chunks.push(current.trim());
+      current = "";
+      chunks.push(s.slice(0, max).trim());
+      s = s.slice(max);
+    }
+    if ((current + s).length > max && current.trim() !== "") {
+      chunks.push(current.trim());
+      current = "";
+    }
+    current += s;
+  }
+  if (current.trim() !== "") chunks.push(current.trim());
+  return chunks;
+}
+
 // ---------- Génération TTS (exécutée après la réponse 200 via waitUntil) ----------
 async function generateAndReply(
   ctx: Context,
@@ -60,31 +92,63 @@ async function generateAndReply(
   text: string,
   messageId: number,
   userId: number,
-  intensity: number
+  intensity: number,
+  partLabel?: string
 ): Promise<void> {
   try {
     await ctx.replyWithChatAction("record_voice").catch(() => {});
     // Ajout automatique des tags d'émotion (texte brut conservé en cas d'échec)
     const finalText = await enrichWithEmotionTags(text, intensity);
     const audio = await generateVoice(finalText, model.referenceId);
-    // Si des tags ont été ajoutés, on les montre en légende pour que
-    // l'opérateur voie ce qui a été utilisé (limite caption Telegram : 1024)
-    const caption =
-      finalText !== text ? `🎭 ${finalText}`.slice(0, 1024) : undefined;
+    // Légende : la voix utilisée (+ n° de partie pour les textes longs) et,
+    // si des tags ont été ajoutés, le texte utilisé (limite Telegram : 1024)
+    const caption = [
+      `🎤 ${model.name}${partLabel ? ` · part ${partLabel}` : ""}`,
+      finalText !== text ? `🎭 ${finalText}` : null,
+    ]
+      .filter(Boolean)
+      .join("\n")
+      .slice(0, 1024);
     // Boutons d'intensité sous chaque vocal : changement en un tap
     await ctx.replyWithVoice(new InputFile(audio, "voice.mp3"), {
-      reply_parameters: { message_id: messageId },
+      reply_parameters: {
+        message_id: messageId,
+        allow_sending_without_reply: true,
+      },
       caption,
       reply_markup: intensityKeyboard(intensity),
     });
     await recordGeneration(userId, model.key, text.length);
+
+    // Surveillance des crédits (le modèle s1 est payant) : sous le seuil,
+    // alerte à l'admin — au plus une fois par 24 h.
+    try {
+      const credits = await getFishCredits();
+      const threshold = Number(process.env.FISH_CREDIT_ALERT ?? 2);
+      if (
+        credits !== null &&
+        credits < threshold &&
+        (await shouldWarnCredits())
+      ) {
+        await ctx.api.sendMessage(
+          ADMIN_ID,
+          `⚠️ Fish Audio credits low: $${credits.toFixed(2)} left. Top up on fish.audio (API billing) or voice notes will stop.`
+        );
+      }
+    } catch {
+      // la surveillance n'est jamais bloquante
+    }
   } catch (err) {
     console.error("Erreur de génération TTS:", err);
     const msg =
       err instanceof FishError
         ? err.userMessage
         : "❌ Unexpected error during generation. Try again; if it keeps happening, tell the admin.";
-    await ctx.reply(msg).catch(() => {});
+    await ctx
+      .reply(msg, {
+        reply_markup: new InlineKeyboard().text("🔁 Try again", "retry"),
+      })
+      .catch(() => {});
   }
 }
 
@@ -158,7 +222,8 @@ function createBot(): Bot {
         "😇 Normal (no sexualization) → 🌶️ Light → 🌶️🌶️ Hot → 🌶️🌶️🌶️ Very hot\n" +
         "The hotter, the more breathing, moaning and pauses.\n\n" +
         "❌ DON'T DO THIS:\n" +
-        `• A text longer than ${MAX_CHARS} characters (the bot will refuse)\n` +
+        `• A text longer than ${MAX_CHARS * 3} characters (the bot will refuse)\n` +
+        `• Between ${MAX_CHARS} and ${MAX_CHARS * 3} characters: the bot splits it into several voice notes automatically 📚\n` +
         "• Writing like a robot (\"Hello. How are you.\")\n\n" +
         "————————————\n" +
         "🎭 PRO MODE (optional!)\n" +
@@ -183,6 +248,17 @@ function createBot(): Bot {
         "[break] [long-break]\n\n" +
         "Example:\n" +
         "[whispering] Hey you... [break] [excited] I have a surprise for you!"
+    );
+  });
+
+  // 💳 Solde de crédits Fish Audio (admin) — le modèle s1 est payant
+  bot.command(["credits", "credit"], async (ctx) => {
+    if (ctx.from?.id !== ADMIN_ID) return; // réservé admin, silencieux
+    const credits = await getFishCredits();
+    await ctx.reply(
+      credits === null
+        ? "❌ Couldn't fetch the Fish Audio balance — try again in a minute."
+        : `💳 Fish Audio credits: $${credits.toFixed(2)}\n(An automatic alert fires below $${Number(process.env.FISH_CREDIT_ALERT ?? 2)}.)`
     );
   });
 
@@ -280,9 +356,9 @@ function createBot(): Bot {
       return;
     }
 
-    if (text.length > MAX_CHARS) {
+    if (text.length > MAX_CHARS * MAX_PARTS) {
       await ctx.reply(
-        `❌ Text too long: ${text.length}/${MAX_CHARS} characters. Shorten it or split it into several messages.`
+        `❌ Text too long: ${text.length}/${MAX_CHARS * MAX_PARTS} characters max. Shorten it or split it into several messages.`
       );
       return;
     }
@@ -301,16 +377,71 @@ function createBot(): Bot {
     }
     const intensity = storedLevel ?? DEFAULT_INTENSITY;
 
+    // Mémorisé 30 min pour le bouton « 🔁 Try again » en cas d'échec
+    await setLastText(ctx.from.id, text).catch(() => {});
+
+    // Texte long → plusieurs voice notes numérotées, dans l'ordre
+    const chunks = splitLongText(text, MAX_CHARS);
+    if (chunks.length > 1) {
+      await ctx.reply(
+        `📚 Long text — I'll send ${chunks.length} voice notes, in order. Hold on…`
+      );
+    }
+
     // Réponse 200 immédiate au webhook, génération en arrière-plan (Fluid Compute)
     waitUntil(
-      generateAndReply(
-        ctx,
-        model,
-        text,
-        ctx.message.message_id,
-        ctx.from.id,
-        intensity
-      )
+      (async () => {
+        for (let i = 0; i < chunks.length; i++) {
+          await generateAndReply(
+            ctx,
+            model,
+            chunks[i],
+            ctx.message.message_id,
+            ctx.from.id,
+            intensity,
+            chunks.length > 1 ? `${i + 1}/${chunks.length}` : undefined
+          );
+        }
+      })()
+    );
+  });
+
+  // 🔁 « Try again » après un échec : re-génère le dernier texte (30 min max)
+  bot.callbackQuery("retry", async (ctx) => {
+    const [last, selectedKey, storedLevel] = await Promise.all([
+      getLastText(ctx.from.id).catch(() => null),
+      getSelectedModel(ctx.from.id),
+      getIntensity(ctx.from.id).catch(() => null),
+    ]);
+    if (!last) {
+      await ctx.answerCallbackQuery({
+        text: "Nothing to retry — send your text again.",
+      });
+      return;
+    }
+    const model = selectedKey ? modelByKey(selectedKey) : undefined;
+    if (!model) {
+      await ctx.answerCallbackQuery({ text: "Pick the girl first: /voice" });
+      return;
+    }
+    await ctx.answerCallbackQuery({ text: "Retrying… 🎙️" });
+    const intensity = storedLevel ?? DEFAULT_INTENSITY;
+    const chunks = splitLongText(last, MAX_CHARS);
+    const replyTo = ctx.callbackQuery.message?.message_id ?? 0;
+    waitUntil(
+      (async () => {
+        for (let i = 0; i < chunks.length; i++) {
+          await generateAndReply(
+            ctx,
+            model,
+            chunks[i],
+            replyTo,
+            ctx.from.id,
+            intensity,
+            chunks.length > 1 ? `${i + 1}/${chunks.length}` : undefined
+          );
+        }
+      })()
     );
   });
 

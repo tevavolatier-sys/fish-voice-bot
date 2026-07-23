@@ -56,6 +56,26 @@ function mapClientError(status: number, body: string): FishError {
 }
 
 /**
+ * Solde de crédits API Fish Audio (en dollars), null si indisponible.
+ * Sert à /credits et à l'alerte automatique de crédits bas (le modèle s1
+ * est payant : chaque vocal consomme des crédits).
+ */
+export async function getFishCredits(): Promise<number | null> {
+  try {
+    const res = await fetch("https://api.fish.audio/wallet/self/api-credit", {
+      headers: { Authorization: `Bearer ${process.env.FISH_API_KEY}` },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as { credit?: string | number };
+    const n = Number(data.credit);
+    return Number.isFinite(n) ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Génère un MP3 via Fish Audio.
  * Retente automatiquement 1 fois en cas d'erreur 5xx ou de timeout.
  * Lance une FishError avec un message clair pour l'opérateur en cas d'échec.

@@ -59,6 +59,27 @@ export async function setIntensity(
   await getRedis().set(`intensity:${userId}`, level);
 }
 
+/**
+ * Dernier texte envoyé par un opérateur (30 min) : permet le bouton
+ * « 🔁 Try again » quand une génération échoue, sans retaper le texte.
+ */
+export async function setLastText(userId: number, text: string): Promise<void> {
+  await getRedis().set(`lasttext:${userId}`, text, { ex: 1800 });
+}
+
+export async function getLastText(userId: number): Promise<string | null> {
+  return getRedis().get<string>(`lasttext:${userId}`);
+}
+
+/**
+ * Alerte crédits bas : au plus une fois par 24 h (verrou NX).
+ * Renvoie true si l'alerte peut partir maintenant.
+ */
+export async function shouldWarnCredits(): Promise<boolean> {
+  const ok = await getRedis().set("credit_warned", "1", { nx: true, ex: 86_400 });
+  return ok === "OK";
+}
+
 /** Incrémente les compteurs après une génération réussie */
 export async function recordGeneration(
   userId: number,
