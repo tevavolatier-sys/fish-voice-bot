@@ -44,30 +44,23 @@ async function sendModelPicker(ctx: Context, intro: string): Promise<void> {
   await ctx.reply(intro, { reply_markup: modelKeyboard() });
 }
 
-// ---------- Clavier d'intensité ----------
-// Affiché sous chaque vocal et sous le choix de voix : le niveau actif porte un ✅.
-function intensityKeyboard(current?: number): InlineKeyboard {
-  const kb = new InlineKeyboard();
-  const entries = Object.entries(INTENSITY_LEVELS);
-  entries.forEach(([level, cfg], i) => {
-    const active = Number(level) === current;
-    kb.text(`${active ? "✅ " : ""}${cfg.label}`, `level:${level}`);
-    if (i % 2 === 1) kb.row();
-  });
-  return kb;
-}
-
-// ---------- Clavier d'ambiance (🎭) ----------
-// Un tap = l'intonation du vocal. « Auto » laisse le LLM lire le texte.
-// Affiché après chaque texte reçu ET sous chaque vocal (pour re-générer
-// le même texte dans une autre ambiance).
-function moodKeyboard(): InlineKeyboard {
+// ---------- Clavier unifié : ambiances 🎭 + intensité 🌡️ ----------
+// TOUJOURS affiché ensemble (demande de Teva : l'intensité d'excitation
+// reste accessible en permanence). Un tap d'ambiance = génération/re-
+// génération du dernier texte ; un tap d'intensité = change le niveau (✅).
+function voiceKeyboard(currentLevel?: number): InlineKeyboard {
   const kb = new InlineKeyboard();
   kb.text(MOODS[DEFAULT_MOOD].label + " — let the bot feel it", `mood:${DEFAULT_MOOD}`).row();
   const keys = Object.keys(MOODS).filter((k) => k !== DEFAULT_MOOD);
   keys.forEach((k, i) => {
     kb.text(MOODS[k].label, `mood:${k}`);
     if (i % 4 === 3) kb.row();
+  });
+  const entries = Object.entries(INTENSITY_LEVELS);
+  entries.forEach(([level, cfg], i) => {
+    const active = Number(level) === currentLevel;
+    kb.text(`${active ? "✅ " : ""}${cfg.label}`, `level:${level}`);
+    if (i % 2 === 1) kb.row();
   });
   return kb;
 }
@@ -92,8 +85,8 @@ async function generateAndReply(
     const moodLabel = MOODS[moodKey]?.label ?? MOODS[DEFAULT_MOOD].label;
     const caption =
       finalText !== text ? `${moodLabel} · ${finalText}`.slice(0, 1024) : undefined;
-    // Boutons d'ambiance sous chaque vocal : un tap = le MÊME texte
-    // re-généré dans une autre ambiance (tant que le texte est en mémoire).
+    // Boutons sous chaque vocal : ambiances (re-génère le MÊME texte) +
+    // intensité toujours accessible (✅ sur le niveau actif).
     await ctx.replyWithVoice(new InputFile(audio, "voice.mp3"), {
       // Le message d'origine peut avoir été supprimé entre-temps : on envoie
       // quand même le vocal au lieu d'échouer.
@@ -102,7 +95,7 @@ async function generateAndReply(
         allow_sending_without_reply: true,
       },
       caption,
-      reply_markup: moodKeyboard(),
+      reply_markup: voiceKeyboard(intensity),
     });
     await recordGeneration(userId, model.key, text.length);
   } catch (err) {
@@ -165,7 +158,7 @@ function createBot(): Bot {
         "😇 Normal = no sexualization at all.\n" +
         "The hotter the level, the more breathing, moaning and sensual pauses.\n\n" +
         "👇 Pick a level:",
-      { reply_markup: intensityKeyboard(current) }
+      { reply_markup: voiceKeyboard(current) }
     );
   });
 
@@ -269,7 +262,7 @@ function createBot(): Bot {
     // Le clavier peut être sous un message texte OU sous un vocal :
     // on met juste à jour les boutons (déplacement du ✅).
     await ctx
-      .editMessageReplyMarkup({ reply_markup: intensityKeyboard(level) })
+      .editMessageReplyMarkup({ reply_markup: voiceKeyboard(level) })
       .catch(() => {});
   });
 
@@ -294,7 +287,7 @@ function createBot(): Bot {
           "Hey you, I missed you today...\n\n" +
           "🎭 STEP 3: tap the VIBE (🥰 🔥 😢 …) → you get the voice note 🎤\n\n" +
           "🌡️ Intensity of the voice — tap to change:",
-        { reply_markup: intensityKeyboard(currentLevel) }
+        { reply_markup: voiceKeyboard(currentLevel) }
       )
       .catch(() => {});
   });
@@ -314,7 +307,10 @@ function createBot(): Bot {
       return;
     }
 
-    const selectedKey = await getSelectedModel(ctx.from.id);
+    const [selectedKey, storedLevel] = await Promise.all([
+      getSelectedModel(ctx.from.id),
+      getIntensity(ctx.from.id).catch(() => null),
+    ]);
     const model = selectedKey ? modelByKey(selectedKey) : undefined;
     if (!model) {
       await sendModelPicker(
@@ -331,7 +327,7 @@ function createBot(): Bot {
       messageId: ctx.message.message_id,
     });
     await ctx.reply("🎭 Last tap — pick the vibe of the voice note 👇", {
-      reply_markup: moodKeyboard(),
+      reply_markup: voiceKeyboard(storedLevel ?? DEFAULT_INTENSITY),
       reply_parameters: { message_id: ctx.message.message_id },
     });
   });
