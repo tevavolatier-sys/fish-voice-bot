@@ -11,22 +11,18 @@ import {
 } from "../lib/config.js";
 import {
   getIntensity,
-  getPendingVoice,
   getSelectedModel,
   hasRedisEnv,
   readStats,
   recordGeneration,
   resetStats,
   setIntensity,
-  setPendingVoice,
   setSelectedModel,
 } from "../lib/redis.js";
 import { FishError, generateVoice } from "../lib/fish.js";
 import {
   DEFAULT_INTENSITY,
-  DEFAULT_MOOD,
   INTENSITY_LEVELS,
-  MOODS,
   enrichProvider,
   enrichWithEmotionTags,
 } from "../lib/enrich.js";
@@ -44,21 +40,13 @@ async function sendModelPicker(ctx: Context, intro: string): Promise<void> {
   await ctx.reply(intro, { reply_markup: modelKeyboard() });
 }
 
-// ---------- Clavier unifié : ambiances 🎭 + intensité 🌡️ ----------
-// TOUJOURS affiché ensemble (demande de Teva : l'intensité d'excitation
-// reste accessible en permanence). Un tap d'ambiance = génération/re-
-// génération du dernier texte ; un tap d'intensité = change le niveau (✅).
-function voiceKeyboard(currentLevel?: number): InlineKeyboard {
+// ---------- Clavier d'intensité ----------
+// Affiché sous chaque vocal et sous le choix de voix : le niveau actif porte un ✅.
+function intensityKeyboard(current?: number): InlineKeyboard {
   const kb = new InlineKeyboard();
-  kb.text(MOODS[DEFAULT_MOOD].label + " — let the bot feel it", `mood:${DEFAULT_MOOD}`).row();
-  const keys = Object.keys(MOODS).filter((k) => k !== DEFAULT_MOOD);
-  keys.forEach((k, i) => {
-    kb.text(MOODS[k].label, `mood:${k}`);
-    if (i % 4 === 3) kb.row();
-  });
   const entries = Object.entries(INTENSITY_LEVELS);
   entries.forEach(([level, cfg], i) => {
-    const active = Number(level) === currentLevel;
+    const active = Number(level) === current;
     kb.text(`${active ? "✅ " : ""}${cfg.label}`, `level:${level}`);
     if (i % 2 === 1) kb.row();
   });
@@ -72,30 +60,22 @@ async function generateAndReply(
   text: string,
   messageId: number,
   userId: number,
-  intensity: number,
-  moodKey: string = DEFAULT_MOOD
+  intensity: number
 ): Promise<void> {
   try {
     await ctx.replyWithChatAction("record_voice").catch(() => {});
     // Ajout automatique des tags d'émotion (texte brut conservé en cas d'échec)
-    const finalText = await enrichWithEmotionTags(text, intensity, false, moodKey);
+    const finalText = await enrichWithEmotionTags(text, intensity);
     const audio = await generateVoice(finalText, model.referenceId);
     // Si des tags ont été ajoutés, on les montre en légende pour que
     // l'opérateur voie ce qui a été utilisé (limite caption Telegram : 1024)
-    const moodLabel = MOODS[moodKey]?.label ?? MOODS[DEFAULT_MOOD].label;
     const caption =
-      finalText !== text ? `${moodLabel} · ${finalText}`.slice(0, 1024) : undefined;
-    // Boutons sous chaque vocal : ambiances (re-génère le MÊME texte) +
-    // intensité toujours accessible (✅ sur le niveau actif).
+      finalText !== text ? `🎭 ${finalText}`.slice(0, 1024) : undefined;
+    // Boutons d'intensité sous chaque vocal : changement en un tap
     await ctx.replyWithVoice(new InputFile(audio, "voice.mp3"), {
-      // Le message d'origine peut avoir été supprimé entre-temps : on envoie
-      // quand même le vocal au lieu d'échouer.
-      reply_parameters: {
-        message_id: messageId,
-        allow_sending_without_reply: true,
-      },
+      reply_parameters: { message_id: messageId },
       caption,
-      reply_markup: voiceKeyboard(intensity),
+      reply_markup: intensityKeyboard(intensity),
     });
     await recordGeneration(userId, model.key, text.length);
   } catch (err) {
@@ -158,7 +138,7 @@ function createBot(): Bot {
         "😇 Normal = no sexualization at all.\n" +
         "The hotter the level, the more breathing, moaning and sensual pauses.\n\n" +
         "👇 Pick a level:",
-      { reply_markup: voiceKeyboard(current) }
+      { reply_markup: intensityKeyboard(current) }
     );
   });
 
@@ -167,17 +147,16 @@ function createBot(): Bot {
       "📖 TUTORIAL — HOW TO MAKE A VOICE NOTE\n\n" +
         "1️⃣ Type /voice\n" +
         "2️⃣ Tap the girl\n" +
-        "3️⃣ Write your message as if SHE was the one talking, and send it\n" +
-        "4️⃣ Tap the VIBE 🎭 (🥰 Sweet, 🔥 Hot, 😢 Sad… or 🎲 Auto)\n" +
-        "5️⃣ You receive the voice note 🎤 → send it to the client\n\n" +
-        "🔁 NOT HAPPY WITH IT? Tap another vibe UNDER the voice note:\n" +
-        "the same text is re-recorded in that new vibe. Magic. ✨\n\n" +
+        "3️⃣ Write your message as if SHE was the one talking\n" +
+        "4️⃣ Send the message\n" +
+        "5️⃣ Wait a few seconds\n" +
+        "6️⃣ You receive the voice note 🎤 → send it to the client\n\n" +
         "✅ DO THIS:\n" +
         "• Short sentences, like a real voice note\n" +
         "• Write normally, emotions are added AUTOMATICALLY ✨\n\n" +
-        "🌡️ INTENSITY (how sexual the voice gets): /level\n" +
+        "🌡️ INTENSITY: use the buttons under each voice note (or /level):\n" +
         "😇 Normal (no sexualization) → 🌶️ Light → 🌶️🌶️ Hot → 🌶️🌶️🌶️ Very hot\n" +
-        "The vibe = the emotion · the level = how hot. They work together.\n\n" +
+        "The hotter, the more breathing, moaning and pauses.\n\n" +
         "❌ DON'T DO THIS:\n" +
         `• A text longer than ${MAX_CHARS} characters (the bot will refuse)\n` +
         "• Writing like a robot (\"Hello. How are you.\")\n\n" +
@@ -262,7 +241,7 @@ function createBot(): Bot {
     // Le clavier peut être sous un message texte OU sous un vocal :
     // on met juste à jour les boutons (déplacement du ✅).
     await ctx
-      .editMessageReplyMarkup({ reply_markup: voiceKeyboard(level) })
+      .editMessageReplyMarkup({ reply_markup: intensityKeyboard(level) })
       .catch(() => {});
   });
 
@@ -280,14 +259,15 @@ function createBot(): Bot {
     await ctx
       .editMessageText(
         `✅ Voice selected: ${model.name}\n\n` +
-          "📝 STEP 2: write your message and send it\n" +
+          "📝 STEP 2 of 3: write your message\n" +
           "• Write as if SHE was the one talking\n" +
-          "• Short, natural sentences\n\n" +
+          "• Short, natural sentences\n" +
+          "• Write normally: emotions are added AUTOMATICALLY ✨\n\n" +
           "Example:\n" +
           "Hey you, I missed you today...\n\n" +
-          "🎭 STEP 3: tap the VIBE (🥰 🔥 😢 …) → you get the voice note 🎤\n\n" +
+          "📤 STEP 3 of 3: send your message, wait a few seconds, and you get the voice note 🎤\n\n" +
           "🌡️ Intensity of the voice — tap to change:",
-        { reply_markup: voiceKeyboard(currentLevel) }
+        { reply_markup: intensityKeyboard(currentLevel) }
       )
       .catch(() => {});
   });
@@ -319,61 +299,17 @@ function createBot(): Bot {
       );
       return;
     }
+    const intensity = storedLevel ?? DEFAULT_INTENSITY;
 
-    // Texte mémorisé 30 min → l'opérateur choisit l'AMBIANCE en un tap.
-    // (Les boutons sous le vocal re-génèrent ce même texte.)
-    await setPendingVoice(ctx.from.id, {
-      text,
-      messageId: ctx.message.message_id,
-    });
-    await ctx.reply("🎭 Last tap — pick the vibe of the voice note 👇", {
-      reply_markup: voiceKeyboard(storedLevel ?? DEFAULT_INTENSITY),
-      reply_parameters: { message_id: ctx.message.message_id },
-    });
-  });
-
-  // Choix d'ambiance (🎭) → génération. Le même clavier est sous chaque
-  // vocal : un tap re-génère le dernier texte dans une autre ambiance.
-  bot.callbackQuery(/^mood:(.+)$/, async (ctx) => {
-    const moodKey = ctx.match[1];
-    const mood = MOODS[moodKey];
-    if (!mood) {
-      await ctx.answerCallbackQuery({ text: "Unknown vibe." });
-      return;
-    }
-    const [pending, selectedKey, storedLevel] = await Promise.all([
-      getPendingVoice(ctx.from.id).catch(() => null),
-      getSelectedModel(ctx.from.id),
-      getIntensity(ctx.from.id).catch(() => null),
-    ]);
-    if (!pending?.text) {
-      await ctx.answerCallbackQuery({
-        text: "I lost your text (30 min max) — send it again 😉",
-      });
-      return;
-    }
-    const model = selectedKey ? modelByKey(selectedKey) : undefined;
-    if (!model) {
-      await ctx.answerCallbackQuery({ text: "Pick the girl first: /voice" });
-      return;
-    }
-    await ctx.answerCallbackQuery({ text: `${mood.label} — recording… 🎙️` });
-    // Sur le message-picker (texte) : on fige le choix et on retire les
-    // boutons (évite le double-tap). Sur un vocal (caption), l'édition de
-    // texte échoue → on laisse les boutons pour pouvoir re-générer encore.
-    await ctx
-      .editMessageText(`🎙️ ${mood.label} — generating your voice note…`)
-      .catch(() => {});
-
+    // Réponse 200 immédiate au webhook, génération en arrière-plan (Fluid Compute)
     waitUntil(
       generateAndReply(
         ctx,
         model,
-        pending.text,
-        pending.messageId,
+        text,
+        ctx.message.message_id,
         ctx.from.id,
-        storedLevel ?? DEFAULT_INTENSITY,
-        moodKey
+        intensity
       )
     );
   });
