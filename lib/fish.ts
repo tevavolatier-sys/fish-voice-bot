@@ -3,6 +3,13 @@
 const FISH_TTS_URL = "https://api.fish.audio/v1/tts";
 const ATTEMPT_TIMEOUT_MS = 25_000;
 
+// Modèle TTS Fish Audio. Le défaut est le modèle GRATUIT ; pour un rendu
+// NSFW nettement meilleur (gémissements, respirations), mettre FISH_MODEL=s1
+// dans les variables Vercel (payant, facturé aux crédits par génération).
+function fishModel(): string {
+  return process.env.FISH_MODEL?.trim() || "s2.1-pro-free";
+}
+
 /** Erreur avec un message clair destiné à l'opérateur (en français) */
 export class FishError extends Error {
   constructor(public readonly userMessage: string, detail: string) {
@@ -67,7 +74,7 @@ export async function generateVoice(
         headers: {
           Authorization: `Bearer ${process.env.FISH_API_KEY}`,
           "Content-Type": "application/json",
-          model: "s2.1-pro-free",
+          model: fishModel(),
         },
         body: JSON.stringify({
           text,
