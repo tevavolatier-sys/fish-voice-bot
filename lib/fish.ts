@@ -3,11 +3,13 @@
 const FISH_TTS_URL = "https://api.fish.audio/v1/tts";
 const ATTEMPT_TIMEOUT_MS = 25_000;
 
-// Modèle TTS Fish Audio. Défaut : s1 (premium, payant aux crédits — rendu
-// NSFW bien meilleur que le gratuit, choix Teva 2026-07-23). Pour revenir au
-// gratuit sans toucher au code : FISH_MODEL=s2.1-pro-free dans Vercel.
+// Modèle TTS Fish Audio. Défaut : s2.1-pro (premium, payant aux crédits).
+// ⚠️ NE PAS mettre "s1" : il attend des tags (parenthèses) en début de
+// phrase — nos tags [crochets] ne sont pas reconnus et sont PRONONCÉS
+// (mots inventés, bug du 2026-07-23). La famille s2.x lit les [crochets].
+// Repli gratuit sans toucher au code : FISH_MODEL=s2.1-pro-free dans Vercel.
 function fishModel(): string {
-  return process.env.FISH_MODEL?.trim() || "s1";
+  return process.env.FISH_MODEL?.trim() || "s2.1-pro";
 }
 
 /** Erreur avec un message clair destiné à l'opérateur (en français) */
