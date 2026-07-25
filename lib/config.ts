@@ -18,7 +18,8 @@ export interface VoiceModel {
 export const MODELS: VoiceModel[] = [
   { key: "lea", name: "Lea", referenceId: "a71f0b05f92b4b749b477f5b1001c95f" },
   { key: "jade", name: "Jade", referenceId: "106e5e3c22f5471d96a9401095ae50be" },
-  { key: "olivia", name: "Olivia", referenceId: "6dd1a537aae14896967955481b85d472" },
+  // Olivia retirée de l'agence (2026-07-25). Son clone vocal existait sous
+  // le reference_id 6dd1a537aae14896967955481b85d472 si besoin un jour.
   { key: "marie", name: "Marie US", referenceId: "REFERENCE_ID_MARIE_US" },
   { key: "sienna", name: "Sienna", referenceId: "REFERENCE_ID_SIENNA" },
   { key: "skye", name: "Skye", referenceId: "REFERENCE_ID_SKYE" },
