@@ -12,18 +12,34 @@ export interface VoiceModel {
   name: string;
   /** reference_id du clone vocal sur fish.audio */
   referenceId: string;
+  /**
+   * Langue dans laquelle la modèle PARLE. Les opérateurs (Philippines)
+   * écrivent en anglais : pour une voix "fr", le bot TRADUIT le texte en
+   * français avant la synthèse. Pour une voix "en", le texte part tel quel.
+   */
+  lang: "fr" | "en";
 }
 
 /** Les modèles et leur clone vocal Fish Audio */
 export const MODELS: VoiceModel[] = [
-  { key: "lea", name: "Lea", referenceId: "a71f0b05f92b4b749b477f5b1001c95f" },
-  { key: "jade", name: "Jade", referenceId: "106e5e3c22f5471d96a9401095ae50be" },
+  // Lea et Jade parlent ANGLAIS (voix EN → texte lu tel quel, pas de traduction)
+  { key: "lea", name: "Lea", referenceId: "a71f0b05f92b4b749b477f5b1001c95f", lang: "en" },
+  { key: "jade", name: "Jade", referenceId: "106e5e3c22f5471d96a9401095ae50be", lang: "en" },
   // Olivia retirée de l'agence (2026-07-25). Son clone vocal existait sous
   // le reference_id 6dd1a537aae14896967955481b85d472 si besoin un jour.
-  { key: "marie", name: "Marie US", referenceId: "REFERENCE_ID_MARIE_US" },
-  { key: "sienna", name: "Sienna", referenceId: "REFERENCE_ID_SIENNA" },
-  { key: "skye", name: "Skye", referenceId: "REFERENCE_ID_SKYE" },
+  { key: "sienna", name: "Sienna", referenceId: "aa13d26cfc6e41f1b1f7a02bf5baa606", lang: "fr" },
+  { key: "lisa", name: "Lisa", referenceId: "8569d3f9471941f380ff3710fcc28d29", lang: "fr" },
+  { key: "marie", name: "Marie US", referenceId: "REFERENCE_ID_MARIE_US", lang: "en" },
+  { key: "skye", name: "Skye", referenceId: "REFERENCE_ID_SKYE", lang: "en" },
 ];
+
+/** Drapeau affiché à côté du nom : la langue que la voix va parler */
+export const LANG_FLAG: Record<VoiceModel["lang"], string> = { fr: "🇫🇷", en: "🇺🇸" };
+
+/** Nom + drapeau, pour les boutons et les légendes */
+export function modelLabel(m: VoiceModel): string {
+  return `${m.name} ${LANG_FLAG[m.lang]}`;
+}
 
 /**
  * Opérateurs autorisés individuellement (accès en chat privé avec le bot).

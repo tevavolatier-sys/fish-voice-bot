@@ -80,6 +80,12 @@ export async function shouldWarnCredits(): Promise<boolean> {
   return ok === "OK";
 }
 
+/** Alerte « traduction FR en panne » : au plus une fois par heure */
+export async function shouldWarnTranslate(): Promise<boolean> {
+  const ok = await getRedis().set("translate_warned", "1", { nx: true, ex: 3_600 });
+  return ok === "OK";
+}
+
 /** Incrémente les compteurs après une génération réussie */
 export async function recordGeneration(
   userId: number,

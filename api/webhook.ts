@@ -7,6 +7,7 @@ import {
   VoiceModel,
   isAllowed,
   modelByKey,
+  modelLabel,
   operatorName,
 } from "../lib/config.js";
 import {
@@ -27,6 +28,7 @@ import {
   DEFAULT_INTENSITY,
   INTENSITY_LEVELS,
   enrichProvider,
+  VOICE_STYLES,
   enrichWithEmotionTags,
 } from "../lib/enrich.js";
 
@@ -35,7 +37,7 @@ export const maxDuration = 60;
 // ---------- Clavier de sélection ----------
 function modelKeyboard(): InlineKeyboard {
   const kb = new InlineKeyboard();
-  for (const m of ACTIVE_MODELS) kb.text(`🎤 ${m.name}`, `voice:${m.key}`).row();
+  for (const m of ACTIVE_MODELS) kb.text(`🎤 ${modelLabel(m)}`, `voice:${m.key}`).row();
   return kb;
 }
 
@@ -97,28 +99,56 @@ async function generateAndReply(
 ): Promise<void> {
   try {
     await ctx.replyWithChatAction("record_voice").catch(() => {});
-    // Ajout automatique des tags d'émotion (texte brut conservé en cas d'échec)
-    const finalText = await enrichWithEmotionTags(text, intensity);
-    const audio = await generateVoice(finalText, model.referenceId);
-    // Légende : la voix utilisée (+ n° de partie pour les textes longs) et,
-    // si des tags ont été ajoutés, le texte utilisé (limite Telegram : 1024)
-    const caption = [
-      `🎤 ${model.name}${partLabel ? ` · part ${partLabel}` : ""}`,
-      finalText !== text ? `🎭 ${finalText}` : null,
-    ]
-      .filter(Boolean)
-      .join("\n")
-      .slice(0, 1024);
-    // Boutons d'intensité sous chaque vocal : changement en un tap
-    await ctx.replyWithVoice(new InputFile(audio, "voice.mp3"), {
-      reply_parameters: {
-        message_id: messageId,
-        allow_sending_without_reply: true,
-      },
-      caption,
-      reply_markup: intensityKeyboard(intensity),
-    });
-    await recordGeneration(userId, model.key, text.length);
+    // Le texte est lu TEL QUEL (la traduction auto EN→FR a été retirée :
+    // pour une voix 🇫🇷, écrire directement en français).
+    const spoken = text;
+    // ── 3 VERSIONS du même vocal, 3 interprétations (🌙 Soft / ✨ Playful /
+    // 🔥 Intense) : même texte, tags/intonation différents, synthèses en
+    // parallèle. L'opérateur garde celle qui colle le mieux au fan.
+    // Si un style échoue, les autres partent quand même.
+    const variants = await Promise.all(
+      VOICE_STYLES.map(async (style) => {
+        try {
+          const finalText = await enrichWithEmotionTags(spoken, intensity, true, style.key);
+          const audio = await generateVoice(finalText, model.referenceId);
+          return { style, finalText, audio };
+        } catch (err) {
+          console.error(`Variante ${style.key} échouée:`, err);
+          return null;
+        }
+      })
+    );
+    const ok = variants.filter((v): v is NonNullable<typeof v> => v !== null);
+    if (ok.length === 0) {
+      // Aucune variante : on remonte la dernière erreur Fish pour le message utilisateur
+      throw new FishError(
+        "❌ All 3 versions failed to generate. Try again; if it keeps happening, tell the admin.",
+        "3 variantes KO"
+      );
+    }
+    for (let i = 0; i < ok.length; i++) {
+      const { style, finalText, audio } = ok[i];
+      // Légende : voix (+ drapeau, + n° de partie), style, texte FRANÇAIS
+      // réellement dit si traduit, et les tags (limite Telegram : 1024)
+      const caption = [
+        `🎤 ${modelLabel(model)}${partLabel ? ` · part ${partLabel}` : ""} · ${style.label} (${i + 1}/${ok.length})`,
+        i === 0 && spoken !== text ? `🇫🇷 ${spoken}` : null,
+        finalText !== spoken ? `🎭 ${finalText}` : null,
+      ]
+        .filter(Boolean)
+        .join("\n")
+        .slice(0, 1024);
+      // Boutons d'intensité sous le DERNIER vocal seulement (pas 3× le même clavier)
+      await ctx.replyWithVoice(new InputFile(audio, `voice-${style.key}.mp3`), {
+        reply_parameters: {
+          message_id: messageId,
+          allow_sending_without_reply: true,
+        },
+        caption,
+        ...(i === ok.length - 1 ? { reply_markup: intensityKeyboard(intensity) } : {}),
+      });
+    }
+    await recordGeneration(userId, model.key, text.length * ok.length);
 
     // Surveillance des crédits (le modèle s1 est payant) : sous le seuil,
     // alerte à l'admin — au plus une fois par 24 h.
@@ -211,10 +241,12 @@ function createBot(): Bot {
       "📖 TUTORIAL — HOW TO MAKE A VOICE NOTE\n\n" +
         "1️⃣ Type /voice\n" +
         "2️⃣ Tap the girl\n" +
-        "3️⃣ Write your message as if SHE was the one talking\n" +
+        "3️⃣ Write your message as if SHE was the one talking — in the language of the voice\n" +
+        "   🇫🇷 = French voice → write in FRENCH\n" +
+        "   🇺🇸 = English voice → write in ENGLISH\n" +
         "4️⃣ Send the message\n" +
         "5️⃣ Wait a few seconds\n" +
-        "6️⃣ You receive the voice note 🎤 → send it to the client\n\n" +
+        "6️⃣ You receive 3 VERSIONS of the voice note 🎤 — same words, 3 readings: 🌙 Soft · ✨ Playful · 🔥 Intense → pick the one that fits the fan and send it\n\n" +
         "✅ DO THIS:\n" +
         "• Short sentences, like a real voice note\n" +
         "• Write normally, emotions are added AUTOMATICALLY ✨\n\n" +
@@ -276,7 +308,7 @@ function createBot(): Bot {
     const modelLines = ACTIVE_MODELS.map((m) => {
       const gen = Number(stats.genByModel[m.key] ?? 0);
       const chars = Number(stats.charsByModel[m.key] ?? 0);
-      return `• ${m.name}: ${gen} voice notes, ${chars} characters`;
+      return `• ${modelLabel(m)}: ${gen} voice notes, ${chars} characters`;
     }).join("\n");
 
     const userIds = new Set([
@@ -329,12 +361,15 @@ function createBot(): Bot {
       return;
     }
     await setSelectedModel(ctx.from.id, model.key);
-    await ctx.answerCallbackQuery({ text: `Voice selected: ${model.name}` });
+    await ctx.answerCallbackQuery({ text: `Voice selected: ${modelLabel(model)}` });
     const currentLevel =
       (await getIntensity(ctx.from.id).catch(() => null)) ?? DEFAULT_INTENSITY;
     await ctx
       .editMessageText(
-        `✅ Voice selected: ${model.name}\n\n` +
+        `✅ Voice selected: ${modelLabel(model)}\n\n` +
+          (model.lang === "fr"
+            ? "🇫🇷 She speaks FRENCH: write your message IN FRENCH, it's spoken as-is.\n\n"
+            : "🇺🇸 She speaks ENGLISH: write your message in English, it's spoken as-is.\n\n") +
           "📝 STEP 2 of 3: write your message\n" +
           "• Write as if SHE was the one talking\n" +
           "• Short, natural sentences\n" +
@@ -384,7 +419,7 @@ function createBot(): Bot {
     const chunks = splitLongText(text, MAX_CHARS);
     if (chunks.length > 1) {
       await ctx.reply(
-        `📚 Long text — I'll send ${chunks.length} voice notes, in order. Hold on…`
+        `📚 Long text — I'll send ${chunks.length} parts × 3 versions each, in order. Hold on…`
       );
     }
 
@@ -473,7 +508,25 @@ export async function POST(req: Request): Promise<Response> {
 
 // Diagnostic : indique quelles variables d'environnement sont présentes
 // (booléens uniquement, aucune valeur n'est exposée)
-export function GET(): Response {
+export async function GET(req: Request): Promise<Response> {
+  // Diagnostic de traduction DEPUIS le serveur (?t=texte&s=secret) : permet de
+  // vérifier le contournement du filtre Gemini sans passer par Telegram.
+  const u = new URL(req.url);
+  const t = u.searchParams.get("t");
+  if (t) {
+    if (u.searchParams.get("s") !== (process.env.DIAG_SECRET ?? process.env.TELEGRAM_WEBHOOK_SECRET)) {
+      return Response.json({ error: "forbidden" }, { status: 403 });
+    }
+    try {
+      const fr = t.slice(0, 500);
+      const level = Number(u.searchParams.get("lvl") ?? DEFAULT_INTENSITY);
+      const style = u.searchParams.get("style") ?? undefined;
+      const tagged = await enrichWithEmotionTags(fr, level, Boolean(style), style);
+      return Response.json({ ok: true, fr, tagged, tagsAdded: tagged !== fr, style: style ?? null });
+    } catch (err) {
+      return Response.json({ ok: false, error: err instanceof Error ? err.message : String(err) });
+    }
+  }
   return Response.json({
     status: "Fish Voice Bot : fonction en ligne ✅",
     env: {
@@ -483,6 +536,6 @@ export function GET(): Response {
       UPSTASH_REDIS: hasRedisEnv(),
     },
     enrichissementEmotions: enrichProvider(),
-    voixConfigurees: ACTIVE_MODELS.map((m) => m.name),
+    voixConfigurees: ACTIVE_MODELS.map((m) => modelLabel(m)),
   });
 }
