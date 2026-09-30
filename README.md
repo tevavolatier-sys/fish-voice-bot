@@ -16,6 +16,7 @@ Bot Telegram interne pour l'équipe : chaque opérateur choisit une modèle, env
 | `/aide` | Opérateurs | Liste des tags d'émotion `[whisper]`, `[excited]`… |
 | `/stats` | Admin uniquement | Générations + caractères par modèle et par opérateur |
 | `/stats reset` | Admin uniquement | Remet les compteurs à zéro |
+| 🎬 *(bouton sous chaque vocal)* | Opérateurs | Transforme CE vocal en vidéo fond noir (MP4 vertical 720×1280), sans crédit Fish en plus — pour les fans qui veulent « une vidéo avec mon nom » |
 
 ---
 

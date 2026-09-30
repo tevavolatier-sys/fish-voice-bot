@@ -86,6 +86,57 @@ export async function shouldWarnTranslate(): Promise<boolean> {
   return ok === "OK";
 }
 
+/**
+ * 🎬 Source d'une vidéo : le vocal exact (file_id Telegram) derrière le
+ * bouton « 🎬 Video ». Gardé 7 jours : on peut faire la vidéo plus tard.
+ */
+export interface VideoSource {
+  f: string; // file_id Telegram du vocal
+  m: string; // clé de la modèle
+  s?: string; // style (🌙 Soft…)
+}
+
+export async function setVideoSource(token: string, src: VideoSource): Promise<void> {
+  await getRedis().set(`vidsrc:${token}`, JSON.stringify(src), { ex: 7 * 86_400 });
+}
+
+export async function getVideoSource(token: string): Promise<VideoSource | null> {
+  const raw = await getRedis().get<string | VideoSource>(`vidsrc:${token}`);
+  if (!raw) return null;
+  // Upstash désérialise parfois le JSON lui-même
+  return typeof raw === "string" ? (JSON.parse(raw) as VideoSource) : raw;
+}
+
+/** Anti double-clic sur 🎬 : une seule vidéo en cours par vocal (60 s). */
+export async function lockVideo(token: string): Promise<boolean> {
+  const ok = await getRedis().set(`vidlock:${token}`, "1", { nx: true, ex: 60 });
+  return ok === "OK";
+}
+
+export async function unlockVideo(token: string): Promise<void> {
+  await getRedis().del(`vidlock:${token}`);
+}
+
+/** Compteur de vidéos (par modèle et par opérateur), affiché dans /stats */
+export async function recordVideo(userId: number, modelKey: string): Promise<void> {
+  const p = getRedis().pipeline();
+  p.hincrby("stats:video:model", modelKey, 1);
+  p.hincrby("stats:video:user", String(userId), 1);
+  await p.exec();
+}
+
+export async function readVideoStats(): Promise<{
+  byModel: Record<string, number>;
+  byUser: Record<string, number>;
+}> {
+  const redis = getRedis();
+  const [byModel, byUser] = await Promise.all([
+    redis.hgetall<Record<string, number>>("stats:video:model"),
+    redis.hgetall<Record<string, number>>("stats:video:user"),
+  ]);
+  return { byModel: byModel ?? {}, byUser: byUser ?? {} };
+}
+
 /** Incrémente les compteurs après une génération réussie */
 export async function recordGeneration(
   userId: number,
@@ -121,5 +172,5 @@ export async function readStats(): Promise<Stats> {
 }
 
 export async function resetStats(): Promise<void> {
-  await getRedis().del(...STATS_KEYS);
+  await getRedis().del(...STATS_KEYS, "stats:video:model", "stats:video:user");
 }

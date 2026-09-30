@@ -1,5 +1,6 @@
 import { Bot, Context, InlineKeyboard, InputFile, webhookCallback } from "grammy";
 import { waitUntil } from "@vercel/functions";
+import { randomUUID } from "node:crypto";
 import {
   ACTIVE_MODELS,
   ADMIN_ID,
@@ -14,15 +15,22 @@ import {
   getIntensity,
   getLastText,
   getSelectedModel,
+  getVideoSource,
   hasRedisEnv,
+  lockVideo,
   readStats,
+  readVideoStats,
   recordGeneration,
+  recordVideo,
   resetStats,
   setIntensity,
   setLastText,
   setSelectedModel,
+  setVideoSource,
   shouldWarnCredits,
+  unlockVideo,
 } from "../lib/redis.js";
+import { VIDEO_HEIGHT, VIDEO_WIDTH, blackVideoFromAudio, videoSelfTest } from "../lib/video.js";
 import { FishError, generateVoice, getFishCredits } from "../lib/fish.js";
 import {
   DEFAULT_INTENSITY,
@@ -47,8 +55,9 @@ async function sendModelPicker(ctx: Context, intro: string): Promise<void> {
 
 // ---------- Clavier d'intensité ----------
 // Affiché sous chaque vocal et sous le choix de voix : le niveau actif porte un ✅.
-function intensityKeyboard(current?: number): InlineKeyboard {
-  const kb = new InlineKeyboard();
+// `base` : clavier déjà commencé (ex. bouton 🎬 Video) auquel on ajoute les niveaux.
+function intensityKeyboard(current?: number, base?: InlineKeyboard): InlineKeyboard {
+  const kb = base ?? new InlineKeyboard();
   const entries = Object.entries(INTENSITY_LEVELS);
   entries.forEach(([level, cfg], i) => {
     const active = Number(level) === current;
@@ -57,6 +66,17 @@ function intensityKeyboard(current?: number): InlineKeyboard {
   });
   return kb;
 }
+
+// ---------- Clavier sous un vocal ----------
+// « 🎬 Video » sous CHAQUE version (on transforme la prise qu'on préfère),
+// + les niveaux d'intensité sous la dernière seulement.
+function voiceKeyboard(videoToken: string, intensity?: number): InlineKeyboard {
+  const kb = new InlineKeyboard().text("🎬 Video", `vid:${videoToken}`);
+  if (intensity === undefined) return kb;
+  return intensityKeyboard(intensity, kb.row());
+}
+
+const newVideoToken = () => randomUUID().replace(/-/g, "").slice(0, 16);
 
 // ---------- Découpage des textes longs ----------
 // Un texte > MAX_CHARS est découpé en morceaux ≤ MAX_CHARS aux fins de
@@ -138,15 +158,23 @@ async function generateAndReply(
         .filter(Boolean)
         .join("\n")
         .slice(0, 1024);
-      // Boutons d'intensité sous le DERNIER vocal seulement (pas 3× le même clavier)
-      await ctx.replyWithVoice(new InputFile(audio, `voice-${style.key}.mp3`), {
+      // 🎬 sous chaque version ; niveaux d'intensité sous la DERNIÈRE seulement
+      const videoToken = newVideoToken();
+      const sent = await ctx.replyWithVoice(new InputFile(audio, `voice-${style.key}.mp3`), {
         reply_parameters: {
           message_id: messageId,
           allow_sending_without_reply: true,
         },
         caption,
-        ...(i === ok.length - 1 ? { reply_markup: intensityKeyboard(intensity) } : {}),
+        reply_markup: voiceKeyboard(videoToken, i === ok.length - 1 ? intensity : undefined),
       });
+      // Le bouton 🎬 retrouvera CE vocal (file_id) pour en faire la vidéo
+      const fileId = sent.voice?.file_id;
+      if (fileId) {
+        await setVideoSource(videoToken, { f: fileId, m: model.key, s: style.label }).catch(
+          (err) => console.error("Source vidéo non enregistrée:", err)
+        );
+      }
     }
     await recordGeneration(userId, model.key, text.length * ok.length);
 
@@ -246,7 +274,8 @@ function createBot(): Bot {
         "   🇺🇸 = English voice → write in ENGLISH\n" +
         "4️⃣ Send the message\n" +
         "5️⃣ Wait a few seconds\n" +
-        "6️⃣ You receive 3 VERSIONS of the voice note 🎤 — same words, 3 readings: 🌙 Soft · ✨ Playful · 🔥 Intense → pick the one that fits the fan and send it\n\n" +
+        "6️⃣ You receive 3 VERSIONS of the voice note 🎤 — same words, 3 readings: 🌙 Soft · ✨ Playful · 🔥 Intense → pick the one that fits the fan and send it\n" +
+        "🎬 Fan wants a VIDEO (\"a video with my name\")? Tap 🎬 Video under the version you like: you get the same voice as a black-screen video, ready to send.\n\n" +
         "✅ DO THIS:\n" +
         "• Short sentences, like a real voice note\n" +
         "• Write normally, emotions are added AUTOMATICALLY ✨\n\n" +
@@ -303,12 +332,16 @@ function createBot(): Bot {
       return;
     }
 
-    const stats = await readStats();
+    const [stats, videos] = await Promise.all([
+      readStats(),
+      readVideoStats().catch(() => ({ byModel: {}, byUser: {} }) as Awaited<ReturnType<typeof readVideoStats>>),
+    ]);
+    const vidSuffix = (n: number) => (n > 0 ? `, 🎬 ${n} video${n > 1 ? "s" : ""}` : "");
 
     const modelLines = ACTIVE_MODELS.map((m) => {
       const gen = Number(stats.genByModel[m.key] ?? 0);
       const chars = Number(stats.charsByModel[m.key] ?? 0);
-      return `• ${modelLabel(m)}: ${gen} voice notes, ${chars} characters`;
+      return `• ${modelLabel(m)}: ${gen} voice notes, ${chars} characters${vidSuffix(Number(videos.byModel[m.key] ?? 0))}`;
     }).join("\n");
 
     const userIds = new Set([
@@ -320,7 +353,7 @@ function createBot(): Bot {
         .map((id) => {
           const gen = Number(stats.genByUser[id] ?? 0);
           const chars = Number(stats.charsByUser[id] ?? 0);
-          return `• ${operatorName(id)}: ${gen} voice notes, ${chars} characters`;
+          return `• ${operatorName(id)}: ${gen} voice notes, ${chars} characters${vidSuffix(Number(videos.byUser[id] ?? 0))}`;
         })
         .join("\n") || "• No voice notes yet";
 
@@ -347,9 +380,18 @@ function createBot(): Bot {
       text: `${cfg.label} — applies to your next voice notes`,
     });
     // Le clavier peut être sous un message texte OU sous un vocal :
-    // on met juste à jour les boutons (déplacement du ✅).
+    // on met juste à jour les boutons (déplacement du ✅), en GARDANT le
+    // bouton 🎬 Video s'il y en a un (sous le dernier vocal).
+    const videoData = (ctx.callbackQuery.message?.reply_markup?.inline_keyboard ?? [])
+      .flat()
+      .map((b) => ("callback_data" in b ? b.callback_data : undefined))
+      .find((d): d is string => typeof d === "string" && d.startsWith("vid:"));
     await ctx
-      .editMessageReplyMarkup({ reply_markup: intensityKeyboard(level) })
+      .editMessageReplyMarkup({
+        reply_markup: videoData
+          ? voiceKeyboard(videoData.slice(4), level)
+          : intensityKeyboard(level),
+      })
       .catch(() => {});
   });
 
@@ -441,6 +483,59 @@ function createBot(): Bot {
     );
   });
 
+  // 🎬 « Video » sous un vocal : même prise, en vidéo fond noir (MP4 vertical)
+  bot.callbackQuery(/^vid:([a-z0-9]{6,32})$/, async (ctx) => {
+    const token = ctx.match[1];
+    const src = await getVideoSource(token).catch(() => null);
+    if (!src) {
+      await ctx.answerCallbackQuery({
+        text: "This voice note is too old — make it again, then tap 🎬.",
+      });
+      return;
+    }
+    if (!(await lockVideo(token).catch(() => true))) {
+      await ctx.answerCallbackQuery({ text: "🎬 Already on its way…" });
+      return;
+    }
+    await ctx.answerCallbackQuery({ text: "🎬 Making the video…" });
+    const replyTo = ctx.callbackQuery.message?.message_id;
+    const userId = ctx.from.id;
+    waitUntil(
+      (async () => {
+        try {
+          await ctx.replyWithChatAction("upload_video").catch(() => {});
+          const file = await ctx.api.getFile(src.f);
+          if (!file.file_path) throw new Error("file_path absent");
+          const res = await fetch(
+            `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${file.file_path}`
+          );
+          if (!res.ok) throw new Error(`téléchargement du vocal: ${res.status}`);
+          const { video, duration } = await blackVideoFromAudio(
+            Buffer.from(await res.arrayBuffer())
+          );
+          const model = modelByKey(src.m);
+          await ctx.replyWithVideo(new InputFile(video, "video.mp4"), {
+            width: VIDEO_WIDTH,
+            height: VIDEO_HEIGHT,
+            duration,
+            supports_streaming: true,
+            caption: `🎬 ${model ? modelLabel(model) : "Voice"}${src.s ? ` · ${src.s}` : ""} — black-screen video, ready to send`,
+            ...(replyTo
+              ? { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } }
+              : {}),
+          });
+          await recordVideo(userId, src.m).catch(() => {});
+        } catch (err) {
+          console.error("Vidéo échouée:", err);
+          await unlockVideo(token).catch(() => {});
+          await ctx
+            .reply("❌ Couldn't make the video. Tap 🎬 again; if it keeps failing, tell the admin.")
+            .catch(() => {});
+        }
+      })()
+    );
+  });
+
   // 🔁 « Try again » après un échec : re-génère le dernier texte (30 min max)
   bot.callbackQuery("retry", async (ctx) => {
     const [last, selectedKey, storedLevel] = await Promise.all([
@@ -512,6 +607,11 @@ export async function GET(req: Request): Promise<Response> {
   // Diagnostic de traduction DEPUIS le serveur (?t=texte&s=secret) : permet de
   // vérifier le contournement du filtre Gemini sans passer par Telegram.
   const u = new URL(req.url);
+  // Auto-test du générateur vidéo sur le serveur (ffmpeg embarqué) : aucun
+  // secret exposé, résultat mis en cache par instance.
+  if (u.searchParams.get("diag") === "video") {
+    return Response.json({ video: await videoSelfTest() });
+  }
   const t = u.searchParams.get("t");
   if (t) {
     if (u.searchParams.get("s") !== (process.env.DIAG_SECRET ?? process.env.TELEGRAM_WEBHOOK_SECRET)) {
