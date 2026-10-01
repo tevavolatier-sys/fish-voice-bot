@@ -85,12 +85,12 @@ export function parseVideoSize(stderr: string): { width: number; height: number 
 //   · moins de basses (pas d'effet de proximité) et d'aigus (la distance),
 //   · une petite pièce : premières réflexions + réverbération courte.
 export const PPV_ROOM = {
-  loudness: -23, // LUFS de la voix avant la pièce (avant : -14, voix « studio »)
+  loudness: -32, // LUFS de la voix avant la pièce (-14 = voix « studio », trop forte)
   highpass: 170, // Hz
   lowpass: 6000, // Hz
-  dry: 0.55, // part de son direct
-  wet: 0.45, // part de la pièce (plus = plus loin)
-  rt60: 0.45, // durée de la réverbération (s) : petite chambre
+  dry: 0.8, // part de son direct
+  wet: 0.2, // part de la pièce (plus = plus loin, plus d'écho)
+  rt60: 0.3, // durée de la réverbération (s) : petite pièce mate
 } as const;
 
 const IR_RATE = 48_000;
