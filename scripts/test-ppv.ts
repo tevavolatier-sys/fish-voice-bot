@@ -9,6 +9,7 @@ import {
   pickTwo,
   voiceStart,
 } from "../lib/ppv.js";
+import { parseSilences, pickNameSpan, voicedSpans } from "../lib/ppv-voice.js";
 
 assert.equal(cleanFanName("julien"), "Julien");
 assert.equal(cleanFanName("  jean   marc "), "Jean marc");
@@ -45,4 +46,30 @@ assert.deepEqual(
   ),
   { width: 1920, height: 1080 }
 );
+// Découpe du prénom : silences → parties parlées → prénom (1re ou dernière)
+const stderr = [
+  "[silencedetect @ 0x1] silence_start: 0",
+  "[silencedetect @ 0x1] silence_end: 0.18 | silence_duration: 0.18",
+  "[silencedetect @ 0x1] silence_start: 2.9",
+  "[silencedetect @ 0x1] silence_end: 3.3 | silence_duration: 0.4",
+  "[silencedetect @ 0x1] silence_start: 4.1",
+].join("\n");
+const sil = parseSilences(stderr, 4.4);
+assert.deepEqual(sil, [
+  { start: 0, end: 0.18 },
+  { start: 2.9, end: 3.3 },
+  { start: 4.1, end: 4.4 },
+]);
+const spans = voicedSpans(sil, 4.4);
+assert.deepEqual(spans, [
+  { start: 0.18, end: 2.9 },
+  { start: 3.3, end: 4.1 },
+]);
+// « … c'est chaud, toi et moi… Julien » : le prénom = dernière partie parlée
+assert.deepEqual(pickNameSpan(spans, "after", 4.4), { start: 3.26, end: 4.14 });
+// « Julien… toi et moi » : 1re partie parlée, trop longue ici → refus (repli)
+assert.equal(pickNameSpan(spans, "before", 4.4), null);
+// Pas de pause du tout : impossible d'isoler le prénom
+assert.equal(pickNameSpan([{ start: 0, end: 3 }], "after", 3), null);
+
 console.log("tests PPV : OK");

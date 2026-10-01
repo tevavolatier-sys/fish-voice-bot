@@ -22,6 +22,8 @@ import {
   armPpvGroup,
   clearPpvParts,
   getPpvParts,
+  getPpvFixed,
+  setPpvFixed,
   getPpvJob,
   getPpvVolume,
   lockPpv,
@@ -44,12 +46,21 @@ import {
   unlockVideo,
 } from "../lib/redis.js";
 import {
+  LINE_KEYS,
+  LINE_LABELS,
+  PPV_FIXED,
+  extractNameAudio,
+  joinFixedAndName,
+  type LineKey,
+} from "../lib/ppv-voice.js";
+import {
   PPV_DEFAULT_MODEL,
   PPV_DEFAULT_VOLUME,
   PPV_LINES,
   PPV_PLACEMENT,
   PPV_VOLUME_LEVELS,
-  ppvLufs,
+  ppvTargetDb,
+  roomVoice,
   cleanFanName,
   fillLine,
   mixVoiceIntoVideo,
@@ -103,6 +114,54 @@ function voiceKeyboard(videoToken: string, intensity?: number): InlineKeyboard {
 const newVideoToken = () => randomUUID().replace(/-/g, "").slice(0, 16);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+// ---------- 🎙️ Parties FIXES des phrases PPV ----------
+// Générées UNE fois (puis réutilisées pour tous les fans) ou remplacées par
+// un vrai enregistrement de la modèle (/ppvfix en légende d'un vocal).
+async function fixedAudio(ctx: Context, model: VoiceModel, key: LineKey): Promise<Buffer> {
+  const stored = await getPpvFixed(model.key, key).catch(() => null);
+  if (stored?.src === "upload") return downloadTelegramFile(ctx, stored.f);
+  if (stored?.src === "tts") return Buffer.from(stored.a, "base64");
+  return newFixedTake(model, key);
+}
+
+async function newFixedTake(model: VoiceModel, key: LineKey): Promise<Buffer> {
+  const audio = await generateVoice(PPV_FIXED[key].text, model.referenceId);
+  await setPpvFixed(model.key, key, {
+    src: "tts",
+    a: audio.toString("base64"),
+    at: new Date().toISOString(),
+  });
+  return audio;
+}
+
+// Une phrase PPV pour un fan : partie fixe + son prénom. Le prénom est pris
+// dans la phrase complète dite par le clone (bonne intonation) ; repli sur
+// le prénom généré seul si la pause qui l'isole n'est pas trouvée.
+async function ppvLine(
+  model: VoiceModel,
+  key: LineKey,
+  fixed: Buffer,
+  name: string
+): Promise<Buffer> {
+  const cfg = PPV_FIXED[key];
+  const sentence = await generateVoice(fillLine(PPV_LINES[key], name), model.referenceId);
+  const isolated = await extractNameAudio(sentence, cfg.name).catch(() => null);
+  const nameAudio =
+    isolated ?? (await generateVoice(fillLine(cfg.nameAlone, name), model.referenceId));
+  return joinFixedAndName(fixed, nameAudio, cfg.name);
+}
+
+const fixedKeyboard = (key: LineKey) =>
+  new InlineKeyboard().text("🔁 New take", `ppvfix:${key}`);
+
+const FIX_ALIASES: Record<string, LineKey> = {
+  preview: "preview",
+  ppv1: "paid1",
+  paid1: "paid1",
+  ppv2: "paid2",
+  paid2: "paid2",
+};
+
 // 🔊 Boutons de volume sous un PPV : 1 (très bas) → 5 (fort), ✅ = actuel
 function ppvVolumeKeyboard(token: string, current: number): InlineKeyboard {
   const kb = new InlineKeyboard();
@@ -119,14 +178,26 @@ const ppvVolumeText = (level: number) =>
 // Les 2 vidéos payantes, voix posée au volume demandé, envoyées dans l'ordre
 async function sendPaidVideos(
   ctx: Context,
-  job: { name: string; v1: Buffer; v2: Buffer; p1: string; p2: string },
+  job: {
+    name: string;
+    v1: Buffer;
+    v2: Buffer;
+    p1: string;
+    p2: string;
+    r1?: number; // niveau « dans la pièce » de la partie fixe (gain identique pour tous)
+    r2?: number;
+  },
   level: number,
   replyTo?: number
 ): Promise<void> {
-  const lufs = ppvLufs(level);
+  const target = ppvTargetDb(level);
   const [paid1, paid2] = await Promise.all([
-    downloadTelegramFile(ctx, job.p1).then((v) => mixVoiceIntoVideo(v, job.v1, PPV_PLACEMENT.paid1, lufs)),
-    downloadTelegramFile(ctx, job.p2).then((v) => mixVoiceIntoVideo(v, job.v2, PPV_PLACEMENT.paid2, lufs)),
+    downloadTelegramFile(ctx, job.p1).then((v) =>
+      mixVoiceIntoVideo(v, job.v1, PPV_PLACEMENT.paid1, target, job.r1)
+    ),
+    downloadTelegramFile(ctx, job.p2).then((v) =>
+      mixVoiceIntoVideo(v, job.v2, PPV_PLACEMENT.paid2, target, job.r2)
+    ),
   ]);
   const slug = job.name.normalize("NFD").replace(/[^\w-]+/g, "").toLowerCase() || "fan";
   const reply = replyTo
@@ -546,10 +617,12 @@ function createBot(): Bot {
       (async () => {
         try {
           await ctx.replyWithChatAction("upload_video").catch(() => {});
-          const [vPreview, vPaid1, vPaid2] = await Promise.all([
-            generateVoice(fillLine(PPV_LINES.preview, name), model.referenceId),
-            generateVoice(fillLine(PPV_LINES.paid1, name), model.referenceId),
-            generateVoice(fillLine(PPV_LINES.paid2, name), model.referenceId),
+          // Parties fixes (identiques pour tous les fans) + le prénom de CE fan
+          const fixed = await Promise.all(LINE_KEYS.map((k) => fixedAudio(ctx, model, k)));
+          const [[vPreview, vPaid1, vPaid2], [ref1, ref2]] = await Promise.all([
+            Promise.all(LINE_KEYS.map((k, i) => ppvLine(model, k, fixed[i], name))),
+            // Niveau de la partie fixe seule : le gain en découle, identique pour tous
+            Promise.all([roomVoice(fixed[1]), roomVoice(fixed[2])]).then((r) => r.map((x) => x.meanDb)),
           ]);
           const level = (await getPpvVolume(userId).catch(() => null)) ?? PPV_DEFAULT_VOLUME;
           const preview = await blackVideoFromAudio(vPreview);
@@ -561,7 +634,15 @@ function createBot(): Bot {
             caption: `🎁 FREE preview · ${name}`,
             ...reply,
           });
-          const job = { name, v1: vPaid1, v2: vPaid2, p1: parts[0].f, p2: parts[1].f };
+          const job = {
+            name,
+            v1: vPaid1,
+            v2: vPaid2,
+            p1: parts[0].f,
+            p2: parts[1].f,
+            r1: ref1,
+            r2: ref2,
+          };
           await sendPaidVideos(ctx, job, level, replyTo);
           // Gardé 6 h : les boutons de volume refont les 2 vidéos avec la même voix
           const token = newVideoToken();
@@ -571,7 +652,11 @@ function createBot(): Bot {
             v2: vPaid2.toString("base64"),
             p1: job.p1,
             p2: job.p2,
+            r1: ref1,
+            r2: ref2,
           }).catch((err) => console.error("PPV non mémorisé:", err));
+          // Libéré AVANT les boutons : un clic immédiat sur un volume doit marcher
+          await unlockPpv(userId).catch(() => {});
           await ctx.reply(ppvVolumeText(level), {
             reply_markup: ppvVolumeKeyboard(token, level),
           });
@@ -622,10 +707,13 @@ function createBot(): Bot {
               v2: Buffer.from(job.v2, "base64"),
               p1: job.p1,
               p2: job.p2,
+              r1: job.r1,
+              r2: job.r2,
             },
             level,
             replyTo
           );
+          await unlockPpv(userId).catch(() => {});
         } catch (err) {
           console.error("PPV (volume) échoué:", err);
           await ctx.reply("❌ Couldn't remake the videos. Tap the level again.").catch(() => {});
@@ -633,6 +721,85 @@ function createBot(): Bot {
           await unlockPpv(userId).catch(() => {});
         }
       })()
+    );
+  });
+
+  // 🎙️ Admin : écouter / refaire les parties fixes des 3 phrases
+  bot.command("ppvfixed", async (ctx) => {
+    if (ctx.from?.id !== ADMIN_ID) return;
+    const model = modelByKey(PPV_DEFAULT_MODEL);
+    if (!model) return;
+    await ctx.reply(
+      "🎙️ FIXED PARTS — the same for every fan, only the name changes.\n" +
+        "Tap 🔁 New take until you like it. To use a REAL recording of the girl instead, send it to me as a voice/audio with the caption /ppvfix preview, /ppvfix ppv1 or /ppvfix ppv2."
+    );
+    // Génération possible (1re fois) : en arrière-plan, sinon Telegram
+    // renvoie la commande au bout de 10 s.
+    waitUntil(
+      (async () => {
+    for (const key of LINE_KEYS) {
+      const stored = await getPpvFixed(model.key, key).catch(() => null);
+      const audio = await fixedAudio(ctx, model, key);
+      const caption = `${LINE_LABELS[key]} · ${stored?.src === "upload" ? "real recording" : "generated take"}\n${PPV_FIXED[key].name === "before" ? "[name] + " : ""}« ${PPV_FIXED[key].text.replace(/\[[^\]]+\]\s*/g, "")} »${PPV_FIXED[key].name === "after" ? " + [name]" : ""}`;
+      await ctx.replyWithAudio(new InputFile(audio, `fixe-${key}.mp3`), {
+        caption,
+        reply_markup: fixedKeyboard(key),
+      });
+    }
+      })().catch(async (err) => {
+        console.error("/ppvfixed échoué:", err);
+        await ctx.reply("❌ Couldn't load the fixed parts — try again.").catch(() => {});
+      })
+    );
+  });
+
+  bot.callbackQuery(/^ppvfix:(preview|paid1|paid2)$/, async (ctx) => {
+    if (ctx.from.id !== ADMIN_ID) {
+      await ctx.answerCallbackQuery({ text: "Admin only." });
+      return;
+    }
+    const key = ctx.match[1] as LineKey;
+    const model = modelByKey(PPV_DEFAULT_MODEL);
+    if (!model) return;
+    await ctx.answerCallbackQuery({ text: "🔁 New take…" });
+    waitUntil(
+      (async () => {
+        try {
+          const audio = await newFixedTake(model, key);
+          await ctx.replyWithAudio(new InputFile(audio, `fixe-${key}.mp3`), {
+            caption: `${LINE_LABELS[key]} · NEW generated take — now used for every fan`,
+            reply_markup: fixedKeyboard(key),
+          });
+        } catch (err) {
+          console.error("Nouvelle prise échouée:", err);
+          await ctx.reply("❌ Couldn't make a new take — try again.").catch(() => {});
+        }
+      })()
+    );
+  });
+
+  // Admin : vrai enregistrement de la modèle comme partie fixe
+  bot.on(["message:voice", "message:audio"], async (ctx, next) => {
+    if (ctx.from?.id !== ADMIN_ID) return next();
+    const m = (ctx.message.caption ?? "").trim().match(/^\/ppvfix(?:@\w+)?\s+(\w+)/i);
+    if (!m) return next();
+    const key = FIX_ALIASES[m[1].toLowerCase()];
+    const model = modelByKey(PPV_DEFAULT_MODEL);
+    if (!key || !model) {
+      await ctx.reply("❌ Use /ppvfix preview, /ppvfix ppv1 or /ppvfix ppv2 as the caption.");
+      return;
+    }
+    const file = ctx.message.voice ?? ctx.message.audio;
+    if (!file) return next();
+    await setPpvFixed(model.key, key, {
+      src: "upload",
+      f: file.file_id,
+      kind: ctx.message.voice ? "voice" : "audio",
+      at: new Date().toISOString(),
+    });
+    await ctx.reply(
+      `✅ ${LINE_LABELS[key]}: this real recording is now the fixed part for every fan.\n` +
+        `Say it like this: ${PPV_FIXED[key].name === "before" ? "(the name will be added BEFORE) " : ""}« ${PPV_FIXED[key].text.replace(/\[[^\]]+\]\s*/g, "")} »${PPV_FIXED[key].name === "after" ? " (the name will be added AFTER)" : ""}`
     );
   });
 

@@ -199,6 +199,8 @@ export interface PpvJob {
   v2: string; // voix PPV 2
   p1: string; // file_id de la vidéo PPV 1
   p2: string; // file_id de la vidéo PPV 2
+  r1?: number; // niveau de la partie fixe 1 « dans la pièce » (dB)
+  r2?: number;
 }
 
 export async function savePpvJob(token: string, job: PpvJob): Promise<void> {
@@ -209,6 +211,25 @@ export async function getPpvJob(token: string): Promise<PpvJob | null> {
   const raw = await getRedis().get<string | PpvJob>(`ppvjob:${token}`);
   if (!raw) return null;
   return typeof raw === "string" ? (JSON.parse(raw) as PpvJob) : raw;
+}
+
+/**
+ * Partie FIXE d'une phrase PPV (la même pour tous les fans) :
+ *   tts    → prise générée une fois par Fish (MP3 en base64)
+ *   upload → vrai enregistrement envoyé par l'admin (file_id Telegram)
+ */
+export type PpvFixed =
+  | { src: "tts"; a: string; at: string }
+  | { src: "upload"; f: string; kind: "voice" | "audio"; at: string };
+
+export async function getPpvFixed(model: string, line: string): Promise<PpvFixed | null> {
+  const raw = await getRedis().get<string | PpvFixed>(`ppvfix:${model}:${line}`);
+  if (!raw) return null;
+  return typeof raw === "string" ? (JSON.parse(raw) as PpvFixed) : raw;
+}
+
+export async function setPpvFixed(model: string, line: string, value: PpvFixed): Promise<void> {
+  await getRedis().set(`ppvfix:${model}:${line}`, JSON.stringify(value));
 }
 
 /** Une seule génération PPV à la fois par opérateur (2 min max) */

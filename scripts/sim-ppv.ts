@@ -119,7 +119,7 @@ const telegram = createServer((req, res) => {
     else {
       const { fields, file } = multipart(buf, ct);
       body = fields;
-      if (file && method === "sendVideo") {
+      if (file && (method === "sendVideo" || method === "sendAudio")) {
         savedVideos += 1;
         const out = join(OUT_DIR, `${String(savedVideos).padStart(2, "0")}-${file.name}`);
         writeFileSync(out, file.data);
@@ -130,7 +130,7 @@ const telegram = createServer((req, res) => {
     calls.push({ method, body, at: Date.now() });
     let result: unknown = true;
     if (method === "getMe") result = { id: 1, is_bot: true, first_name: "Voice", username: "voice_bot" };
-    if (method === "sendMessage" || method === "sendVideo") {
+    if (method === "sendMessage" || method === "sendVideo" || method === "sendAudio") {
       result = { message_id: nextMsg++, date: 0, chat: { id: GROUP, type: "supergroup" } };
     }
     if (method === "getFile") {
@@ -227,6 +227,14 @@ async function main() {
   await command("/ppvlist", adminChat, admin);
   console.log("  " + lastText().split("\n").join("\n  "));
 
+  console.log("▶ /ppvfixed (admin) : écouter les parties fixes, puis 🔁 nouvelle prise du PPV 1");
+  await command("/ppvfixed", adminChat, admin);
+  await waitFor(() => calls.filter((c) => c.method === "sendAudio").length === 3, "3 parties fixes");
+  console.log("  " + calls.filter((c) => c.method === "sendAudio").map((c) => String(c.body.caption).split("\n").join(" — ")).join("\n  "));
+  await send({ callback_query: { id: "fix1", from: admin, chat_instance: "1", data: "ppvfix:paid1", message: { message_id: 700, date: 0, chat: adminChat, text: "x" } } });
+  await waitFor(() => calls.filter((c) => c.method === "sendAudio").length === 4, "nouvelle prise");
+  console.log("  → " + String(calls.filter((c) => c.method === "sendAudio").pop()?.body.caption));
+
   console.log("▶ /ppv avec un prénom invalide");
   await command("/ppv 123");
   console.log("  → " + lastText().split("\n")[0]);
@@ -242,6 +250,13 @@ async function main() {
     console.log(`    · ${String(c.body.caption)} · ${(Number(c.body.bytes) / 1_048_576).toFixed(1)} Mo · ${c.body.width}×${c.body.height} · ${c.body.duration} s → ${c.body.saved}`);
   }
   console.log("  textes envoyés à Fish :\n    " + fishTexts.join("\n    "));
+
+  console.log("▶ 2e fan : /ppv max (la partie fixe doit être identique)");
+  const before2 = calls.filter((c) => c.method === "sendVideo").length;
+  await sleep(500);
+  await command("/ppv max");
+  await waitFor(() => calls.filter((c) => c.method === "sendVideo").length === before2 + 3, "3 vidéos de Max");
+  console.log("  " + calls.filter((c) => c.method === "sendVideo").slice(-3).map((c) => `${String(c.body.caption)} → ${c.body.saved}`).join("\n  "));
 
   // ── Boutons de volume : refaire les 2 vidéos à d'autres niveaux ──
   await waitFor(() => calls.some((c) => c.method === "sendMessage" && String(c.body.text).startsWith("🔊")), "boutons de volume");

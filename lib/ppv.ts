@@ -85,19 +85,20 @@ export function parseVideoSize(stderr: string): { width: number; height: number 
 //   · moins de basses (pas d'effet de proximité) et d'aigus (la distance),
 //   · une petite pièce : premières réflexions + réverbération courte.
 // Volume de la voix dans les vidéos payantes : 5 niveaux réglables depuis
-// le bot (boutons sous chaque PPV). Valeur = niveau visé AVANT la pièce
-// (LUFS) ; le niveau moyen mesuré dans la vidéo est environ 4 dB plus bas.
-export const PPV_VOLUME_LEVELS: Record<number, { lufs: number; icon: string }> = {
-  1: { lufs: -59, icon: "🔈" },
-  2: { lufs: -53, icon: "🔉" },
-  3: { lufs: -48, icon: "🔉" },
-  4: { lufs: -43, icon: "🔊" },
-  5: { lufs: -38, icon: "🔊" },
+// le bot (boutons sous chaque PPV). Valeur = niveau moyen visé pour la PARTIE
+// FIXE une fois « dans la pièce » (dB). Le gain est CONSTANT et calculé sur
+// la partie fixe seule : elle sonne exactement pareil pour tous les fans.
+export const PPV_VOLUME_LEVELS: Record<number, { db: number; icon: string }> = {
+  1: { db: -61, icon: "🔈" },
+  2: { db: -55, icon: "🔉" },
+  3: { db: -50, icon: "🔉" },
+  4: { db: -45, icon: "🔊" },
+  5: { db: -40, icon: "🔊" },
 };
 export const PPV_DEFAULT_VOLUME = 2;
 
-export function ppvLufs(level?: number | null): number {
-  return (PPV_VOLUME_LEVELS[level ?? PPV_DEFAULT_VOLUME] ?? PPV_VOLUME_LEVELS[PPV_DEFAULT_VOLUME]).lufs;
+export function ppvTargetDb(level?: number | null): number {
+  return (PPV_VOLUME_LEVELS[level ?? PPV_DEFAULT_VOLUME] ?? PPV_VOLUME_LEVELS[PPV_DEFAULT_VOLUME]).db;
 }
 
 // ── Rendu « filmé par l'iPhone » ───────────────────────────────────────────
@@ -197,35 +198,68 @@ export function roomImpulseWav(): Buffer {
   return buf;
 }
 
-export function mixArgs(
-  video: string,
-  voice: string,
-  impulse: string,
-  output: string,
-  loudness: number,
-  start: number,
-  voiceSec: number,
-  videoSec: number,
-  hasAudio: boolean
-): string[] {
-  void voiceSec;
-  const delayMs = Math.round(start * 1000);
+// Voix → micro de téléphone → pièce stéréo (sans réglage de niveau)
+function roomArgs(input: string, impulse: string, output: string): string[] {
   const tail = Math.round(IR_RATE * (PPV_ROOM.tail + 0.1));
-  // Voix → micro de téléphone → pièce stéréo → niveau final → placée à `start`
-  const voiceChain =
-    `[1:a]aresample=${IR_RATE},` +
+  const graph =
+    `[0:a]aresample=${IR_RATE},` +
     `acompressor=threshold=0.125:ratio=3:attack=10:release=150:makeup=1,` +
     `highpass=f=${PPV_ROOM.highpass},lowpass=f=${PPV_ROOM.lowpass},` +
     `equalizer=f=250:width_type=o:width=1:g=${PPV_ROOM.boomCutDb},` +
     `equalizer=f=2500:width_type=o:width=1.5:g=${PPV_ROOM.presenceDb},` +
     `apad=pad_len=${tail},pan=stereo|c0=c0|c1=c0[mono2];` +
-    // gtype=-1 : la pièce est appliquée telle quelle (pas de normalisation
-    // automatique, qui écrasait le son direct sous la traîne)
-    `[mono2][2:a]afir=gtype=-1[room];` +
-    `[room]loudnorm=I=${loudness}:TP=-3:LRA=11,aresample=${IR_RATE},` +
+    // gtype=-1 : la pièce est appliquée telle quelle (l'auto-gain du ffmpeg
+    // embarqué écrasait le son direct sous la traîne)
+    `[mono2][1:a]afir=gtype=-1[room]`;
+  return [
+    "-y", "-hide_banner", "-i", input, "-i", impulse,
+    "-filter_complex", graph, "-map", "[room]", "-c:a", "pcm_s16le", output,
+  ];
+}
+
+const meanDbOf = (stderr: string): number | null => {
+  const m = stderr.match(/mean_volume:\s*(-?[\d.]+) dB/);
+  return m ? Number(m[1]) : null;
+};
+
+/** Passe la voix « dans la pièce » ; renvoie le WAV et son niveau moyen. */
+export async function roomVoice(audio: Buffer): Promise<{ wav: Buffer; meanDb: number }> {
+  const dir = await mkdtemp(join(tmpdir(), "room-"));
+  try {
+    const input = join(dir, "in.audio");
+    const ir = join(dir, "room.wav");
+    const out = join(dir, "voice-room.wav");
+    await Promise.all([writeFile(input, audio), writeFile(ir, roomImpulseWav())]);
+    const bin = await ffmpegBinary();
+    const r = await run(bin, roomArgs(input, ir, out));
+    if (r.code !== 0) throw new Error(`pièce: ${r.stderr.slice(-400)}`);
+    const v = await run(bin, ["-hide_banner", "-i", out, "-af", "volumedetect", "-f", "null", "-"]);
+    const meanDb = meanDbOf(v.stderr);
+    if (meanDb === null) throw new Error("niveau de la voix illisible");
+    return { wav: await readFile(out), meanDb };
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+export function mixArgs(
+  video: string,
+  voiceRoom: string,
+  output: string,
+  gainDb: number,
+  start: number,
+  videoSec: number,
+  hasAudio: boolean
+): string[] {
+  const delayMs = Math.round(start * 1000);
+  // Gain CONSTANT (pas de normalisation dynamique) : la partie fixe garde
+  // exactement la même forme d'un fan à l'autre.
+  const voiceChain =
+    `[1:a]aresample=${IR_RATE},volume=${gainDb.toFixed(2)}dB,` +
     `adelay=${delayMs}|${delayMs},apad[vo]`;
   // amix divise chaque entrée par 2 (ffmpeg embarqué de 2018, sans l'option
-  // normalize) : « volume=2 » rétablit les niveaux.
+  // normalize) : « volume=2 » rétablit les niveaux. Le son d'origine n'est
+  // pas baissé : une vraie pièce ne se tait pas.
   const graph = hasAudio
     ? `[0:a]aresample=${IR_RATE}[bg];${voiceChain};` +
       `[bg][vo]amix=inputs=2:duration=first,volume=2,alimiter=limit=0.95[a]`
@@ -234,8 +268,7 @@ export function mixArgs(
     "-y",
     "-hide_banner",
     "-i", video,
-    "-i", voice,
-    "-i", impulse,
+    "-i", voiceRoom,
     "-filter_complex", graph,
     "-map", "0:v:0",
     "-map", "[a]",
@@ -248,24 +281,26 @@ export function mixArgs(
   ];
 }
 
-/** Pose la voix dans la vidéo (image intacte, son remixé « dans la pièce »). */
+/**
+ * Pose la voix dans la vidéo (image intacte, son remixé « dans la pièce »).
+ * `refMeanDb` : niveau « dans la pièce » de la PARTIE FIXE seule (roomVoice) —
+ * le gain est calé dessus, donc identique pour tous les fans. À défaut, calé
+ * sur la phrase entière.
+ */
 export async function mixVoiceIntoVideo(
   video: Buffer,
   voice: Buffer,
   place: Placement,
-  loudness: number = ppvLufs(PPV_DEFAULT_VOLUME)
+  targetDb: number = ppvTargetDb(PPV_DEFAULT_VOLUME),
+  refMeanDb?: number
 ): Promise<{ video: Buffer; duration: number; width?: number; height?: number }> {
   const dir = await mkdtemp(join(tmpdir(), "ppv-"));
   const vIn = join(dir, "in.mp4");
-  const aIn = join(dir, "voice.audio");
-  const ir = join(dir, "room.wav");
+  const aIn = join(dir, "voice-room.wav");
   const out = join(dir, "out.mp4");
   try {
-    await Promise.all([
-      writeFile(vIn, video),
-      writeFile(aIn, voice),
-      writeFile(ir, roomImpulseWav()),
-    ]);
+    const [room] = await Promise.all([roomVoice(voice), writeFile(vIn, video)]);
+    await writeFile(aIn, room.wav);
     const bin = await ffmpegBinary();
     const [pv, pa] = await Promise.all([
       run(bin, ["-hide_banner", "-i", vIn]),
@@ -275,11 +310,11 @@ export async function mixVoiceIntoVideo(
     const voiceSec = parseInputDuration(pa.stderr);
     if (!videoSec || !voiceSec) throw new Error("durée illisible (vidéo ou voix)");
     const hasAudio = /Stream #0:\d+.*Audio:/.test(pv.stderr);
-    // La réverbération prolonge la voix : on la compte pour ne pas déborder
-    const start = voiceStart(videoSec, voiceSec + PPV_ROOM.tail * 0.5, place);
+    const start = voiceStart(videoSec, voiceSec, place);
+    const gainDb = targetDb - (refMeanDb ?? room.meanDb);
     const { code, stderr } = await run(
       bin,
-      mixArgs(vIn, aIn, ir, out, loudness, start, voiceSec, videoSec, hasAudio)
+      mixArgs(vIn, aIn, out, gainDb, start, videoSec, hasAudio)
     );
     if (code !== 0) throw new Error(`ffmpeg code ${code}: ${stderr.slice(-600)}`);
     const size = parseVideoSize(pv.stderr);
