@@ -23,7 +23,7 @@ const TIMEOUT_MS = 40_000;
 // Sur certains hébergeurs, le bit « exécutable » du binaire se perd à
 // l'empaquetage : on le recopie alors dans /tmp avec les bons droits.
 let resolvedBinary: string | null = null;
-async function ffmpegBinary(): Promise<string> {
+export async function ffmpegBinary(): Promise<string> {
   if (resolvedBinary) return resolvedBinary;
   const original = ffmpegInstaller.path;
   try {
@@ -38,7 +38,7 @@ async function ffmpegBinary(): Promise<string> {
   return resolvedBinary;
 }
 
-function run(bin: string, args: string[]): Promise<{ code: number; stderr: string }> {
+export function run(bin: string, args: string[]): Promise<{ code: number; stderr: string }> {
   return new Promise((resolve, reject) => {
     const child = spawn(bin, args, { stdio: ["ignore", "ignore", "pipe"] });
     let stderr = "";

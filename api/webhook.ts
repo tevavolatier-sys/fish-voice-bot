@@ -18,9 +18,17 @@ import {
   getVideoSource,
   hasRedisEnv,
   lockVideo,
+  addPpvPart,
+  armPpvGroup,
+  clearPpvParts,
+  getPpvParts,
+  lockPpv,
+  ppvGroupModel,
+  readPpvStats,
   readStats,
   readVideoStats,
   recordGeneration,
+  recordPpv,
   recordVideo,
   resetStats,
   setIntensity,
@@ -28,8 +36,17 @@ import {
   setSelectedModel,
   setVideoSource,
   shouldWarnCredits,
+  unlockPpv,
   unlockVideo,
 } from "../lib/redis.js";
+import {
+  PPV_DEFAULT_MODEL,
+  PPV_LINES,
+  PPV_PLACEMENT,
+  cleanFanName,
+  fillLine,
+  mixVoiceIntoVideo,
+} from "../lib/ppv.js";
 import { VIDEO_HEIGHT, VIDEO_WIDTH, blackVideoFromAudio, videoSelfTest } from "../lib/video.js";
 import { FishError, generateVoice, getFishCredits } from "../lib/fish.js";
 import {
@@ -77,6 +94,18 @@ function voiceKeyboard(videoToken: string, intensity?: number): InlineKeyboard {
 }
 
 const newVideoToken = () => randomUUID().replace(/-/g, "").slice(0, 16);
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// Télécharge un fichier déjà connu de Telegram (≤ 20 Mo pour un bot)
+async function downloadTelegramFile(ctx: Context, fileId: string): Promise<Buffer> {
+  const file = await ctx.api.getFile(fileId);
+  if (!file.file_path) throw new Error("file_path absent");
+  const res = await fetch(
+    `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${file.file_path}`
+  );
+  if (!res.ok) throw new Error(`téléchargement Telegram: ${res.status}`);
+  return Buffer.from(await res.arrayBuffer());
+}
 
 // ---------- Découpage des textes longs ----------
 // Un texte > MAX_CHARS est découpé en morceaux ≤ MAX_CHARS aux fins de
@@ -275,7 +304,8 @@ function createBot(): Bot {
         "4️⃣ Send the message\n" +
         "5️⃣ Wait a few seconds\n" +
         "6️⃣ You receive 3 VERSIONS of the voice note 🎤 — same words, 3 readings: 🌙 Soft · ✨ Playful · 🔥 Intense → pick the one that fits the fan and send it\n" +
-        "🎬 Fan wants a VIDEO (\"a video with my name\")? Tap 🎬 Video under the version you like: you get the same voice as a black-screen video, ready to send.\n\n" +
+        "🎬 Fan wants a VIDEO (\"a video with my name\")? Tap 🎬 Video under the version you like: you get the same voice as a black-screen video, ready to send.\n" +
+        "💰 PPV with his name: type /ppv + his first name (ex: /ppv Julien) → a FREE preview + 2 PPV videos with his name in them.\n\n" +
         "✅ DO THIS:\n" +
         "• Short sentences, like a real voice note\n" +
         "• Write normally, emotions are added AUTOMATICALLY ✨\n\n" +
@@ -332,16 +362,19 @@ function createBot(): Bot {
       return;
     }
 
-    const [stats, videos] = await Promise.all([
+    const empty = { byModel: {}, byUser: {} } as Awaited<ReturnType<typeof readVideoStats>>;
+    const [stats, videos, ppvs] = await Promise.all([
       readStats(),
-      readVideoStats().catch(() => ({ byModel: {}, byUser: {} }) as Awaited<ReturnType<typeof readVideoStats>>),
+      readVideoStats().catch(() => empty),
+      readPpvStats().catch(() => empty),
     ]);
-    const vidSuffix = (n: number) => (n > 0 ? `, 🎬 ${n} video${n > 1 ? "s" : ""}` : "");
+    const vidSuffix = (n: number, p = 0) =>
+      (n > 0 ? `, 🎬 ${n} video${n > 1 ? "s" : ""}` : "") + (p > 0 ? `, 💰 ${p} PPV` : "");
 
     const modelLines = ACTIVE_MODELS.map((m) => {
       const gen = Number(stats.genByModel[m.key] ?? 0);
       const chars = Number(stats.charsByModel[m.key] ?? 0);
-      return `• ${modelLabel(m)}: ${gen} voice notes, ${chars} characters${vidSuffix(Number(videos.byModel[m.key] ?? 0))}`;
+      return `• ${modelLabel(m)}: ${gen} voice notes, ${chars} characters${vidSuffix(Number(videos.byModel[m.key] ?? 0), Number(ppvs.byModel[m.key] ?? 0))}`;
     }).join("\n");
 
     const userIds = new Set([
@@ -353,7 +386,7 @@ function createBot(): Bot {
         .map((id) => {
           const gen = Number(stats.genByUser[id] ?? 0);
           const chars = Number(stats.charsByUser[id] ?? 0);
-          return `• ${operatorName(id)}: ${gen} voice notes, ${chars} characters${vidSuffix(Number(videos.byUser[id] ?? 0))}`;
+          return `• ${operatorName(id)}: ${gen} voice notes, ${chars} characters${vidSuffix(Number(videos.byUser[id] ?? 0), Number(ppvs.byUser[id] ?? 0))}`;
         })
         .join("\n") || "• No voice notes yet";
 
@@ -425,11 +458,175 @@ function createBot(): Bot {
       .catch(() => {});
   });
 
+  // ---------- 💰 PPV personnalisé : /ppv <prénom> ----------
+  // 3 fichiers avec la voix de la modèle : preview gratuite fond noir + les 2
+  // vidéos payantes enregistrées (1re = PPV 1, 2e = PPV 2) avec le prénom.
+  bot.command("ppv", async (ctx) => {
+    const name = cleanFanName(String(ctx.match ?? ""));
+    if (!name) {
+      await ctx.reply(
+        "💰 PERSONALIZED PPV\n\n" +
+          "Type /ppv followed by the fan's first name, like:\n" +
+          "/ppv Julien\n\n" +
+          "You get 3 files with the girl's voice saying his name:\n" +
+          "🎁 a FREE preview (black screen): \"Julien… toi et moi, ça va être fou\"\n" +
+          "💰 2 PPV videos with \"Julien\" in them\n\n" +
+          "(First name only: letters, 2 to 20 characters.)"
+      );
+      return;
+    }
+    const model = modelByKey(PPV_DEFAULT_MODEL);
+    const parts = await getPpvParts(PPV_DEFAULT_MODEL).catch(() => []);
+    if (!model || parts.length < 2) {
+      await ctx.reply("⚠️ The PPV videos aren't set up yet — tell the admin.");
+      return;
+    }
+    const userId = ctx.from!.id;
+    if (!(await lockPpv(userId).catch(() => true))) {
+      await ctx.reply("⏳ Your previous PPV is still being made — wait a few seconds.");
+      return;
+    }
+    const replyTo = ctx.msg?.message_id;
+    const reply = replyTo
+      ? { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } }
+      : {};
+    const slug = name.normalize("NFD").replace(/[^\w-]+/g, "").toLowerCase() || "fan";
+    await ctx.reply(`⏳ Making ${name}'s PPV: free preview + 2 videos… (about 30 seconds)`);
+    waitUntil(
+      (async () => {
+        try {
+          await ctx.replyWithChatAction("upload_video").catch(() => {});
+          const [vPreview, vPaid1, vPaid2] = await Promise.all([
+            generateVoice(fillLine(PPV_LINES.preview, name), model.referenceId),
+            generateVoice(fillLine(PPV_LINES.paid1, name), model.referenceId),
+            generateVoice(fillLine(PPV_LINES.paid2, name), model.referenceId),
+          ]);
+          const [preview, paid1, paid2] = await Promise.all([
+            blackVideoFromAudio(vPreview),
+            downloadTelegramFile(ctx, parts[0].f).then((v) =>
+              mixVoiceIntoVideo(v, vPaid1, PPV_PLACEMENT.paid1)
+            ),
+            downloadTelegramFile(ctx, parts[1].f).then((v) =>
+              mixVoiceIntoVideo(v, vPaid2, PPV_PLACEMENT.paid2)
+            ),
+          ]);
+          await ctx.replyWithVideo(new InputFile(preview.video, `preview-${slug}.mp4`), {
+            width: VIDEO_WIDTH,
+            height: VIDEO_HEIGHT,
+            duration: preview.duration,
+            supports_streaming: true,
+            caption: `🎁 FREE preview · ${name}`,
+            ...reply,
+          });
+          const paid = [
+            { n: 1, out: paid1 },
+            { n: 2, out: paid2 },
+          ];
+          for (const p of paid) {
+            await ctx.replyWithVideo(new InputFile(p.out.video, `ppv${p.n}-${slug}.mp4`), {
+              ...(p.out.width && p.out.height ? { width: p.out.width, height: p.out.height } : {}),
+              duration: p.out.duration,
+              supports_streaming: true,
+              caption: `💰 PPV ${p.n}/2 · ${name}`,
+              ...reply,
+            });
+          }
+          await recordPpv(userId, model.key).catch(() => {});
+        } catch (err) {
+          console.error("PPV échoué:", err);
+          const msg =
+            err instanceof FishError
+              ? err.userMessage
+              : "❌ Couldn't make the PPV. Try /ppv again; if it keeps failing, tell the admin.";
+          await ctx.reply(msg).catch(() => {});
+        } finally {
+          await unlockPpv(userId).catch(() => {});
+        }
+      })()
+    );
+  });
+
+  // 🗂️ Admin : vidéos PPV enregistrées / remise à zéro
+  bot.command("ppvlist", async (ctx) => {
+    if (ctx.from?.id !== ADMIN_ID) return;
+    const parts = await getPpvParts(PPV_DEFAULT_MODEL).catch(() => []);
+    const model = modelByKey(PPV_DEFAULT_MODEL);
+    await ctx.reply(
+      parts.length === 0
+        ? "🗂️ No PPV video saved yet.\nSend the 2 videos to me in private with the caption /ppvadd, IN ORDER: first the one for PPV 1, then the one for PPV 2."
+        : `🗂️ PPV videos for ${model ? modelLabel(model) : PPV_DEFAULT_MODEL}: ${parts.length}\n` +
+            parts
+              .map(
+                (p, i) =>
+                  `${i + 1}. ${Math.round(p.d)} s · ${(p.b / 1_048_576).toFixed(1)} MB` +
+                  (i === 0 ? " → PPV 1 (« c'est chaud, toi et moi… »)" : i === 1 ? " → PPV 2 (soupirs + prénom à la fin)" : " → not used")
+              )
+              .join("\n") +
+            "\n\n/ppvclear to remove them all."
+    );
+  });
+
+  bot.command("ppvclear", async (ctx) => {
+    if (ctx.from?.id !== ADMIN_ID) return;
+    await clearPpvParts(PPV_DEFAULT_MODEL);
+    await ctx.reply("🧹 PPV videos removed. Send new ones with the caption /ppvadd.");
+  });
+
+  // 📥 Admin : enregistrement des vidéos PPV (légende /ppvadd, album accepté)
+  bot.on(["message:video", "message:document"], async (ctx, next) => {
+    if (ctx.from?.id !== ADMIN_ID) return next();
+    const msg = ctx.message;
+    const cmd = (msg.caption ?? "").trim().match(/^\/ppvadd(?:@\w+)?(?:\s+([a-z]+))?/i);
+    let modelKey: string | null = null;
+    if (cmd) {
+      modelKey = (cmd[1] ?? PPV_DEFAULT_MODEL).toLowerCase();
+      if (msg.media_group_id) await armPpvGroup(msg.media_group_id, modelKey);
+    } else if (msg.media_group_id) {
+      // Les autres vidéos d'un album arrivent sans légende, parfois AVANT la
+      // première : on attend un instant que l'album soit « armé ».
+      for (let i = 0; i < 10 && !modelKey; i++) {
+        modelKey = await ppvGroupModel(msg.media_group_id).catch(() => null);
+        if (!modelKey) await sleep(400);
+      }
+    }
+    if (!modelKey) return next();
+    const model = modelByKey(modelKey);
+    if (!model) {
+      await ctx.reply(`❌ Unknown voice "${modelKey}".`);
+      return;
+    }
+    const file =
+      msg.video ?? (msg.document?.mime_type?.startsWith("video/") ? msg.document : undefined);
+    if (!file) {
+      await ctx.reply("❌ That's not a video.");
+      return;
+    }
+    const size = file.file_size ?? 0;
+    if (size > 20 * 1_048_576) {
+      await ctx.reply(
+        `❌ Too big (${(size / 1_048_576).toFixed(0)} MB): a bot can only reuse videos up to 20 MB. Send the compressed version.`
+      );
+      return;
+    }
+    const pos = await addPpvPart(model.key, {
+      f: file.file_id,
+      u: file.file_unique_id,
+      d: "duration" in file ? Number(file.duration ?? 0) : 0,
+      b: size,
+      m: msg.message_id,
+    });
+    await ctx.reply(
+      pos === null
+        ? "ℹ️ This video was already saved."
+        : `✅ PPV video saved for ${modelLabel(model)} (${(size / 1_048_576).toFixed(1)} MB). Check the order with /ppvlist.`
+    );
+  });
+
   bot.on("message:text", async (ctx) => {
     const text = ctx.message.text.trim();
 
     if (text.startsWith("/")) {
-      await ctx.reply("Unknown command. Use /voice, /level, /help or /stats.");
+      await ctx.reply("Unknown command. Use /voice, /ppv, /level, /help or /stats.");
       return;
     }
 
