@@ -88,11 +88,11 @@ export function parseVideoSize(stderr: string): { width: number; height: number 
 // le bot (boutons sous chaque PPV). Valeur = niveau visé AVANT la pièce
 // (LUFS) ; le niveau moyen mesuré dans la vidéo est environ 4 dB plus bas.
 export const PPV_VOLUME_LEVELS: Record<number, { lufs: number; icon: string }> = {
-  1: { lufs: -56, icon: "🔈" },
-  2: { lufs: -50, icon: "🔉" },
-  3: { lufs: -45, icon: "🔉" },
-  4: { lufs: -40, icon: "🔊" },
-  5: { lufs: -35, icon: "🔊" },
+  1: { lufs: -59, icon: "🔈" },
+  2: { lufs: -53, icon: "🔉" },
+  3: { lufs: -48, icon: "🔉" },
+  4: { lufs: -43, icon: "🔊" },
+  5: { lufs: -38, icon: "🔊" },
 };
 export const PPV_DEFAULT_VOLUME = 2;
 
@@ -100,49 +100,82 @@ export function ppvLufs(level?: number | null): number {
   return (PPV_VOLUME_LEVELS[level ?? PPV_DEFAULT_VOLUME] ?? PPV_VOLUME_LEVELS[PPV_DEFAULT_VOLUME]).lufs;
 }
 
+// ── Rendu « filmé par l'iPhone » ───────────────────────────────────────────
+// Une voix de synthèse collée telle quelle se repère : son « studio », mono
+// au centre, sans la couleur du micro. On simule une personne à ~1,5 m d'un
+// iPhone dans une chambre :
+//   · couleur de micro de téléphone (graves coupés, médiums présents, aigus
+//     adoucis) + légère compression (le contrôle de gain automatique) ;
+//   · pièce en STÉRÉO : son direct un peu décentré (les 2 micros de l'iPhone
+//     ne l'entendent pas au même instant) + réflexions courtes sur les murs,
+//     le sol, le plafond, différentes à gauche et à droite ;
+//   · presque pas de traîne (« trop d'écho » sinon) ;
+//   · le son d'origine n'est PAS baissé : une vraie pièce ne se tait pas.
+// Le niveau final est mesuré APRÈS la pièce (loudnorm), donc les 5 niveaux de
+// volume restent comparables quel que soit le rendu.
 export const PPV_ROOM = {
-  highpass: 170, // Hz
-  lowpass: 6000, // Hz
-  dry: 0.8, // part de son direct
-  wet: 0.2, // part de la pièce (plus = plus loin, plus d'écho)
-  rt60: 0.3, // durée de la réverbération (s) : petite pièce mate
+  highpass: 130, // Hz : un micro de téléphone coupe les graves
+  lowpass: 7500, // Hz : aigus adoucis (distance + micro)
+  presenceDb: 2.5, // dB vers 2,5 kHz : médiums « téléphone »
+  boomCutDb: -3, // dB vers 250 Hz : pas d'effet de proximité
+  tail: 0.25, // s : traîne très courte
+  tailLevel: 0.05, // niveau de la traîne
 } as const;
 
 const IR_RATE = 48_000;
 
-/**
- * Réponse impulsionnelle d'une petite pièce (WAV mono 32 bits flottants) :
- * quelques réflexions précoces puis une queue de bruit qui décroît, assombrie.
- * Déterministe (même pièce à chaque fois).
- */
-export function roomImpulseWav(rt60: number = PPV_ROOM.rt60): Buffer {
-  const len = Math.round(IR_RATE * (rt60 + 0.1));
-  const data = new Float32Array(len);
-  data[0] = 1; // son direct
-  const early: [number, number][] = [
-    [7, 0.55], [11, -0.45], [17, 0.38], [23, -0.3], [31, 0.24], [41, -0.18],
-  ];
-  for (const [ms, g] of early) data[Math.round((ms * IR_RATE) / 1000)] += g;
-  let seed = 0x2f6b9a1d;
-  const rnd = () => {
-    seed = (seed + 0x6d2b79f5) | 0;
-    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+function prng(seed: number) {
+  let s = seed | 0;
+  return () => {
+    s = (s + 0x6d2b79f5) | 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
     t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
-  const tau = rt60 / 6.91; // décroissance de 60 dB en rt60 secondes
-  const tailStart = Math.round(0.012 * IR_RATE);
-  let lp = 0;
-  for (let i = tailStart; i < len; i++) {
-    const t = (i - tailStart) / IR_RATE;
-    const noise = (rnd() * 2 - 1) * 0.35 * Math.exp(-t / tau);
-    lp += 0.35 * (noise - lp); // passe-bas : une chambre « mate »
-    data[i] += lp;
-  }
-  const fade = Math.round(0.02 * IR_RATE);
-  for (let i = 0; i < fade; i++) data[len - 1 - i] *= i / fade;
+}
 
-  const bytes = len * 4;
+/**
+ * Réponse impulsionnelle STÉRÉO d'une chambre captée par un iPhone à ~1,5 m
+ * (WAV 32 bits flottants, 2 canaux). Déterministe.
+ */
+export function roomImpulseWav(): Buffer {
+  const len = Math.round(IR_RATE * (PPV_ROOM.tail + 0.08));
+  const ch = [new Float32Array(len), new Float32Array(len)];
+  const at = (ms: number) => Math.min(len - 1, Math.round((ms * IR_RATE) / 1000));
+  // Son direct : un peu décentré (gauche), 0,2 ms d'écart entre les micros
+  ch[0][at(0)] += 1;
+  ch[1][at(0.2)] += 0.85;
+  // Réflexions précoces (ms, gain) : sol, murs, plafond, meubles — différentes
+  // pour chaque micro (c'est ce qui « place » la voix), toutes positives : un
+  // mur renvoie le son sans l'inverser, et le mélange mono (haut-parleur de
+  // téléphone) ne s'annule pas
+  const early: [number, number][][] = [
+    [[2.9, 0.5], [6.1, 0.38], [9.8, 0.3], [13.6, 0.24], [19.2, 0.18], [26.5, 0.13], [34.1, 0.09]],
+    [[3.6, 0.46], [7.4, 0.36], [11.1, 0.28], [15.2, 0.22], [21.7, 0.17], [28.9, 0.12], [37.3, 0.08]],
+  ];
+  early.forEach((list, c) => list.forEach(([ms, g]) => (ch[c][at(ms)] += g)));
+  // Traîne très courte, décorrélée entre les 2 canaux, assombrie
+  const tau = PPV_ROOM.tail / 6.91;
+  const start = at(12);
+  [0x51ab3, 0x9e377].forEach((seed, c) => {
+    const rnd = prng(seed);
+    let lp = 0;
+    for (let i = start; i < len; i++) {
+      const t = (i - start) / IR_RATE;
+      // Bruit « éclairci » (sans graves) : sinon la traîne grave domine et
+      // différente à gauche/droite, elle s'annule en partie en mono
+      const x = (rnd() * 2 - 1) * PPV_ROOM.tailLevel * Math.exp(-t / tau);
+      ch[c][i] += x - lp;
+      lp += 0.05 * (x - lp);
+    }
+  });
+  const fade = at(15);
+  for (let i = 0; i < fade; i++) {
+    ch[0][len - 1 - i] *= i / fade;
+    ch[1][len - 1 - i] *= i / fade;
+  }
+
+  const bytes = len * 2 * 4;
   const buf = Buffer.alloc(44 + bytes);
   buf.write("RIFF", 0);
   buf.writeUInt32LE(36 + bytes, 4);
@@ -150,14 +183,17 @@ export function roomImpulseWav(rt60: number = PPV_ROOM.rt60): Buffer {
   buf.write("fmt ", 12);
   buf.writeUInt32LE(16, 16);
   buf.writeUInt16LE(3, 20); // IEEE float
-  buf.writeUInt16LE(1, 22); // mono
+  buf.writeUInt16LE(2, 22); // stéréo
   buf.writeUInt32LE(IR_RATE, 24);
-  buf.writeUInt32LE(IR_RATE * 4, 28);
-  buf.writeUInt16LE(4, 32);
+  buf.writeUInt32LE(IR_RATE * 8, 28);
+  buf.writeUInt16LE(8, 32);
   buf.writeUInt16LE(32, 34);
   buf.write("data", 36);
   buf.writeUInt32LE(bytes, 40);
-  for (let i = 0; i < len; i++) buf.writeFloatLE(data[i], 44 + i * 4);
+  for (let i = 0; i < len; i++) {
+    buf.writeFloatLE(ch[0][i], 44 + i * 8);
+    buf.writeFloatLE(ch[1][i], 48 + i * 8);
+  }
   return buf;
 }
 
@@ -172,21 +208,27 @@ export function mixArgs(
   videoSec: number,
   hasAudio: boolean
 ): string[] {
+  void voiceSec;
   const delayMs = Math.round(start * 1000);
-  const end = start + voiceSec + PPV_ROOM.rt60;
-  const tail = Math.round(IR_RATE * (PPV_ROOM.rt60 + 0.15));
-  // Voix : égalisée « à distance », niveau abaissé, puis direct + pièce.
-  // (amix divise chaque entrée par 2 sur le ffmpeg embarqué, de 2018, qui n'a
-  // pas l'option normalize : « volume=2 » rétablit les niveaux.)
+  const tail = Math.round(IR_RATE * (PPV_ROOM.tail + 0.1));
+  // Voix → micro de téléphone → pièce stéréo → niveau final → placée à `start`
   const voiceChain =
-    `[1:a]aresample=${IR_RATE},highpass=f=${PPV_ROOM.highpass},lowpass=f=${PPV_ROOM.lowpass},` +
-    `loudnorm=I=${loudness}:TP=-3:LRA=11,aresample=${IR_RATE},apad=pad_len=${tail},asplit=2[dry][toir];` +
-    `[toir][2:a]afir[wetraw];` +
-    `[dry]volume=${PPV_ROOM.dry}[d];[wetraw]volume=${PPV_ROOM.wet}[w];` +
-    `[d][w]amix=inputs=2:duration=longest,volume=2,adelay=${delayMs}|${delayMs},apad[vo]`;
+    `[1:a]aresample=${IR_RATE},` +
+    `acompressor=threshold=0.125:ratio=3:attack=10:release=150:makeup=1,` +
+    `highpass=f=${PPV_ROOM.highpass},lowpass=f=${PPV_ROOM.lowpass},` +
+    `equalizer=f=250:width_type=o:width=1:g=${PPV_ROOM.boomCutDb},` +
+    `equalizer=f=2500:width_type=o:width=1.5:g=${PPV_ROOM.presenceDb},` +
+    `apad=pad_len=${tail},pan=stereo|c0=c0|c1=c0[mono2];` +
+    // gtype=-1 : la pièce est appliquée telle quelle (pas de normalisation
+    // automatique, qui écrasait le son direct sous la traîne)
+    `[mono2][2:a]afir=gtype=-1[room];` +
+    `[room]loudnorm=I=${loudness}:TP=-3:LRA=11,aresample=${IR_RATE},` +
+    `adelay=${delayMs}|${delayMs},apad[vo]`;
+  // amix divise chaque entrée par 2 (ffmpeg embarqué de 2018, sans l'option
+  // normalize) : « volume=2 » rétablit les niveaux.
   const graph = hasAudio
-    ? `[0:a]aresample=${IR_RATE},volume='if(between(t,${start.toFixed(3)},${end.toFixed(3)}),0.6,1)':eval=frame[bg];` +
-      `${voiceChain};[bg][vo]amix=inputs=2:duration=first,volume=2,alimiter=limit=0.95[a]`
+    ? `[0:a]aresample=${IR_RATE}[bg];${voiceChain};` +
+      `[bg][vo]amix=inputs=2:duration=first,volume=2,alimiter=limit=0.95[a]`
     : `${voiceChain};[vo]alimiter=limit=0.95[a]`;
   return [
     "-y",
@@ -234,7 +276,7 @@ export async function mixVoiceIntoVideo(
     if (!videoSec || !voiceSec) throw new Error("durée illisible (vidéo ou voix)");
     const hasAudio = /Stream #0:\d+.*Audio:/.test(pv.stderr);
     // La réverbération prolonge la voix : on la compte pour ne pas déborder
-    const start = voiceStart(videoSec, voiceSec + PPV_ROOM.rt60 * 0.5, place);
+    const start = voiceStart(videoSec, voiceSec + PPV_ROOM.tail * 0.5, place);
     const { code, stderr } = await run(
       bin,
       mixArgs(vIn, aIn, ir, out, loudness, start, voiceSec, videoSec, hasAudio)
