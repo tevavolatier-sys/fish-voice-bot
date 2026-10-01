@@ -13,13 +13,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ffmpegBinary, parseInputDuration, run } from "./video.js";
 
-export type LineKey = "preview" | "paid1" | "paid2";
-export const LINE_KEYS: LineKey[] = ["preview", "paid1", "paid2"];
+// PPV 2 n'est plus personnalisé (choix de Teva le 2026-10-01) : une seule
+// vidéo, la même pour tous les fans, mise une fois pour toutes dans le vault.
+export type LineKey = "preview" | "paid1";
+export const LINE_KEYS: LineKey[] = ["preview", "paid1"];
 
 export const LINE_LABELS: Record<LineKey, string> = {
   preview: "🎁 Preview",
   paid1: "💰 PPV 1",
-  paid2: "💰 PPV 2",
 };
 
 /**
@@ -38,16 +39,15 @@ export const PPV_FIXED: Record<
     nameAlone: "[soft tone] {name}…",
   },
   paid1: {
-    text: "[soft tone] Hmmm… [breath] c'est chaud, toi et moi…",
-    name: "after",
-    nameAlone: "[soft tone] {name}.",
-  },
-  paid2: {
-    text: "[sighing] Hmmm… [breath] [groaning] mmmh… [panting]",
-    name: "after",
-    nameAlone: "[soft tone] {name}…", // le prénom SEUL : aucun soupir variable
+    // Prise « PPV1-A1 » choisie par Teva le 2026-10-01, prénom AU DÉBUT
+    text: "[soft tone] Hmm, c'est chaud, toi et moi.",
+    name: "before",
+    nameAlone: "[soft tone] {name}…",
   },
 };
+
+/** Réglages de synthèse STABLES (même rendu pour la prise fixe et le prénom) */
+export const PPV_VOICE_OPTS = { temperature: 0.55, top_p: 0.7, speed: 1.0 } as const;
 
 /** Durée max d'un prénom isolé : au-delà, un soupir y est collé → repli */
 export const NAME_MAX_SEC = 1.4;

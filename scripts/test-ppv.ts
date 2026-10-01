@@ -24,7 +24,7 @@ assert.equal(
   fillLine(PPV_LINES.preview, "Julien"),
   "[soft tone] Julien… [breath] toi et moi, ça va être fou."
 );
-assert.ok(fillLine(PPV_LINES.paid2, "Max").trim().endsWith("Max…"));
+assert.ok(fillLine(PPV_LINES.paid1, "Max").startsWith("[soft tone] Max… "));
 
 for (let i = 0; i < 2000; i++) {
   const [a, b] = pickTwo(5);

@@ -19,17 +19,15 @@ import { ffmpegBinary, parseInputDuration, run } from "./video.js";
 /** Modèle des vidéos PPV enregistrées par défaut (IMG_0585 = Sienna) */
 export const PPV_DEFAULT_MODEL = "sienna";
 
-/** Les 3 phrases (fixes) ; {name} = prénom du fan. Tags = jeu de la voix. */
+/** Les 2 phrases personnalisées ; {name} = prénom du fan. Tags = jeu de la voix. */
 export const PPV_LINES = {
   preview: "[soft tone] {name}… [breath] toi et moi, ça va être fou.",
-  paid1: "[soft tone] Hmmm… [breath] c'est chaud, toi et moi… {name}.",
-  paid2: "[sighing] Hmmm… [breath] [groaning] mmmh… [panting] [sighing] {name}…",
+  paid1: "[soft tone] {name}… Hmm, c'est chaud, toi et moi.",
 } as const;
 
-/** Où poser la voix dans chaque vidéo payante */
+/** Où poser la voix dans la vidéo payante */
 export const PPV_PLACEMENT = {
   paid1: { mode: "start", at: 1.5 },
-  paid2: { mode: "end", before: 0.6 },
 } as const;
 
 export type Placement =

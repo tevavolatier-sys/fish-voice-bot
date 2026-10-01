@@ -52,6 +52,7 @@ import {
   LINE_KEYS,
   LINE_LABELS,
   PPV_FIXED,
+  PPV_VOICE_OPTS,
   NAME_GAP_SEC,
   NAME_MAX_SEC,
   audioSeconds,
@@ -131,7 +132,7 @@ async function fixedAudio(ctx: Context, model: VoiceModel, key: LineKey): Promis
 }
 
 async function newFixedTake(model: VoiceModel, key: LineKey): Promise<Buffer> {
-  const audio = await generateVoice(PPV_FIXED[key].text, model.referenceId);
+  const audio = await generateVoice(PPV_FIXED[key].text, model.referenceId, PPV_VOICE_OPTS);
   await setPpvFixed(model.key, key, {
     src: "tts",
     a: audio.toString("base64"),
@@ -150,10 +151,15 @@ async function ppvLine(
   name: string
 ): Promise<Buffer> {
   const cfg = PPV_FIXED[key];
-  const sentence = await generateVoice(fillLine(PPV_LINES[key], name), model.referenceId);
+  const sentence = await generateVoice(
+    fillLine(PPV_LINES[key], name),
+    model.referenceId,
+    PPV_VOICE_OPTS
+  );
   const isolated = await extractNameAudio(sentence, cfg.name).catch(() => null);
   const nameAudio =
-    isolated ?? (await generateVoice(fillLine(cfg.nameAlone, name), model.referenceId));
+    isolated ??
+    (await generateVoice(fillLine(cfg.nameAlone, name), model.referenceId, PPV_VOICE_OPTS));
   return joinFixedAndName(fixed, nameAudio, cfg.name);
 }
 
@@ -164,8 +170,6 @@ const FIX_ALIASES: Record<string, LineKey> = {
   preview: "preview",
   ppv1: "paid1",
   paid1: "paid1",
-  ppv2: "paid2",
-  paid2: "paid2",
 };
 
 // 🔊 Boutons de volume sous un PPV : 1 (très bas) → 5 (fort), ✅ = actuel
@@ -178,50 +182,41 @@ function ppvVolumeKeyboard(token: string, current: number): InlineKeyboard {
 }
 
 const ppvVolumeText = (level: number) =>
-  `🔊 Voice volume in the 2 PPV videos: ${level}/5\n` +
-  "Too loud or too quiet? Tap a level: I remake the 2 videos with the SAME voice (and remember your choice).";
+  `🔊 Voice volume in the PPV 1 video: ${level}/5\n` +
+  "Too loud or too quiet? Tap a level: I remake the video with the SAME voice (and remember your choice).";
 
-// Les 2 vidéos payantes, voix posée au volume demandé, envoyées dans l'ordre
-async function sendPaidVideos(
+// La vidéo PPV 1, voix posée au volume demandé. (PPV 2 est la même pour tous
+// les fans : elle est déjà dans le vault, le bot ne la refait pas.)
+async function sendPaidVideo(
   ctx: Context,
   job: {
     name: string;
     v1: Buffer;
-    v2: Buffer;
     p1: string;
-    p2: string;
     r1?: number; // niveau « dans la pièce » de la partie fixe (gain identique pour tous)
-    r2?: number;
-    a2?: number; // calage de la phrase 2 sur sa partie fixe (instant identique pour tous)
+    s1?: number; // début de la phrase : sa partie fixe tombe au même instant pour tous
   },
   level: number,
   replyTo?: number
 ): Promise<void> {
-  const target = ppvTargetDb(level);
-  const [paid1, paid2] = await Promise.all([
-    downloadTelegramFile(ctx, job.p1).then((v) =>
-      mixVoiceIntoVideo(v, job.v1, PPV_PLACEMENT.paid1, target, job.r1)
-    ),
-    downloadTelegramFile(ctx, job.p2).then((v) =>
-      mixVoiceIntoVideo(v, job.v2, PPV_PLACEMENT.paid2, target, job.r2, job.a2)
-    ),
-  ]);
+  const video = await downloadTelegramFile(ctx, job.p1);
+  const out = await mixVoiceIntoVideo(
+    video,
+    job.v1,
+    job.s1 !== undefined ? { mode: "start", at: job.s1 } : PPV_PLACEMENT.paid1,
+    ppvTargetDb(level),
+    job.r1
+  );
   const slug = job.name.normalize("NFD").replace(/[^\w-]+/g, "").toLowerCase() || "fan";
-  const reply = replyTo
-    ? { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } }
-    : {};
-  for (const p of [
-    { n: 1, out: paid1 },
-    { n: 2, out: paid2 },
-  ]) {
-    await ctx.replyWithVideo(new InputFile(p.out.video, `ppv${p.n}-${slug}.mp4`), {
-      ...(p.out.width && p.out.height ? { width: p.out.width, height: p.out.height } : {}),
-      duration: p.out.duration,
-      supports_streaming: true,
-      caption: `💰 PPV ${p.n}/2 · ${job.name} · ${PPV_VOLUME_LEVELS[level]?.icon ?? "🔉"} ${level}/5`,
-      ...reply,
-    });
-  }
+  await ctx.replyWithVideo(new InputFile(out.video, `ppv1-${slug}.mp4`), {
+    ...(out.width && out.height ? { width: out.width, height: out.height } : {}),
+    duration: out.duration,
+    supports_streaming: true,
+    caption: `💰 PPV 1 · ${job.name} · ${PPV_VOLUME_LEVELS[level]?.icon ?? "🔉"} ${level}/5`,
+    ...(replyTo
+      ? { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } }
+      : {}),
+  });
 }
 
 // Télécharge un fichier déjà connu de Telegram (≤ 20 Mo pour un bot)
@@ -433,7 +428,7 @@ function createBot(): Bot {
         "5️⃣ Wait a few seconds\n" +
         "6️⃣ You receive 3 VERSIONS of the voice note 🎤 — same words, 3 readings: 🌙 Soft · ✨ Playful · 🔥 Intense → pick the one that fits the fan and send it\n" +
         "🎬 Fan wants a VIDEO (\"a video with my name\")? Tap 🎬 Video under the version you like: you get the same voice as a black-screen video, ready to send.\n" +
-        "💰 PPV with his name: type /ppv + his first name (ex: /ppv Julien) → a FREE preview + 2 PPV videos with his name in them.\n\n" +
+        "💰 PPV with his name: type /ppv + his first name (ex: /ppv Julien) → a FREE preview + the PPV 1 video with his name in it.\n\n" +
         "✅ DO THIS:\n" +
         "• Short sentences, like a real voice note\n" +
         "• Write normally, emotions are added AUTOMATICALLY ✨\n\n" +
@@ -587,8 +582,8 @@ function createBot(): Bot {
   });
 
   // ---------- 💰 PPV personnalisé : /ppv <prénom> ----------
-  // 3 fichiers avec la voix de la modèle : preview gratuite fond noir + les 2
-  // vidéos payantes enregistrées (1re = PPV 1, 2e = PPV 2) avec le prénom.
+  // 2 fichiers avec la voix de la modèle : preview gratuite fond noir + la
+  // vidéo PPV 1 enregistrée, avec le prénom. (PPV 2 : fixe, dans le vault.)
   bot.command("ppv", async (ctx) => {
     const name = cleanFanName(String(ctx.match ?? ""));
     if (!name) {
@@ -596,16 +591,17 @@ function createBot(): Bot {
         "💰 PERSONALIZED PPV\n\n" +
           "Type /ppv followed by the fan's first name, like:\n" +
           "/ppv Julien\n\n" +
-          "You get 3 files with the girl's voice saying his name:\n" +
+          "You get 2 files with the girl's voice saying his name:\n" +
           "🎁 a FREE preview (black screen): \"Julien… toi et moi, ça va être fou\"\n" +
-          "💰 2 PPV videos with \"Julien\" in them\n\n" +
+          "💰 the PPV 1 video: \"Julien… hmm, c'est chaud, toi et moi\"\n" +
+          "(PPV 2 is the same for every fan: it's already in the vault.)\n\n" +
           "(First name only: letters, 2 to 20 characters.)"
       );
       return;
     }
     const model = modelByKey(PPV_DEFAULT_MODEL);
     const parts = await getPpvParts(PPV_DEFAULT_MODEL).catch(() => []);
-    if (!model || parts.length < 2) {
+    if (!model || parts.length < 1) {
       await ctx.reply("⚠️ The PPV videos aren't set up yet — tell the admin.");
       return;
     }
@@ -619,21 +615,29 @@ function createBot(): Bot {
       ? { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } }
       : {};
     const slug = name.normalize("NFD").replace(/[^\w-]+/g, "").toLowerCase() || "fan";
-    await ctx.reply(`⏳ Making ${name}'s PPV: free preview + 2 videos… (about 30 seconds)`);
+    await ctx.reply(`⏳ Making ${name}'s PPV: free preview + PPV 1 video… (about 20 seconds)`);
     waitUntil(
       (async () => {
         try {
           await ctx.replyWithChatAction("upload_video").catch(() => {});
           // Parties fixes (identiques pour tous les fans) + le prénom de CE fan
           const fixed = await Promise.all(LINE_KEYS.map((k) => fixedAudio(ctx, model, k)));
-          const [[vPreview, vPaid1, vPaid2], [ref1, ref2]] = await Promise.all([
+          const [[vPreview, vPaid1], ref1] = await Promise.all([
             Promise.all(LINE_KEYS.map((k, i) => ppvLine(model, k, fixed[i], name))),
             // Niveau de la partie fixe seule : le gain en découle, identique pour tous
-            Promise.all([roomVoice(fixed[1]), roomVoice(fixed[2])]).then((r) => r.map((x) => x.meanDb)),
+            roomVoice(fixed[1]).then((r) => r.meanDb),
           ]);
-          // Phrase 2 calée sur sa partie fixe : même instant pour tous les fans
-          const anchor2 =
-            (await audioSeconds(fixed[2])) + NAME_GAP_SEC.after + NAME_MAX_SEC + 0.3;
+          // PPV 1 (prénom AU DÉBUT) : le prénom finit toujours au même instant,
+          // donc la partie fixe démarre au même instant pour tous les fans
+          const [line1Sec, fixed1Sec] = await Promise.all([
+            audioSeconds(vPaid1),
+            audioSeconds(fixed[1]),
+          ]);
+          const lead1 = line1Sec - fixed1Sec; // prénom + pause
+          const start1 = Math.max(
+            0,
+            PPV_PLACEMENT.paid1.at + NAME_MAX_SEC + NAME_GAP_SEC.before - lead1
+          );
           const level = (await getPpvVolume(userId).catch(() => null)) ?? PPV_DEFAULT_VOLUME;
           const preview = await blackVideoFromAudio(vPreview);
           await ctx.replyWithVideo(new InputFile(preview.video, `preview-${slug}.mp4`), {
@@ -644,29 +648,11 @@ function createBot(): Bot {
             caption: `🎁 FREE preview · ${name}`,
             ...reply,
           });
-          const job = {
-            name,
-            v1: vPaid1,
-            v2: vPaid2,
-            p1: parts[0].f,
-            p2: parts[1].f,
-            r1: ref1,
-            r2: ref2,
-            a2: anchor2,
-          };
-          await sendPaidVideos(ctx, job, level, replyTo);
-          // Gardé 6 h : les boutons de volume refont les 2 vidéos avec la même voix
+          const job = { name, v1: vPaid1, p1: parts[0].f, r1: ref1, s1: start1 };
+          await sendPaidVideo(ctx, job, level, replyTo);
+          // Gardé 6 h : les boutons de volume refont la vidéo avec la même voix
           const token = newVideoToken();
-          await savePpvJob(token, {
-            name,
-            v1: vPaid1.toString("base64"),
-            v2: vPaid2.toString("base64"),
-            p1: job.p1,
-            p2: job.p2,
-            r1: ref1,
-            r2: ref2,
-            a2: anchor2,
-          }).catch((err) => console.error("PPV non mémorisé:", err));
+          await savePpvJob(token, { ...job, v1: vPaid1.toString("base64") }).catch((err) => console.error("PPV non mémorisé:", err));
           // Libéré AVANT les boutons : un clic immédiat sur un volume doit marcher
           await unlockPpv(userId).catch(() => {});
           await ctx.reply(ppvVolumeText(level), {
@@ -687,7 +673,7 @@ function createBot(): Bot {
     );
   });
 
-  // 🔊 Refaire les 2 vidéos payantes à un autre volume (même voix)
+  // 🔊 Refaire la vidéo PPV 1 à un autre volume (même voix)
   bot.callbackQuery(/^ppvvol:([a-z0-9]{6,32}):([1-5])$/, async (ctx) => {
     const token = ctx.match[1];
     const level = Number(ctx.match[2]);
@@ -702,7 +688,7 @@ function createBot(): Bot {
       return;
     }
     await setPpvVolume(userId, level).catch(() => {});
-    await ctx.answerCallbackQuery({ text: `Remaking the 2 videos at volume ${level}/5…` });
+    await ctx.answerCallbackQuery({ text: `Remaking the video at volume ${level}/5…` });
     await ctx
       .editMessageText(ppvVolumeText(level), { reply_markup: ppvVolumeKeyboard(token, level) })
       .catch(() => {});
@@ -711,25 +697,16 @@ function createBot(): Bot {
       (async () => {
         try {
           await ctx.replyWithChatAction("upload_video").catch(() => {});
-          await sendPaidVideos(
+          await sendPaidVideo(
             ctx,
-            {
-              name: job.name,
-              v1: Buffer.from(job.v1, "base64"),
-              v2: Buffer.from(job.v2, "base64"),
-              p1: job.p1,
-              p2: job.p2,
-              r1: job.r1,
-              r2: job.r2,
-              a2: job.a2,
-            },
+            { name: job.name, v1: Buffer.from(job.v1, "base64"), p1: job.p1, r1: job.r1, s1: job.s1 },
             level,
             replyTo
           );
           await unlockPpv(userId).catch(() => {});
         } catch (err) {
           console.error("PPV (volume) échoué:", err);
-          await ctx.reply("❌ Couldn't remake the videos. Tap the level again.").catch(() => {});
+          await ctx.reply("❌ Couldn't remake the video. Tap the level again.").catch(() => {});
         } finally {
           await unlockPpv(userId).catch(() => {});
         }
@@ -737,14 +714,14 @@ function createBot(): Bot {
     );
   });
 
-  // 🎙️ Admin : écouter / refaire les parties fixes des 3 phrases
+  // 🎙️ Admin : écouter / refaire les parties fixes des 2 phrases
   bot.command("ppvfixed", async (ctx) => {
     if (ctx.from?.id !== ADMIN_ID) return;
     const model = modelByKey(PPV_DEFAULT_MODEL);
     if (!model) return;
     await ctx.reply(
       "🎙️ FIXED PARTS — the same for every fan, only the name changes.\n" +
-        "Tap 🔁 New take until you like it. To use a REAL recording of the girl instead, send it to me as a voice/audio with the caption /ppvfix preview, /ppvfix ppv1 or /ppvfix ppv2."
+        "Tap 🔁 New take until you like it. To use a REAL recording of the girl instead, send it to me as a voice/audio with the caption /ppvfix preview or /ppvfix ppv1."
     );
     // Génération possible (1re fois) : en arrière-plan, sinon Telegram
     // renvoie la commande au bout de 10 s.
@@ -766,7 +743,7 @@ function createBot(): Bot {
     );
   });
 
-  bot.callbackQuery(/^ppvfix:(preview|paid1|paid2)$/, async (ctx) => {
+  bot.callbackQuery(/^ppvfix:(preview|paid1)$/, async (ctx) => {
     if (ctx.from.id !== ADMIN_ID) {
       await ctx.answerCallbackQuery({ text: "Admin only." });
       return;
@@ -799,7 +776,7 @@ function createBot(): Bot {
     const key = FIX_ALIASES[m[1].toLowerCase()];
     const model = modelByKey(PPV_DEFAULT_MODEL);
     if (!key || !model) {
-      await ctx.reply("❌ Use /ppvfix preview, /ppvfix ppv1 or /ppvfix ppv2 as the caption.");
+      await ctx.reply("❌ Use /ppvfix preview or /ppvfix ppv1 as the caption.");
       return;
     }
     const file = ctx.message.voice ?? ctx.message.audio;
@@ -823,13 +800,13 @@ function createBot(): Bot {
     const model = modelByKey(PPV_DEFAULT_MODEL);
     await ctx.reply(
       parts.length === 0
-        ? "🗂️ No PPV video saved yet.\nSend the 2 videos to me in private with the caption /ppvadd, IN ORDER: first the one for PPV 1, then the one for PPV 2."
+        ? "🗂️ No PPV video saved yet.\nSend me the PPV 1 video in private with the caption /ppvadd."
         : `🗂️ PPV videos for ${model ? modelLabel(model) : PPV_DEFAULT_MODEL}: ${parts.length}\n` +
             parts
               .map(
                 (p, i) =>
                   `${i + 1}. ${Math.round(p.d)} s · ${(p.b / 1_048_576).toFixed(1)} MB` +
-                  (i === 0 ? " → PPV 1 (« c'est chaud, toi et moi… »)" : i === 1 ? " → PPV 2 (soupirs + prénom à la fin)" : " → not used")
+                  (i === 0 ? " → PPV 1 (prénom + « Hmm, c'est chaud, toi et moi »)" : " → not used")
               )
               .join("\n") +
             "\n\n/ppvclear to remove them all."
@@ -1118,11 +1095,27 @@ async function handleSetup(req: Request, u: URL): Promise<Response> {
     }
   }
 
+  // ?setup=fixed&line=paid1  corps = l'audio de la prise choisie (≤ 760 Ko) :
+  // devient la partie FIXE de cette phrase pour tous les fans
+  if (action === "fixed") {
+    const line = u.searchParams.get("line");
+    const audio = Buffer.from(await req.arrayBuffer());
+    if (!line || !LINE_KEYS.includes(line as LineKey) || audio.length === 0 || audio.length > 760_000) {
+      return Response.json({ ok: false, error: "phrase ou audio invalide" }, { status: 400 });
+    }
+    await setPpvFixed(model, line, {
+      src: "tts",
+      a: audio.toString("base64"),
+      at: new Date().toISOString(),
+    });
+    return Response.json({ ok: true, line, bytes: audio.length });
+  }
+
   if (action === "list") {
     const parts = await getPpvParts(model);
     return Response.json({
       ok: true,
-      parts: parts.map((p, i) => ({ role: i === 0 ? "PPV 1" : i === 1 ? "PPV 2" : "unused", seconds: p.d, bytes: p.b, m: p.m })),
+      parts: parts.map((p, i) => ({ role: i === 0 ? "PPV 1" : "unused", seconds: p.d, bytes: p.b, m: p.m })),
     });
   }
 

@@ -196,12 +196,9 @@ export async function setPpvVolume(userId: number, level: number): Promise<void>
 export interface PpvJob {
   name: string;
   v1: string; // voix PPV 1 (MP3 en base64)
-  v2: string; // voix PPV 2
   p1: string; // file_id de la vidéo PPV 1
-  p2: string; // file_id de la vidéo PPV 2
   r1?: number; // niveau de la partie fixe 1 « dans la pièce » (dB)
-  r2?: number;
-  a2?: number; // calage de la phrase 2 (partie fixe + pause + prénom max, s)
+  s1?: number; // début (s) de la phrase 1 dans la vidéo (partie fixe à instant constant)
 }
 
 export async function savePpvJob(token: string, job: PpvJob): Promise<void> {

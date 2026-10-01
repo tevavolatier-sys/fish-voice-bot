@@ -2,7 +2,7 @@
 // Telegram et Upstash Redis sont simulés (rien n'est envoyé à personne) ;
 // Fish Audio est le VRAI (voix réelle de la modèle, quelques centimes) ;
 // ffmpeg et toute la logique du bot sont les vrais.
-// Les 3 vidéos produites sont enregistrées pour être regardées.
+// Les 2 vidéos produites (preview + PPV 1) sont enregistrées pour être regardées.
 // Usage : FISH_API_KEY=… npx tsx scripts/sim-ppv.ts <dossier des vidéos 1080p> <dossier de sortie>
 import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import http, { createServer } from "node:http";
@@ -234,8 +234,8 @@ async function main() {
     console.log(`  liste → ${await lst.text()}`);
     const tst = await POST(new Request("https://x/api/webhook?setup=test&name=Test", { method: "POST", headers: hdr }));
     console.log(`  test → ${await tst.text()}`);
-    await waitFor(() => calls.filter((c) => c.method === "sendVideo").length >= partFiles.length + 3, "3 vidéos du test");
-    console.log("  " + calls.filter((c) => c.method === "sendVideo").slice(-3).map((c) => `${String(c.body.caption)} · chat ${c.body.chat_id}`).join("\n  "));
+    await waitFor(() => calls.filter((c) => c.method === "sendVideo").length >= partFiles.length + 2, "2 vidéos du test");
+    console.log("  " + calls.filter((c) => c.method === "sendVideo").slice(-2).map((c) => `${String(c.body.caption)} · chat ${c.body.chat_id}`).join("\n  "));
     redis.close();
     telegram.close();
     process.exit(0);
@@ -262,10 +262,10 @@ async function main() {
 
   console.log("▶ /ppvfixed (admin) : écouter les parties fixes, puis 🔁 nouvelle prise du PPV 1");
   await command("/ppvfixed", adminChat, admin);
-  await waitFor(() => calls.filter((c) => c.method === "sendAudio").length === 3, "3 parties fixes");
+  await waitFor(() => calls.filter((c) => c.method === "sendAudio").length === 2, "2 parties fixes");
   console.log("  " + calls.filter((c) => c.method === "sendAudio").map((c) => String(c.body.caption).split("\n").join(" — ")).join("\n  "));
   await send({ callback_query: { id: "fix1", from: admin, chat_instance: "1", data: "ppvfix:paid1", message: { message_id: 700, date: 0, chat: adminChat, text: "x" } } });
-  await waitFor(() => calls.filter((c) => c.method === "sendAudio").length === 4, "nouvelle prise");
+  await waitFor(() => calls.filter((c) => c.method === "sendAudio").length === 3, "nouvelle prise");
   console.log("  → " + String(calls.filter((c) => c.method === "sendAudio").pop()?.body.caption));
 
   console.log("▶ /ppv avec un prénom invalide");
@@ -277,8 +277,8 @@ async function main() {
   await command("/ppv julien");
   await command("/ppv julien");
   console.log("  → " + calls.filter((c) => c.method === "sendMessage").slice(-2).map((c) => String(c.body.text)).join("\n  → "));
-  await waitFor(() => calls.filter((c) => c.method === "sendVideo").length === 3, "3 vidéos");
-  console.log(`  ✔ 3 vidéos en ${((Date.now() - t0) / 1000).toFixed(1)} s`);
+  await waitFor(() => calls.filter((c) => c.method === "sendVideo").length === 2, "2 vidéos");
+  console.log(`  ✔ 2 vidéos en ${((Date.now() - t0) / 1000).toFixed(1)} s`);
   for (const c of calls.filter((x) => x.method === "sendVideo")) {
     console.log(`    · ${String(c.body.caption)} · ${(Number(c.body.bytes) / 1_048_576).toFixed(1)} Mo · ${c.body.width}×${c.body.height} · ${c.body.duration} s → ${c.body.saved}`);
   }
@@ -288,10 +288,10 @@ async function main() {
   const before2 = calls.filter((c) => c.method === "sendVideo").length;
   await sleep(500);
   await command("/ppv max");
-  await waitFor(() => calls.filter((c) => c.method === "sendVideo").length === before2 + 3, "3 vidéos de Max");
-  console.log("  " + calls.filter((c) => c.method === "sendVideo").slice(-3).map((c) => `${String(c.body.caption)} → ${c.body.saved}`).join("\n  "));
+  await waitFor(() => calls.filter((c) => c.method === "sendVideo").length === before2 + 2, "2 vidéos de Max");
+  console.log("  " + calls.filter((c) => c.method === "sendVideo").slice(-2).map((c) => `${String(c.body.caption)} → ${c.body.saved}`).join("\n  "));
 
-  // ── Boutons de volume : refaire les 2 vidéos à d'autres niveaux ──
+  // ── Boutons de volume : refaire la vidéo PPV 1 à d'autres niveaux ──
   // Attendre la fin des DEUX PPV (Julien puis Max) : un opérateur = un PPV à la fois
   await waitFor(() => calls.filter((c) => c.method === "sendMessage" && String(c.body.text).startsWith("🔊")).length >= 2, "boutons de volume");
   await sleep(800);
@@ -308,8 +308,8 @@ async function main() {
         message: { message_id: 900 + lvl, date: 0, chat: group, text: String(volMsg.body.text) },
       },
     });
-    await waitFor(() => calls.filter((c) => c.method === "sendVideo").length === before + 2, `volume ${lvl}`);
-    const vids = calls.filter((c) => c.method === "sendVideo").slice(-2);
+    await waitFor(() => calls.filter((c) => c.method === "sendVideo").length === before + 1, `volume ${lvl}`);
+    const vids = calls.filter((c) => c.method === "sendVideo").slice(-1);
     console.log(`  volume ${lvl} → ${vids.map((v) => String(v.body.caption)).join(" · ")}`);
     await sleep(300);
   }

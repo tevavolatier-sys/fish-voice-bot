@@ -82,9 +82,17 @@ export async function getFishCredits(): Promise<number | null> {
  * Retente automatiquement 1 fois en cas d'erreur 5xx ou de timeout.
  * Lance une FishError avec un message clair pour l'opérateur en cas d'échec.
  */
+/** Réglages facultatifs de la synthèse (prises « fixes » plus stables). */
+export interface VoiceOptions {
+  temperature?: number;
+  top_p?: number;
+  speed?: number;
+}
+
 export async function generateVoice(
   text: string,
-  referenceId: string
+  referenceId: string,
+  opts: VoiceOptions = {}
 ): Promise<Buffer> {
   let lastError: FishError | null = null;
 
@@ -103,6 +111,9 @@ export async function generateVoice(
           reference_id: referenceId,
           format: "mp3",
           mp3_bitrate: 128,
+          ...(opts.temperature !== undefined ? { temperature: opts.temperature } : {}),
+          ...(opts.top_p !== undefined ? { top_p: opts.top_p } : {}),
+          ...(opts.speed !== undefined ? { prosody: { speed: opts.speed } } : {}),
         }),
         signal: AbortSignal.timeout(ATTEMPT_TIMEOUT_MS),
       });
