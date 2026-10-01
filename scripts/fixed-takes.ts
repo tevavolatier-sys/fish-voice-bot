@@ -7,20 +7,18 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { generateVoice } from "../lib/fish.js";
-import {
-  NAME_GAP_SEC,
-  NAME_MAX_SEC,
-  PPV_VOICE_OPTS,
-  extractNameAudio,
-  joinFixedAndName,
-} from "../lib/ppv-voice.js";
-import { PPV_PLACEMENT, mixVoiceIntoVideo, ppvTargetDb, roomVoice } from "../lib/ppv.js";
+import { NAME_MAX_SEC, extractNameAudio, joinFixedAndName } from "../lib/ppv-voice.js";
+import { mixVoiceIntoVideo, roomVoice } from "../lib/ppv.js";
+import { defaultSettings, targetDbFor, voiceOpts } from "../lib/ppv-settings.js";
 import { ffmpegBinary, parseInputDuration, run } from "../lib/video.js";
 
 const SIENNA = "aa13d26cfc6e41f1b1f7a02bf5baa606";
 const NAME = "Julien";
 const [VIDEO, OUT] = process.argv.slice(2);
 mkdirSync(OUT, { recursive: true });
+// Réglages par défaut du bot (effet, volume 2, voix, calage)
+const CFG = defaultSettings();
+const PPV_VOICE_OPTS = voiceOpts(CFG);
 
 // id → partie fixe ; le prénom est pris dans « {prénom}… » + cette partie fixe
 const VARIANTS: { id: string; fixed: string }[] = [
@@ -61,15 +59,17 @@ async function main() {
       );
       const isolated = await extractNameAudio(sentence, "before");
       const nameAudio = isolated ?? (await generateVoice(`${tag} ${NAME}…`, SIENNA, PPV_VOICE_OPTS));
-      const voiceLine = await joinFixedAndName(fixed, nameAudio, "before");
+      const voiceLine = await joinFixedAndName(fixed, nameAudio, "before", CFG.nameGapSec);
       const [fixedSec, lineSec] = [await seconds(fixed), await seconds(voiceLine)];
       // Même calage que le bot : la partie fixe démarre au même instant pour tous
       const start = Math.max(
         0,
-        PPV_PLACEMENT.paid1.at + NAME_MAX_SEC + NAME_GAP_SEC.before - (lineSec - fixedSec)
+        CFG.paid1StartSec + NAME_MAX_SEC + CFG.nameGapSec - (lineSec - fixedSec)
       );
-      const ref = (await roomVoice(fixed)).meanDb;
-      const out = await mixVoiceIntoVideo(videoBuf, voiceLine, { mode: "start", at: start }, ppvTargetDb(2), ref);
+      const ref = (await roomVoice(fixed, CFG.room)).meanDb;
+      const out = await mixVoiceIntoVideo(
+        videoBuf, voiceLine, { mode: "start", at: start }, targetDbFor(CFG, 2), ref, undefined, CFG.room
+      );
       const from = Math.max(0, start - 1);
       await clip(out.video, from, lineSec + 2.4, join(OUT, `${label}.mp4`));
       writeFileSync(join(OUT, `${label}-partie-fixe.mp3`), fixed);

@@ -19,16 +19,7 @@ import { ffmpegBinary, parseInputDuration, run } from "./video.js";
 /** Modèle des vidéos PPV enregistrées par défaut (IMG_0585 = Sienna) */
 export const PPV_DEFAULT_MODEL = "sienna";
 
-/** Les 2 phrases personnalisées ; {name} = prénom du fan. Tags = jeu de la voix. */
-export const PPV_LINES = {
-  preview: "[soft tone] {name}… [breath] toi et moi, ça va être fou.",
-  paid1: "[soft tone] {name}… Hmm, c'est chaud, toi et moi.",
-} as const;
-
-/** Où poser la voix dans la vidéo payante */
-export const PPV_PLACEMENT = {
-  paid1: { mode: "start", at: 1.5 },
-} as const;
+// Textes, calages et effets : réglables depuis le bot (lib/ppv-settings.ts)
 
 export type Placement =
   | { mode: "start"; at: number }
@@ -99,27 +90,96 @@ export function ppvTargetDb(level?: number | null): number {
   return (PPV_VOLUME_LEVELS[level ?? PPV_DEFAULT_VOLUME] ?? PPV_VOLUME_LEVELS[PPV_DEFAULT_VOLUME]).db;
 }
 
-// ── Rendu « filmé par l'iPhone » ───────────────────────────────────────────
+// ── Effets de voix (réglables depuis le bot) ──────────────────────────────
 // Une voix de synthèse collée telle quelle se repère : son « studio », mono
-// au centre, sans la couleur du micro. On simule une personne à ~1,5 m d'un
-// iPhone dans une chambre :
-//   · couleur de micro de téléphone (graves coupés, médiums présents, aigus
-//     adoucis) + légère compression (le contrôle de gain automatique) ;
-//   · pièce en STÉRÉO : son direct un peu décentré (les 2 micros de l'iPhone
-//     ne l'entendent pas au même instant) + réflexions courtes sur les murs,
-//     le sol, le plafond, différentes à gauche et à droite ;
-//   · presque pas de traîne (« trop d'écho » sinon) ;
-//   · le son d'origine n'est PAS baissé : une vraie pièce ne se tait pas.
-// Le niveau final est mesuré APRÈS la pièce (loudnorm), donc les 5 niveaux de
-// volume restent comparables quel que soit le rendu.
-export const PPV_ROOM = {
-  highpass: 130, // Hz : un micro de téléphone coupe les graves
-  lowpass: 7500, // Hz : aigus adoucis (distance + micro)
-  presenceDb: 2.5, // dB vers 2,5 kHz : médiums « téléphone »
-  boomCutDb: -3, // dB vers 250 Hz : pas d'effet de proximité
-  tail: 0.25, // s : traîne très courte
-  tailLevel: 0.05, // niveau de la traîne
-} as const;
+// au centre, sans la couleur du micro. Chaque effet = une couleur de micro +
+// une pièce STÉRÉO (son direct un peu décentré : les 2 micros de l'iPhone ne
+// l'entendent pas au même instant, réflexions différentes à gauche et à
+// droite). Le son d'origine de la vidéo n'est PAS baissé : une vraie pièce ne
+// se tait pas. Le niveau est mesuré APRÈS l'effet, donc les 5 niveaux de
+// volume restent comparables d'un effet à l'autre.
+// Le son « boîte de conserve » vient surtout des réflexions TRÈS courtes
+// (3 à 7 ms : elles creusent le spectre en peigne) et d'une bande étroite
+// façon téléphone : les effets « naturels » les réduisent et gardent graves
+// et aigus.
+export interface RoomParams {
+  highpass: number; // Hz : coupe les graves en dessous (20 = rien)
+  lowpass: number; // Hz : adoucit les aigus au-dessus (20000 = rien)
+  warmthDb: number; // dB vers 180 Hz : chaleur du bas-médium
+  boomCutDb: number; // dB vers 250 Hz : retire l'effet de proximité
+  presenceDb: number; // dB vers 2,5 kHz : présence « téléphone »
+  compression: number; // 0 aucune · 1 douce · 2 moyenne · 3 forte
+  reflections: number; // 0 … 1 : réflexions courtes sur les murs proches
+  reverb: number; // niveau de la traîne de la pièce
+  reverbSec: number; // s : longueur de la traîne
+  width: number; // 0 (mono) … 1 : écart entre les 2 micros
+}
+
+export type EffectKey = "natural" | "bedroom" | "close" | "iphone" | "far" | "dry";
+
+export const EFFECT_PRESETS: Record<
+  EffectKey,
+  { label: string; icon: string; about: string; params: RoomParams }
+> = {
+  natural: {
+    label: "Natural",
+    icon: "🎧",
+    about: "real voice in the room, full sound, almost no tin can",
+    params: {
+      highpass: 80, lowpass: 12000, warmthDb: 1.5, boomCutDb: -1, presenceDb: 0.5,
+      compression: 1, reflections: 0.2, reverb: 0.05, reverbSec: 0.4, width: 0.6,
+    },
+  },
+  bedroom: {
+    label: "Bedroom",
+    icon: "🛏️",
+    about: "a bit more room around her, still soft",
+    params: {
+      highpass: 90, lowpass: 10000, warmthDb: 1, boomCutDb: -1.5, presenceDb: 1,
+      compression: 1, reflections: 0.35, reverb: 0.08, reverbSec: 0.5, width: 0.8,
+    },
+  },
+  close: {
+    label: "Close",
+    icon: "💋",
+    about: "right next to the mic, intimate, dry",
+    params: {
+      highpass: 70, lowpass: 14000, warmthDb: 2, boomCutDb: 0, presenceDb: -0.5,
+      compression: 1, reflections: 0, reverb: 0.02, reverbSec: 0.3, width: 0.3,
+    },
+  },
+  iphone: {
+    label: "iPhone",
+    icon: "📱",
+    about: "filmed by the phone ~1.5 m away (the old sound)",
+    params: {
+      highpass: 130, lowpass: 7500, warmthDb: 0, boomCutDb: -3, presenceDb: 2.5,
+      compression: 2, reflections: 1, reverb: 0.05, reverbSec: 0.25, width: 1,
+    },
+  },
+  far: {
+    label: "Far",
+    icon: "🚪",
+    about: "across the room, more distant",
+    params: {
+      highpass: 150, lowpass: 6500, warmthDb: -1, boomCutDb: -3, presenceDb: 1.5,
+      compression: 2, reflections: 0.5, reverb: 0.12, reverbSec: 0.6, width: 1,
+    },
+  },
+  dry: {
+    label: "Dry",
+    icon: "⚪",
+    about: "no effect at all (only the volume)",
+    params: {
+      highpass: 20, lowpass: 20000, warmthDb: 0, boomCutDb: 0, presenceDb: 0,
+      compression: 0, reflections: 0, reverb: 0, reverbSec: 0.1, width: 0,
+    },
+  },
+};
+export const EFFECT_KEYS = Object.keys(EFFECT_PRESETS) as EffectKey[];
+export const DEFAULT_EFFECT: EffectKey = "natural";
+export const isEffectKey = (v: unknown): v is EffectKey =>
+  typeof v === "string" && (EFFECT_KEYS as string[]).includes(v);
 
 const IR_RATE = 48_000;
 
@@ -134,16 +194,20 @@ function prng(seed: number) {
 }
 
 /**
- * Réponse impulsionnelle STÉRÉO d'une chambre captée par un iPhone à ~1,5 m
- * (WAV 32 bits flottants, 2 canaux). Déterministe.
+ * Réponse impulsionnelle STÉRÉO de la pièce de l'effet (WAV 32 bits
+ * flottants, 2 canaux). Déterministe.
  */
-export function roomImpulseWav(): Buffer {
-  const len = Math.round(IR_RATE * (PPV_ROOM.tail + 0.08));
+export function roomImpulseWav(p: RoomParams = EFFECT_PRESETS.iphone.params): Buffer {
+  const len = Math.round(IR_RATE * (p.reverbSec + 0.08));
   const ch = [new Float32Array(len), new Float32Array(len)];
   const at = (ms: number) => Math.min(len - 1, Math.round((ms * IR_RATE) / 1000));
-  // Son direct : un peu décentré (gauche), 0,2 ms d'écart entre les micros
-  ch[0][at(0)] += 1;
-  ch[1][at(0.2)] += 0.85;
+  const w = Math.max(0, Math.min(1, p.width));
+  // Son direct (ajouté après le réglage de largeur, voir plus bas)
+  const direct = () => {
+    ch[0][at(0)] += 1;
+    ch[1][at(0.2 * w)] += 0.85 + 0.15 * (1 - w);
+  };
+  if (w >= 1) direct();
   // Réflexions précoces (ms, gain) : sol, murs, plafond, meubles — différentes
   // pour chaque micro (c'est ce qui « place » la voix), toutes positives : un
   // mur renvoie le son sans l'inverser, et le mélange mono (haut-parleur de
@@ -152,9 +216,9 @@ export function roomImpulseWav(): Buffer {
     [[2.9, 0.5], [6.1, 0.38], [9.8, 0.3], [13.6, 0.24], [19.2, 0.18], [26.5, 0.13], [34.1, 0.09]],
     [[3.6, 0.46], [7.4, 0.36], [11.1, 0.28], [15.2, 0.22], [21.7, 0.17], [28.9, 0.12], [37.3, 0.08]],
   ];
-  early.forEach((list, c) => list.forEach(([ms, g]) => (ch[c][at(ms)] += g)));
-  // Traîne très courte, décorrélée entre les 2 canaux, assombrie
-  const tau = PPV_ROOM.tail / 6.91;
+  early.forEach((list, c) => list.forEach(([ms, g]) => (ch[c][at(ms)] += g * p.reflections)));
+  // Traîne décorrélée entre les 2 canaux, assombrie
+  const tau = p.reverbSec / 6.91;
   const start = at(12);
   [0x51ab3, 0x9e377].forEach((seed, c) => {
     const rnd = prng(seed);
@@ -163,7 +227,7 @@ export function roomImpulseWav(): Buffer {
       const t = (i - start) / IR_RATE;
       // Bruit « éclairci » (sans graves) : sinon la traîne grave domine et
       // différente à gauche/droite, elle s'annule en partie en mono
-      const x = (rnd() * 2 - 1) * PPV_ROOM.tailLevel * Math.exp(-t / tau);
+      const x = (rnd() * 2 - 1) * p.reverb * Math.exp(-t / tau);
       ch[c][i] += x - lp;
       lp += 0.05 * (x - lp);
     }
@@ -172,6 +236,20 @@ export function roomImpulseWav(): Buffer {
   for (let i = 0; i < fade; i++) {
     ch[0][len - 1 - i] *= i / fade;
     ch[1][len - 1 - i] *= i / fade;
+  }
+  // Largeur < 1 : les 2 micros se ressemblent davantage (0 = mono au centre)
+  if (w < 1) {
+    const a = (1 + w) / 2;
+    const b = (1 - w) / 2;
+    for (let i = 0; i < len; i++) {
+      const l = ch[0][i];
+      const r = ch[1][i];
+      ch[0][i] = a * l + b * r;
+      ch[1][i] = a * r + b * l;
+    }
+    // Son direct NON mélangé : une copie décalée de lui-même creuserait le
+    // spectre en peigne (le défaut « boîte de conserve »)
+    direct();
   }
 
   const bytes = len * 2 * 4;
@@ -196,19 +274,38 @@ export function roomImpulseWav(): Buffer {
   return buf;
 }
 
-// Voix → micro de téléphone → pièce stéréo (sans réglage de niveau)
-function roomArgs(input: string, impulse: string, output: string): string[] {
-  const tail = Math.round(IR_RATE * (PPV_ROOM.tail + 0.1));
+// Compression (le contrôle de gain automatique d'un téléphone), 0 → 3
+const COMPRESSORS = [
+  "",
+  "acompressor=threshold=0.18:ratio=1.8:attack=15:release=200:makeup=1,",
+  "acompressor=threshold=0.125:ratio=3:attack=10:release=150:makeup=1,",
+  "acompressor=threshold=0.1:ratio=5:attack=5:release=120:makeup=1,",
+];
+
+const num = (x: number) => String(Math.round(x * 1000) / 1000);
+
+// Voix → couleur du micro → pièce stéréo (sans réglage de niveau). Un réglage
+// neutre (0 dB, 20 Hz, 20 kHz) n'ajoute pas de filtre du tout.
+export function roomArgs(
+  input: string,
+  impulse: string,
+  output: string,
+  p: RoomParams = EFFECT_PRESETS.iphone.params
+): string[] {
+  const tail = Math.round(IR_RATE * (p.reverbSec + 0.1));
+  const comp = COMPRESSORS[Math.max(0, Math.min(3, Math.round(p.compression)))];
+  const eq =
+    (p.highpass > 20 ? `highpass=f=${num(p.highpass)},` : "") +
+    (p.lowpass < 20000 ? `lowpass=f=${num(p.lowpass)},` : "") +
+    (p.warmthDb ? `bass=g=${num(p.warmthDb)}:f=180:width_type=o:width=1,` : "") +
+    (p.boomCutDb ? `equalizer=f=250:width_type=o:width=1:g=${num(p.boomCutDb)},` : "") +
+    (p.presenceDb ? `equalizer=f=2500:width_type=o:width=1.5:g=${num(p.presenceDb)},` : "");
   const graph =
-    `[0:a]aresample=${IR_RATE},` +
-    `acompressor=threshold=0.125:ratio=3:attack=10:release=150:makeup=1,` +
-    `highpass=f=${PPV_ROOM.highpass},lowpass=f=${PPV_ROOM.lowpass},` +
-    `equalizer=f=250:width_type=o:width=1:g=${PPV_ROOM.boomCutDb},` +
-    `equalizer=f=2500:width_type=o:width=1.5:g=${PPV_ROOM.presenceDb},` +
+    `[0:a]aresample=${IR_RATE},${comp}${eq}` +
     `apad=pad_len=${tail},pan=stereo|c0=c0|c1=c0[mono2];` +
     // gtype=-1 : la pièce est appliquée telle quelle (l'auto-gain du ffmpeg
     // embarqué écrasait le son direct sous la traîne)
-    `[mono2][1:a]afir=gtype=-1[room]`;
+    `[mono2][1:a]afir=gtype=-1,volume=-18dB[room]`;
   return [
     "-y", "-hide_banner", "-i", input, "-i", impulse,
     "-filter_complex", graph, "-map", "[room]", "-c:a", "pcm_s16le", output,
@@ -220,21 +317,56 @@ const meanDbOf = (stderr: string): number | null => {
   return m ? Number(m[1]) : null;
 };
 
-/** Passe la voix « dans la pièce » ; renvoie le WAV et son niveau moyen. */
-export async function roomVoice(audio: Buffer): Promise<{ wav: Buffer; meanDb: number }> {
+/** Passe la voix dans l'effet ; renvoie le WAV et son niveau moyen. */
+export async function roomVoice(
+  audio: Buffer,
+  p: RoomParams = EFFECT_PRESETS.iphone.params
+): Promise<{ wav: Buffer; meanDb: number }> {
   const dir = await mkdtemp(join(tmpdir(), "room-"));
   try {
     const input = join(dir, "in.audio");
     const ir = join(dir, "room.wav");
     const out = join(dir, "voice-room.wav");
-    await Promise.all([writeFile(input, audio), writeFile(ir, roomImpulseWav())]);
+    await Promise.all([writeFile(input, audio), writeFile(ir, roomImpulseWav(p))]);
     const bin = await ffmpegBinary();
-    const r = await run(bin, roomArgs(input, ir, out));
+    const r = await run(bin, roomArgs(input, ir, out, p));
     if (r.code !== 0) throw new Error(`pièce: ${r.stderr.slice(-400)}`);
     const v = await run(bin, ["-hide_banner", "-i", out, "-af", "volumedetect", "-f", "null", "-"]);
     const meanDb = meanDbOf(v.stderr);
     if (meanDb === null) throw new Error("niveau de la voix illisible");
     return { wav: await readFile(out), meanDb };
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+/**
+ * Voix passée dans l'effet mais au MÊME niveau moyen qu'avant (preview fond
+ * noir : on change la couleur, pas le volume). WAV stéréo.
+ */
+export async function roomVoiceSameLevel(audio: Buffer, p: RoomParams): Promise<Buffer> {
+  const dir = await mkdtemp(join(tmpdir(), "roomlvl-"));
+  try {
+    const input = join(dir, "in.audio");
+    const wet = join(dir, "wet.wav");
+    const out = join(dir, "out.wav");
+    await writeFile(input, audio);
+    const bin = await ffmpegBinary();
+    const [dry, room] = await Promise.all([
+      run(bin, ["-hide_banner", "-i", input, "-af", "volumedetect", "-f", "null", "-"]),
+      roomVoice(audio, p),
+    ]);
+    const before = meanDbOf(dry.stderr);
+    if (before === null) throw new Error("niveau de la voix illisible");
+    await writeFile(wet, room.wav);
+    const gain = Math.max(-40, Math.min(40, before - room.meanDb));
+    const r = await run(bin, [
+      "-y", "-hide_banner", "-i", wet,
+      "-af", `volume=${gain.toFixed(2)}dB,alimiter=limit=0.95:level=false`,
+      "-c:a", "pcm_s16le", out,
+    ]);
+    if (r.code !== 0) throw new Error(`niveau: ${r.stderr.slice(-300)}`);
+    return await readFile(out);
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => {});
   }
@@ -293,15 +425,16 @@ export async function mixVoiceIntoVideo(
   refMeanDb?: number,
   /** Durée de la partie fixe + pause + prénom max : la phrase est calée sur
    *  la partie fixe, à un instant IDENTIQUE pour tous les fans (« end ») */
-  anchorSec?: number
+  anchorSec?: number,
+  room: RoomParams = EFFECT_PRESETS.iphone.params
 ): Promise<{ video: Buffer; duration: number; width?: number; height?: number }> {
   const dir = await mkdtemp(join(tmpdir(), "ppv-"));
   const vIn = join(dir, "in.mp4");
   const aIn = join(dir, "voice-room.wav");
   const out = join(dir, "out.mp4");
   try {
-    const [room] = await Promise.all([roomVoice(voice), writeFile(vIn, video)]);
-    await writeFile(aIn, room.wav);
+    const [wet] = await Promise.all([roomVoice(voice, room), writeFile(vIn, video)]);
+    await writeFile(aIn, wet.wav);
     const bin = await ffmpegBinary();
     const [pv, pa] = await Promise.all([
       run(bin, ["-hide_banner", "-i", vIn]),
@@ -317,7 +450,7 @@ export async function mixVoiceIntoVideo(
       place.mode === "end" && anchorSec
         ? voiceStart(videoSec, Math.max(voiceSec, anchorSec), place)
         : voiceStart(videoSec, voiceSec, place);
-    const gainDb = targetDb - (refMeanDb ?? room.meanDb);
+    const gainDb = targetDb - (refMeanDb ?? wet.meanDb);
     const { code, stderr } = await run(
       bin,
       mixArgs(vIn, aIn, out, gainDb, start, videoSec, hasAudio)

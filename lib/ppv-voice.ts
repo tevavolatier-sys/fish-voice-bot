@@ -4,7 +4,7 @@
 // générée une fois — ou un vrai enregistrement de la modèle) + le PRÉNOM du
 // fan, seul élément refait à chaque fois.
 // Pour que le prénom ait la bonne intonation, on fait dire la phrase COMPLÈTE
-// au clone (PPV_LINES), puis on n'en garde QUE le prénom : il est séparé du
+// au clone (le « contexte »), puis on n'en garde QUE le prénom : il est séparé du
 // reste par une pause (« … »), qu'on repère au silence. Repli si la pause
 // n'est pas trouvée : le prénom généré seul.
 
@@ -13,45 +13,24 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ffmpegBinary, parseInputDuration, run } from "./video.js";
 
-// PPV 2 n'est plus personnalisé (choix de Teva le 2026-10-01) : une seule
-// vidéo, la même pour tous les fans, mise une fois pour toutes dans le vault.
-export type LineKey = "preview" | "paid1";
-export const LINE_KEYS: LineKey[] = ["preview", "paid1"];
+// Les 3 parties fixes : la preview et le PPV 1 portent le prénom du fan ;
+// PPV 2 n'est PAS personnalisé (choix de Teva le 2026-10-01) : une seule
+// vidéo, la même pour tous les fans, rendue par le bot pour le vault.
+// Textes, place du prénom et réglages de voix : lib/ppv-settings.ts.
+export type LineKey = "preview" | "paid1" | "paid2";
+export const LINE_KEYS: LineKey[] = ["preview", "paid1", "paid2"];
+/** Les phrases qui portent le prénom du fan */
+export const NAMED_KEYS = ["preview", "paid1"] as const;
 
 export const LINE_LABELS: Record<LineKey, string> = {
   preview: "🎁 Preview",
   paid1: "💰 PPV 1",
+  paid2: "💰 PPV 2 (vault)",
 };
-
-/**
- * Partie fixe de chaque phrase, et place du prénom :
- *   before → « {prénom}… » PUIS la partie fixe
- *   after  → la partie fixe PUIS « … {prénom} »
- * `nameAlone` : repli si le prénom ne peut pas être isolé de la phrase.
- */
-export const PPV_FIXED: Record<
-  LineKey,
-  { text: string; name: "before" | "after"; nameAlone: string }
-> = {
-  preview: {
-    text: "[soft tone] toi et moi, ça va être fou.",
-    name: "before",
-    nameAlone: "[soft tone] {name}…",
-  },
-  paid1: {
-    // Prise « PPV1-A1 » choisie par Teva le 2026-10-01, prénom AU DÉBUT
-    text: "[soft tone] Hmm, c'est chaud, toi et moi.",
-    name: "before",
-    nameAlone: "[soft tone] {name}…",
-  },
-};
-
-/** Réglages de synthèse STABLES (même rendu pour la prise fixe et le prénom) */
-export const PPV_VOICE_OPTS = { temperature: 0.55, top_p: 0.7, speed: 1.0 } as const;
 
 /** Durée max d'un prénom isolé : au-delà, un soupir y est collé → repli */
 export const NAME_MAX_SEC = 1.4;
-/** Pause fixe entre la partie fixe et le prénom */
+/** Pause par défaut entre la partie fixe et le prénom (réglable) */
 export const NAME_GAP_SEC = { after: 0.28, before: 0.2 } as const;
 
 // ── Fonctions pures (testées dans scripts/test-ppv.ts) ─────────────────────
@@ -175,12 +154,15 @@ function meanVolume(stderr: string): number | null {
 
 /**
  * Assemble partie fixe + prénom (dans l'ordre voulu), le prénom ramené au
- * niveau de la partie fixe, avec une courte pause entre les deux. WAV mono.
+ * niveau de la partie fixe (± `nameGainDb`), avec une courte pause entre les
+ * deux. WAV mono.
  */
 export async function joinFixedAndName(
   fixed: Buffer,
   name: Buffer,
-  position: "before" | "after"
+  position: "before" | "after",
+  gapSec: number = NAME_GAP_SEC[position],
+  nameGainDb = 0
 ): Promise<Buffer> {
   return withTmp(async (dir) => {
     const f = join(dir, "fixed.audio");
@@ -192,8 +174,9 @@ export async function joinFixedAndName(
       run(bin, ["-hide_banner", "-i", f, "-af", "volumedetect", "-f", "null", "-"]),
       run(bin, ["-hide_banner", "-i", n, "-af", "volumedetect", "-f", "null", "-"]),
     ]);
-    const gain = Math.max(-12, Math.min(12, (meanVolume(vf.stderr) ?? 0) - (meanVolume(vn.stderr) ?? 0)));
-    const gap = NAME_GAP_SEC[position];
+    const match = Math.max(-12, Math.min(12, (meanVolume(vf.stderr) ?? 0) - (meanVolume(vn.stderr) ?? 0)));
+    const gain = match + nameGainDb;
+    const gap = Math.max(0.01, gapSec);
     const first = position === "before" ? "[n]" : "[f]";
     const second = position === "before" ? "[f]" : "[n]";
     const graph =

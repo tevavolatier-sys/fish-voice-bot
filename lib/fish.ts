@@ -96,7 +96,7 @@ export async function generateVoice(
 ): Promise<Buffer> {
   let lastError: FishError | null = null;
 
-  for (let attempt = 1; attempt <= 2; attempt++) {
+  for (let attempt = 1; attempt <= 3; attempt++) {
     let res: Response;
     try {
       res = await fetch(FISH_TTS_URL, {
@@ -131,6 +131,12 @@ export async function generateVoice(
     }
 
     const body = await res.text().catch(() => "");
+    if (res.status === 429 && attempt < 3) {
+      // Trop de requêtes en même temps (limite de Fish) : on attend un peu
+      lastError = mapClientError(res.status, body);
+      await new Promise((r) => setTimeout(r, 1200 * attempt + Math.random() * 800));
+      continue;
+    }
     if (res.status >= 500) {
       // Erreur serveur -> on retente une fois
       lastError = new FishError(

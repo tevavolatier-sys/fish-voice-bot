@@ -189,16 +189,61 @@ export async function setPpvVolume(userId: number, level: number): Promise<void>
   await getRedis().set(`ppvvol:${userId}`, level);
 }
 
+/** Effet de voix PPV choisi par un opérateur (clé d'effet, ex. « natural ») */
+export async function getPpvEffect(userId: number): Promise<string | null> {
+  return getRedis().get<string>(`ppveff:${userId}`);
+}
+
+export async function setPpvEffect(userId: number, effect: string): Promise<void> {
+  await getRedis().set(`ppveff:${userId}`, effect);
+}
+
+/** ⚙️ Réglages PPV (JSON complet, validé à la lecture par normalizeSettings) */
+export async function getPpvSettingsRaw(): Promise<unknown> {
+  const raw = await getRedis().get<unknown>("ppvcfg");
+  if (typeof raw !== "string") return raw ?? null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+export async function savePpvSettings(settings: object): Promise<void> {
+  await getRedis().set("ppvcfg", JSON.stringify(settings));
+}
+
+/** Prises proposées (🎲) en attente d'un ✅, gardées 6 h */
+export interface FixedCandidate {
+  line: string;
+  model: string;
+  a: string; // MP3 en base64
+  t: string; // texte de la prise
+}
+
+export async function saveFixedCandidate(id: string, c: FixedCandidate): Promise<void> {
+  await getRedis().set(`ppvcand:${id}`, JSON.stringify(c), { ex: 6 * 3600 });
+}
+
+export async function getFixedCandidate(id: string): Promise<FixedCandidate | null> {
+  const raw = await getRedis().get<string | FixedCandidate>(`ppvcand:${id}`);
+  if (!raw) return null;
+  return typeof raw === "string" ? (JSON.parse(raw) as FixedCandidate) : raw;
+}
+
 /**
- * Un PPV déjà généré, gardé 6 h pour pouvoir le REFAIRE à un autre volume
- * avec la MÊME voix (sans repasser par Fish Audio).
+ * Un PPV déjà généré, gardé 6 h pour pouvoir le REFAIRE à un autre volume ou
+ * avec un autre effet, avec la MÊME voix (sans repasser par Fish Audio).
  */
 export interface PpvJob {
   name: string;
-  v1: string; // voix PPV 1 (MP3 en base64)
+  v1: string; // voix PPV 1 (WAV en base64)
+  f1?: string; // partie fixe seule (base64) : le gain est calé dessus
   p1: string; // file_id de la vidéo PPV 1
-  r1?: number; // niveau de la partie fixe 1 « dans la pièce » (dB)
+  r1?: number; // ancien format : niveau de la partie fixe avec l'effet iPhone
   s1?: number; // début (s) de la phrase 1 dans la vidéo (partie fixe à instant constant)
+  lvl?: number; // dernier volume envoyé
+  fx?: string; // dernier effet envoyé
 }
 
 export async function savePpvJob(token: string, job: PpvJob): Promise<void> {
@@ -215,10 +260,11 @@ export async function getPpvJob(token: string): Promise<PpvJob | null> {
  * Partie FIXE d'une phrase PPV (la même pour tous les fans) :
  *   tts    → prise générée une fois par Fish (MP3 en base64)
  *   upload → vrai enregistrement envoyé par l'admin (file_id Telegram)
+ * `t` : texte d'où vient une prise tts — s'il change, la prise est refaite.
  */
 export type PpvFixed =
-  | { src: "tts"; a: string; at: string }
-  | { src: "upload"; f: string; kind: "voice" | "audio"; at: string };
+  | { src: "tts"; a: string; at: string; t?: string }
+  | { src: "upload"; f: string; kind: "voice" | "audio"; at: string; t?: string };
 
 export async function getPpvFixed(model: string, line: string): Promise<PpvFixed | null> {
   const raw = await getRedis().get<string | PpvFixed>(`ppvfix:${model}:${line}`);

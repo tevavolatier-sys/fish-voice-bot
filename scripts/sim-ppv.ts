@@ -262,10 +262,10 @@ async function main() {
 
   console.log("▶ /ppvfixed (admin) : écouter les parties fixes, puis 🔁 nouvelle prise du PPV 1");
   await command("/ppvfixed", adminChat, admin);
-  await waitFor(() => calls.filter((c) => c.method === "sendAudio").length === 2, "2 parties fixes");
+  await waitFor(() => calls.filter((c) => c.method === "sendAudio").length === 3, "3 parties fixes");
   console.log("  " + calls.filter((c) => c.method === "sendAudio").map((c) => String(c.body.caption).split("\n").join(" — ")).join("\n  "));
   await send({ callback_query: { id: "fix1", from: admin, chat_instance: "1", data: "ppvfix:paid1", message: { message_id: 700, date: 0, chat: adminChat, text: "x" } } });
-  await waitFor(() => calls.filter((c) => c.method === "sendAudio").length === 3, "nouvelle prise");
+  await waitFor(() => calls.filter((c) => c.method === "sendAudio").length === 4, "nouvelle prise");
   console.log("  → " + String(calls.filter((c) => c.method === "sendAudio").pop()?.body.caption));
 
   console.log("▶ /ppv avec un prénom invalide");
@@ -313,7 +313,77 @@ async function main() {
     console.log(`  volume ${lvl} → ${vids.map((v) => String(v.body.caption)).join(" · ")}`);
     await sleep(300);
   }
+  // ── Bouton d'effet sous le PPV : même voix, autre rendu ──
+  {
+    const btn = kb.inline_keyboard.flat().find((b) => b.callback_data.endsWith(":iphone"))!;
+    const before = calls.filter((c) => c.method === "sendVideo").length;
+    await send({ callback_query: { id: "cbfx", from: op, chat_instance: "1", data: btn.callback_data, message: { message_id: 990, date: 0, chat: group, text: "x" } } });
+    await waitFor(() => calls.filter((c) => c.method === "sendVideo").length === before + 1, "effet iPhone");
+    console.log(`  effet → ${String(calls.filter((c) => c.method === "sendVideo").pop()!.body.caption)}`);
+  }
   console.log(`  appels Fish pendant les refontes : ${fishTexts.length - fishBefore} (doit être 0)`);
+
+  // ── ⚙️ Panneau de réglages (admin) ──
+  const tap = (data: string, from = admin, chat: Record<string, unknown> = adminChat) =>
+    send({ callback_query: { id: `cb${uid}`, from, chat_instance: "1", data, message: { message_id: 950, date: 0, chat, text: "x" } } });
+  const lastEdit = () => String([...calls].reverse().find((c) => c.method === "editMessageText")?.body.text ?? "");
+  const lastAnswer = () => [...calls].reverse().find((c) => c.method === "answerCallbackQuery")?.body ?? {};
+  const cfgNow = () => JSON.parse(kv.get("ppvcfg") ?? "{}");
+  console.log("▶ /ppvsettings (admin)");
+  await command("/ppvsettings", adminChat, admin);
+  console.log("  " + lastText().split("\n").slice(0, 8).join("\n  "));
+  console.log("▶ un chatter tape /ppvsettings → rien");
+  const n0 = calls.length;
+  await command("/ppvsettings");
+  console.log(`  messages envoyés : ${calls.slice(n0).filter((c) => c.method === "sendMessage").length} (doit être 0)`);
+  console.log("▶ un chatter tape un bouton de réglage → refusé");
+  await tap("cfg:fx:far", op, group);
+  console.log(`  → ${String(lastAnswer().text)} · réglage inchangé : ${kv.has("ppvcfg") ? "NON" : "oui"}`);
+  await tap("cfg:p:effect");
+  console.log("  🎚️ panneau effet : " + lastEdit().split("\n")[0]);
+  await tap("cfg:fx:close");
+  await tap("cfg:a:room.reverb:u");
+  await tap("cfg:a:room.reverb:u");
+  await tap("cfg:a:volumeOffsetDb:d");
+  await tap("cfg:i:room.reflections");
+  console.log(`  aide : ${String(lastAnswer().text).split("\n")[0]} (alerte : ${lastAnswer().show_alert})`);
+  await tap("cfg:np:paid1:a");
+  const c1 = cfgNow();
+  console.log(`  Redis → effet ${c1.effect} · reverb ${c1.room.reverb} · décalage ${c1.volumeOffsetDb} dB · PPV 1 prénom ${c1.lines.paid1.name} (« ${c1.lines.paid1.context} »)`);
+  await tap("cfg:np:paid1:b");
+  console.log("▶ /ppvtext ppv1 (nouveau texte)");
+  await command("/ppvtext ppv1 [soft tone] Mmh, viens là, toi et moi.", adminChat, admin);
+  console.log("  " + lastText().split("\n").join("\n  "));
+  await tap("cfg:p:takes");
+  console.log("  🎙️ " + lastEdit().split("\n").slice(-3).join(" | "));
+
+  console.log("▶ 🎲 3 prises pour PPV 2, puis ✅ sur la 2e");
+  const a0 = calls.filter((c) => c.method === "sendAudio").length;
+  await tap("ppvcand:paid2");
+  await waitFor(() => calls.filter((c) => c.method === "sendAudio").length === a0 + 3, "3 prises");
+  const take2 = calls.filter((c) => c.method === "sendAudio")[a0 + 1];
+  const useData = JSON.parse(String(take2.body.reply_markup)).inline_keyboard[0][0].callback_data;
+  const fixBefore = kv.get("ppvfix:sienna:paid2");
+  await tap(useData);
+  await waitFor(() => lastText().startsWith("✅ 💰 PPV 2"), "prise choisie");
+  console.log(`  → ${lastText().split("\n")[0]} · partie fixe changée : ${kv.get("ppvfix:sienna:paid2") !== fixBefore}`);
+
+  console.log("▶ 🎬 Make PPV 2 (vault)");
+  const v0 = calls.filter((c) => c.method === "sendVideo").length;
+  await tap("cfg:v2");
+  await waitFor(() => calls.filter((c) => c.method === "sendVideo").length === v0 + 1, "PPV 2");
+  const v2 = calls.filter((c) => c.method === "sendVideo").pop()!;
+  console.log(`  ${String(v2.body.caption).split("\n").join(" | ")} · ${(Number(v2.body.bytes) / 1_048_576).toFixed(1)} Mo → ${v2.body.saved}`);
+
+  console.log("▶ 🧪 Test /ppv Julien avec les nouveaux réglages");
+  const t1 = calls.filter((c) => c.method === "sendVideo").length;
+  const f1 = fishTexts.length;
+  await tap("cfg:test");
+  await waitFor(() => calls.filter((c) => c.method === "sendVideo").length === t1 + 2, "test");
+  console.log("  " + calls.filter((c) => c.method === "sendVideo").slice(-2).map((c) => `${String(c.body.caption)} → ${c.body.saved}`).join("\n  "));
+  console.log("  textes Fish : " + fishTexts.slice(f1).join(" / "));
+  await tap("cfg:rall!");
+  console.log(`▶ ↩️ tout remettre à zéro → effet ${cfgNow().effect} · texte PPV 1 « ${cfgNow().lines.paid1.fixed} »`);
   redis.close();
   telegram.close();
   process.exit(0);
