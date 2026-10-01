@@ -292,7 +292,10 @@ export async function mixVoiceIntoVideo(
   voice: Buffer,
   place: Placement,
   targetDb: number = ppvTargetDb(PPV_DEFAULT_VOLUME),
-  refMeanDb?: number
+  refMeanDb?: number,
+  /** Durée de la partie fixe + pause + prénom max : la phrase est calée sur
+   *  la partie fixe, à un instant IDENTIQUE pour tous les fans (« end ») */
+  anchorSec?: number
 ): Promise<{ video: Buffer; duration: number; width?: number; height?: number }> {
   const dir = await mkdtemp(join(tmpdir(), "ppv-"));
   const vIn = join(dir, "in.mp4");
@@ -310,7 +313,12 @@ export async function mixVoiceIntoVideo(
     const voiceSec = parseInputDuration(pa.stderr);
     if (!videoSec || !voiceSec) throw new Error("durée illisible (vidéo ou voix)");
     const hasAudio = /Stream #0:\d+.*Audio:/.test(pv.stderr);
-    const start = voiceStart(videoSec, voiceSec, place);
+    // « end » : calé sur la partie fixe (anchorSec), pas sur la phrase entière
+    // — sinon un prénom plus long décalerait la partie fixe.
+    const start =
+      place.mode === "end" && anchorSec
+        ? voiceStart(videoSec, Math.max(voiceSec, anchorSec), place)
+        : voiceStart(videoSec, voiceSec, place);
     const gainDb = targetDb - (refMeanDb ?? room.meanDb);
     const { code, stderr } = await run(
       bin,

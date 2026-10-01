@@ -45,9 +45,14 @@ export const PPV_FIXED: Record<
   paid2: {
     text: "[sighing] Hmmm… [breath] [groaning] mmmh… [panting]",
     name: "after",
-    nameAlone: "[sighing] {name}…",
+    nameAlone: "[soft tone] {name}…", // le prénom SEUL : aucun soupir variable
   },
 };
+
+/** Durée max d'un prénom isolé : au-delà, un soupir y est collé → repli */
+export const NAME_MAX_SEC = 1.4;
+/** Pause fixe entre la partie fixe et le prénom */
+export const NAME_GAP_SEC = { after: 0.28, before: 0.2 } as const;
 
 // ── Fonctions pures (testées dans scripts/test-ppv.ts) ─────────────────────
 
@@ -94,7 +99,7 @@ export function pickNameSpan(
   if (spans.length < 2) return null; // pas de pause : impossible d'isoler
   const span = position === "before" ? spans[0] : spans[spans.length - 1];
   const len = span.end - span.start;
-  if (len < 0.25 || len > 1.8) return null;
+  if (len < 0.25 || len > NAME_MAX_SEC) return null;
   const pad = 0.04;
   return {
     start: Math.max(0, span.start - pad),
@@ -150,6 +155,18 @@ export async function extractNameAudio(
   });
 }
 
+/** Durée (s) d'un audio. */
+export async function audioSeconds(audio: Buffer): Promise<number> {
+  return withTmp(async (dir) => {
+    const f = join(dir, "a.audio");
+    await writeFile(f, audio);
+    const probe = await run(await ffmpegBinary(), ["-hide_banner", "-i", f]);
+    const d = parseInputDuration(probe.stderr);
+    if (!d) throw new Error("durée audio illisible");
+    return d;
+  });
+}
+
 // Niveau moyen (dB) d'un fichier, d'après volumedetect
 function meanVolume(stderr: string): number | null {
   const m = stderr.match(/mean_volume:\s*(-?[\d.]+) dB/);
@@ -176,7 +193,7 @@ export async function joinFixedAndName(
       run(bin, ["-hide_banner", "-i", n, "-af", "volumedetect", "-f", "null", "-"]),
     ]);
     const gain = Math.max(-12, Math.min(12, (meanVolume(vf.stderr) ?? 0) - (meanVolume(vn.stderr) ?? 0)));
-    const gap = position === "after" ? 0.28 : 0.2;
+    const gap = NAME_GAP_SEC[position];
     const first = position === "before" ? "[n]" : "[f]";
     const second = position === "before" ? "[f]" : "[n]";
     const graph =

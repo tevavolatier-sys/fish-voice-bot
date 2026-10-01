@@ -259,7 +259,9 @@ async function main() {
   console.log("  " + calls.filter((c) => c.method === "sendVideo").slice(-3).map((c) => `${String(c.body.caption)} → ${c.body.saved}`).join("\n  "));
 
   // ── Boutons de volume : refaire les 2 vidéos à d'autres niveaux ──
-  await waitFor(() => calls.some((c) => c.method === "sendMessage" && String(c.body.text).startsWith("🔊")), "boutons de volume");
+  // Attendre la fin des DEUX PPV (Julien puis Max) : un opérateur = un PPV à la fois
+  await waitFor(() => calls.filter((c) => c.method === "sendMessage" && String(c.body.text).startsWith("🔊")).length >= 2, "boutons de volume");
+  await sleep(800);
   const volMsg = calls.filter((c) => c.method === "sendMessage" && String(c.body.text).startsWith("🔊")).pop()!;
   const kb = volMsg.body.reply_markup as { inline_keyboard: { text: string; callback_data: string }[][] };
   console.log("▶ boutons sous le PPV : " + kb.inline_keyboard[0].map((b) => b.text).join(" | "));

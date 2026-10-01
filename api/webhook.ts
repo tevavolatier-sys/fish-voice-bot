@@ -49,6 +49,9 @@ import {
   LINE_KEYS,
   LINE_LABELS,
   PPV_FIXED,
+  NAME_GAP_SEC,
+  NAME_MAX_SEC,
+  audioSeconds,
   extractNameAudio,
   joinFixedAndName,
   type LineKey,
@@ -186,6 +189,7 @@ async function sendPaidVideos(
     p2: string;
     r1?: number; // niveau « dans la pièce » de la partie fixe (gain identique pour tous)
     r2?: number;
+    a2?: number; // calage de la phrase 2 sur sa partie fixe (instant identique pour tous)
   },
   level: number,
   replyTo?: number
@@ -196,7 +200,7 @@ async function sendPaidVideos(
       mixVoiceIntoVideo(v, job.v1, PPV_PLACEMENT.paid1, target, job.r1)
     ),
     downloadTelegramFile(ctx, job.p2).then((v) =>
-      mixVoiceIntoVideo(v, job.v2, PPV_PLACEMENT.paid2, target, job.r2)
+      mixVoiceIntoVideo(v, job.v2, PPV_PLACEMENT.paid2, target, job.r2, job.a2)
     ),
   ]);
   const slug = job.name.normalize("NFD").replace(/[^\w-]+/g, "").toLowerCase() || "fan";
@@ -624,6 +628,9 @@ function createBot(): Bot {
             // Niveau de la partie fixe seule : le gain en découle, identique pour tous
             Promise.all([roomVoice(fixed[1]), roomVoice(fixed[2])]).then((r) => r.map((x) => x.meanDb)),
           ]);
+          // Phrase 2 calée sur sa partie fixe : même instant pour tous les fans
+          const anchor2 =
+            (await audioSeconds(fixed[2])) + NAME_GAP_SEC.after + NAME_MAX_SEC + 0.3;
           const level = (await getPpvVolume(userId).catch(() => null)) ?? PPV_DEFAULT_VOLUME;
           const preview = await blackVideoFromAudio(vPreview);
           await ctx.replyWithVideo(new InputFile(preview.video, `preview-${slug}.mp4`), {
@@ -642,6 +649,7 @@ function createBot(): Bot {
             p2: parts[1].f,
             r1: ref1,
             r2: ref2,
+            a2: anchor2,
           };
           await sendPaidVideos(ctx, job, level, replyTo);
           // Gardé 6 h : les boutons de volume refont les 2 vidéos avec la même voix
@@ -654,6 +662,7 @@ function createBot(): Bot {
             p2: job.p2,
             r1: ref1,
             r2: ref2,
+            a2: anchor2,
           }).catch((err) => console.error("PPV non mémorisé:", err));
           // Libéré AVANT les boutons : un clic immédiat sur un volume doit marcher
           await unlockPpv(userId).catch(() => {});
@@ -709,6 +718,7 @@ function createBot(): Bot {
               p2: job.p2,
               r1: job.r1,
               r2: job.r2,
+              a2: job.a2,
             },
             level,
             replyTo
