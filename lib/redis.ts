@@ -179,6 +179,38 @@ export async function ppvGroupModel(groupId: string): Promise<string | null> {
   return getRedis().get<string>(`ppvgroup:${groupId}`);
 }
 
+/** Volume de voix PPV choisi par un opérateur (1 à 5) */
+export async function getPpvVolume(userId: number): Promise<number | null> {
+  const v = await getRedis().get<number | string>(`ppvvol:${userId}`);
+  return v === null || v === undefined ? null : Number(v);
+}
+
+export async function setPpvVolume(userId: number, level: number): Promise<void> {
+  await getRedis().set(`ppvvol:${userId}`, level);
+}
+
+/**
+ * Un PPV déjà généré, gardé 6 h pour pouvoir le REFAIRE à un autre volume
+ * avec la MÊME voix (sans repasser par Fish Audio).
+ */
+export interface PpvJob {
+  name: string;
+  v1: string; // voix PPV 1 (MP3 en base64)
+  v2: string; // voix PPV 2
+  p1: string; // file_id de la vidéo PPV 1
+  p2: string; // file_id de la vidéo PPV 2
+}
+
+export async function savePpvJob(token: string, job: PpvJob): Promise<void> {
+  await getRedis().set(`ppvjob:${token}`, JSON.stringify(job), { ex: 6 * 3600 });
+}
+
+export async function getPpvJob(token: string): Promise<PpvJob | null> {
+  const raw = await getRedis().get<string | PpvJob>(`ppvjob:${token}`);
+  if (!raw) return null;
+  return typeof raw === "string" ? (JSON.parse(raw) as PpvJob) : raw;
+}
+
 /** Une seule génération PPV à la fois par opérateur (2 min max) */
 export async function lockPpv(userId: number): Promise<boolean> {
   const ok = await getRedis().set(`ppvlock:${userId}`, "1", { nx: true, ex: 120 });

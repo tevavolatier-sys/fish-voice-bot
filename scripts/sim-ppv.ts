@@ -242,6 +242,28 @@ async function main() {
     console.log(`    · ${String(c.body.caption)} · ${(Number(c.body.bytes) / 1_048_576).toFixed(1)} Mo · ${c.body.width}×${c.body.height} · ${c.body.duration} s → ${c.body.saved}`);
   }
   console.log("  textes envoyés à Fish :\n    " + fishTexts.join("\n    "));
+
+  // ── Boutons de volume : refaire les 2 vidéos à d'autres niveaux ──
+  await waitFor(() => calls.some((c) => c.method === "sendMessage" && String(c.body.text).startsWith("🔊")), "boutons de volume");
+  const volMsg = calls.filter((c) => c.method === "sendMessage" && String(c.body.text).startsWith("🔊")).pop()!;
+  const kb = volMsg.body.reply_markup as { inline_keyboard: { text: string; callback_data: string }[][] };
+  console.log("▶ boutons sous le PPV : " + kb.inline_keyboard[0].map((b) => b.text).join(" | "));
+  const fishBefore = fishTexts.length;
+  for (const lvl of [1, 3, 5]) {
+    const btn = kb.inline_keyboard[0].find((b) => b.callback_data.endsWith(`:${lvl}`))!;
+    const before = calls.filter((c) => c.method === "sendVideo").length;
+    await send({
+      callback_query: {
+        id: `cb${lvl}`, from: op, chat_instance: "1", data: btn.callback_data,
+        message: { message_id: 900 + lvl, date: 0, chat: group, text: String(volMsg.body.text) },
+      },
+    });
+    await waitFor(() => calls.filter((c) => c.method === "sendVideo").length === before + 2, `volume ${lvl}`);
+    const vids = calls.filter((c) => c.method === "sendVideo").slice(-2);
+    console.log(`  volume ${lvl} → ${vids.map((v) => String(v.body.caption)).join(" · ")}`);
+    await sleep(300);
+  }
+  console.log(`  appels Fish pendant les refontes : ${fishTexts.length - fishBefore} (doit être 0)`);
   redis.close();
   telegram.close();
   process.exit(0);

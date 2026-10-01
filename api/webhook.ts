@@ -22,7 +22,11 @@ import {
   armPpvGroup,
   clearPpvParts,
   getPpvParts,
+  getPpvJob,
+  getPpvVolume,
   lockPpv,
+  savePpvJob,
+  setPpvVolume,
   ppvGroupModel,
   readPpvStats,
   readStats,
@@ -41,8 +45,11 @@ import {
 } from "../lib/redis.js";
 import {
   PPV_DEFAULT_MODEL,
+  PPV_DEFAULT_VOLUME,
   PPV_LINES,
   PPV_PLACEMENT,
+  PPV_VOLUME_LEVELS,
+  ppvLufs,
   cleanFanName,
   fillLine,
   mixVoiceIntoVideo,
@@ -95,6 +102,49 @@ function voiceKeyboard(videoToken: string, intensity?: number): InlineKeyboard {
 
 const newVideoToken = () => randomUUID().replace(/-/g, "").slice(0, 16);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// 🔊 Boutons de volume sous un PPV : 1 (très bas) → 5 (fort), ✅ = actuel
+function ppvVolumeKeyboard(token: string, current: number): InlineKeyboard {
+  const kb = new InlineKeyboard();
+  for (const [lvl, cfg] of Object.entries(PPV_VOLUME_LEVELS)) {
+    kb.text(`${Number(lvl) === current ? "✅ " : ""}${cfg.icon} ${lvl}`, `ppvvol:${token}:${lvl}`);
+  }
+  return kb;
+}
+
+const ppvVolumeText = (level: number) =>
+  `🔊 Voice volume in the 2 PPV videos: ${level}/5\n` +
+  "Too loud or too quiet? Tap a level: I remake the 2 videos with the SAME voice (and remember your choice).";
+
+// Les 2 vidéos payantes, voix posée au volume demandé, envoyées dans l'ordre
+async function sendPaidVideos(
+  ctx: Context,
+  job: { name: string; v1: Buffer; v2: Buffer; p1: string; p2: string },
+  level: number,
+  replyTo?: number
+): Promise<void> {
+  const lufs = ppvLufs(level);
+  const [paid1, paid2] = await Promise.all([
+    downloadTelegramFile(ctx, job.p1).then((v) => mixVoiceIntoVideo(v, job.v1, PPV_PLACEMENT.paid1, lufs)),
+    downloadTelegramFile(ctx, job.p2).then((v) => mixVoiceIntoVideo(v, job.v2, PPV_PLACEMENT.paid2, lufs)),
+  ]);
+  const slug = job.name.normalize("NFD").replace(/[^\w-]+/g, "").toLowerCase() || "fan";
+  const reply = replyTo
+    ? { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } }
+    : {};
+  for (const p of [
+    { n: 1, out: paid1 },
+    { n: 2, out: paid2 },
+  ]) {
+    await ctx.replyWithVideo(new InputFile(p.out.video, `ppv${p.n}-${slug}.mp4`), {
+      ...(p.out.width && p.out.height ? { width: p.out.width, height: p.out.height } : {}),
+      duration: p.out.duration,
+      supports_streaming: true,
+      caption: `💰 PPV ${p.n}/2 · ${job.name} · ${PPV_VOLUME_LEVELS[level]?.icon ?? "🔉"} ${level}/5`,
+      ...reply,
+    });
+  }
+}
 
 // Télécharge un fichier déjà connu de Telegram (≤ 20 Mo pour un bot)
 async function downloadTelegramFile(ctx: Context, fileId: string): Promise<Buffer> {
@@ -501,15 +551,8 @@ function createBot(): Bot {
             generateVoice(fillLine(PPV_LINES.paid1, name), model.referenceId),
             generateVoice(fillLine(PPV_LINES.paid2, name), model.referenceId),
           ]);
-          const [preview, paid1, paid2] = await Promise.all([
-            blackVideoFromAudio(vPreview),
-            downloadTelegramFile(ctx, parts[0].f).then((v) =>
-              mixVoiceIntoVideo(v, vPaid1, PPV_PLACEMENT.paid1)
-            ),
-            downloadTelegramFile(ctx, parts[1].f).then((v) =>
-              mixVoiceIntoVideo(v, vPaid2, PPV_PLACEMENT.paid2)
-            ),
-          ]);
+          const level = (await getPpvVolume(userId).catch(() => null)) ?? PPV_DEFAULT_VOLUME;
+          const preview = await blackVideoFromAudio(vPreview);
           await ctx.replyWithVideo(new InputFile(preview.video, `preview-${slug}.mp4`), {
             width: VIDEO_WIDTH,
             height: VIDEO_HEIGHT,
@@ -518,19 +561,20 @@ function createBot(): Bot {
             caption: `🎁 FREE preview · ${name}`,
             ...reply,
           });
-          const paid = [
-            { n: 1, out: paid1 },
-            { n: 2, out: paid2 },
-          ];
-          for (const p of paid) {
-            await ctx.replyWithVideo(new InputFile(p.out.video, `ppv${p.n}-${slug}.mp4`), {
-              ...(p.out.width && p.out.height ? { width: p.out.width, height: p.out.height } : {}),
-              duration: p.out.duration,
-              supports_streaming: true,
-              caption: `💰 PPV ${p.n}/2 · ${name}`,
-              ...reply,
-            });
-          }
+          const job = { name, v1: vPaid1, v2: vPaid2, p1: parts[0].f, p2: parts[1].f };
+          await sendPaidVideos(ctx, job, level, replyTo);
+          // Gardé 6 h : les boutons de volume refont les 2 vidéos avec la même voix
+          const token = newVideoToken();
+          await savePpvJob(token, {
+            name,
+            v1: vPaid1.toString("base64"),
+            v2: vPaid2.toString("base64"),
+            p1: job.p1,
+            p2: job.p2,
+          }).catch((err) => console.error("PPV non mémorisé:", err));
+          await ctx.reply(ppvVolumeText(level), {
+            reply_markup: ppvVolumeKeyboard(token, level),
+          });
           await recordPpv(userId, model.key).catch(() => {});
         } catch (err) {
           console.error("PPV échoué:", err);
@@ -539,6 +583,52 @@ function createBot(): Bot {
               ? err.userMessage
               : "❌ Couldn't make the PPV. Try /ppv again; if it keeps failing, tell the admin.";
           await ctx.reply(msg).catch(() => {});
+        } finally {
+          await unlockPpv(userId).catch(() => {});
+        }
+      })()
+    );
+  });
+
+  // 🔊 Refaire les 2 vidéos payantes à un autre volume (même voix)
+  bot.callbackQuery(/^ppvvol:([a-z0-9]{6,32}):([1-5])$/, async (ctx) => {
+    const token = ctx.match[1];
+    const level = Number(ctx.match[2]);
+    const userId = ctx.from.id;
+    const job = await getPpvJob(token).catch(() => null);
+    if (!job) {
+      await ctx.answerCallbackQuery({ text: "Too old — run /ppv again." });
+      return;
+    }
+    if (!(await lockPpv(userId).catch(() => true))) {
+      await ctx.answerCallbackQuery({ text: "⏳ Still working on the previous one…" });
+      return;
+    }
+    await setPpvVolume(userId, level).catch(() => {});
+    await ctx.answerCallbackQuery({ text: `Remaking the 2 videos at volume ${level}/5…` });
+    await ctx
+      .editMessageText(ppvVolumeText(level), { reply_markup: ppvVolumeKeyboard(token, level) })
+      .catch(() => {});
+    const replyTo = ctx.callbackQuery.message?.message_id;
+    waitUntil(
+      (async () => {
+        try {
+          await ctx.replyWithChatAction("upload_video").catch(() => {});
+          await sendPaidVideos(
+            ctx,
+            {
+              name: job.name,
+              v1: Buffer.from(job.v1, "base64"),
+              v2: Buffer.from(job.v2, "base64"),
+              p1: job.p1,
+              p2: job.p2,
+            },
+            level,
+            replyTo
+          );
+        } catch (err) {
+          console.error("PPV (volume) échoué:", err);
+          await ctx.reply("❌ Couldn't remake the videos. Tap the level again.").catch(() => {});
         } finally {
           await unlockPpv(userId).catch(() => {});
         }

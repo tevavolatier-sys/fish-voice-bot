@@ -84,8 +84,23 @@ export function parseVideoSize(stderr: string): { width: number; height: number 
 //   · niveau nettement plus bas,
 //   · moins de basses (pas d'effet de proximité) et d'aigus (la distance),
 //   · une petite pièce : premières réflexions + réverbération courte.
+// Volume de la voix dans les vidéos payantes : 5 niveaux réglables depuis
+// le bot (boutons sous chaque PPV). Valeur = niveau visé AVANT la pièce
+// (LUFS) ; le niveau moyen mesuré dans la vidéo est environ 4 dB plus bas.
+export const PPV_VOLUME_LEVELS: Record<number, { lufs: number; icon: string }> = {
+  1: { lufs: -56, icon: "🔈" },
+  2: { lufs: -50, icon: "🔉" },
+  3: { lufs: -45, icon: "🔉" },
+  4: { lufs: -40, icon: "🔊" },
+  5: { lufs: -35, icon: "🔊" },
+};
+export const PPV_DEFAULT_VOLUME = 2;
+
+export function ppvLufs(level?: number | null): number {
+  return (PPV_VOLUME_LEVELS[level ?? PPV_DEFAULT_VOLUME] ?? PPV_VOLUME_LEVELS[PPV_DEFAULT_VOLUME]).lufs;
+}
+
 export const PPV_ROOM = {
-  loudness: -38, // LUFS de la voix avant la pièce (-14 = voix « studio », trop forte)
   highpass: 170, // Hz
   lowpass: 6000, // Hz
   dry: 0.8, // part de son direct
@@ -151,6 +166,7 @@ export function mixArgs(
   voice: string,
   impulse: string,
   output: string,
+  loudness: number,
   start: number,
   voiceSec: number,
   videoSec: number,
@@ -164,7 +180,7 @@ export function mixArgs(
   // pas l'option normalize : « volume=2 » rétablit les niveaux.)
   const voiceChain =
     `[1:a]aresample=${IR_RATE},highpass=f=${PPV_ROOM.highpass},lowpass=f=${PPV_ROOM.lowpass},` +
-    `loudnorm=I=${PPV_ROOM.loudness}:TP=-3:LRA=11,aresample=${IR_RATE},apad=pad_len=${tail},asplit=2[dry][toir];` +
+    `loudnorm=I=${loudness}:TP=-3:LRA=11,aresample=${IR_RATE},apad=pad_len=${tail},asplit=2[dry][toir];` +
     `[toir][2:a]afir[wetraw];` +
     `[dry]volume=${PPV_ROOM.dry}[d];[wetraw]volume=${PPV_ROOM.wet}[w];` +
     `[d][w]amix=inputs=2:duration=longest,volume=2,adelay=${delayMs}|${delayMs},apad[vo]`;
@@ -194,7 +210,8 @@ export function mixArgs(
 export async function mixVoiceIntoVideo(
   video: Buffer,
   voice: Buffer,
-  place: Placement
+  place: Placement,
+  loudness: number = ppvLufs(PPV_DEFAULT_VOLUME)
 ): Promise<{ video: Buffer; duration: number; width?: number; height?: number }> {
   const dir = await mkdtemp(join(tmpdir(), "ppv-"));
   const vIn = join(dir, "in.mp4");
@@ -220,7 +237,7 @@ export async function mixVoiceIntoVideo(
     const start = voiceStart(videoSec, voiceSec + PPV_ROOM.rt60 * 0.5, place);
     const { code, stderr } = await run(
       bin,
-      mixArgs(vIn, aIn, ir, out, start, voiceSec, videoSec, hasAudio)
+      mixArgs(vIn, aIn, ir, out, loudness, start, voiceSec, videoSec, hasAudio)
     );
     if (code !== 0) throw new Error(`ffmpeg code ${code}: ${stderr.slice(-600)}`);
     const size = parseVideoSize(pv.stderr);
