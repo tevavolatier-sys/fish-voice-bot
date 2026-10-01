@@ -233,6 +233,22 @@ export async function setPpvFixed(model: string, line: string, value: PpvFixed):
   await getRedis().set(`ppvfix:${model}:${line}`, JSON.stringify(value));
 }
 
+// ── Envoi d'une vidéo PPV au bot en morceaux (porte d'admin /api/webhook?setup=)
+// Un appel au serveur est limité à 4,5 Mo et une commande Redis à 1 Mo : la
+// vidéo arrive en morceaux d'environ 700 Ko, gardés 1 h puis supprimés.
+export async function setUploadChunk(id: string, i: number, b64: string): Promise<void> {
+  await getRedis().set(`ppvup:${id}:${i}`, b64, { ex: 3600 });
+}
+
+export async function getUploadChunk(id: string, i: number): Promise<string | null> {
+  return getRedis().get<string>(`ppvup:${id}:${i}`);
+}
+
+export async function deleteUploadChunks(id: string, n: number): Promise<void> {
+  const keys = Array.from({ length: n }, (_, i) => `ppvup:${id}:${i}`);
+  if (keys.length > 0) await getRedis().del(...keys);
+}
+
 /** Une seule génération PPV à la fois par opérateur (2 min max) */
 export async function lockPpv(userId: number): Promise<boolean> {
   const ok = await getRedis().set(`ppvlock:${userId}`, "1", { nx: true, ex: 120 });

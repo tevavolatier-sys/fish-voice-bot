@@ -26,6 +26,9 @@ import {
   setPpvFixed,
   getPpvJob,
   getPpvVolume,
+  setUploadChunk,
+  getUploadChunk,
+  deleteUploadChunks,
   lockPpv,
   savePpvJob,
   setPpvVolume,
@@ -1050,7 +1053,106 @@ function createBot(): Bot {
 // ---------- Handler Vercel ----------
 let handleUpdate: ((req: Request) => Promise<Response>) | null = null;
 
+// ---------- 🔧 Porte d'admin : installer les vidéos PPV sans Telegram ----------
+// Active SEULEMENT si la variable PPV_SETUP_SECRET existe (≥ 24 caractères) et
+// que l'appel porte ce secret dans l'en-tête x-setup-secret. Sinon : 404.
+//   ?setup=chunk&id=…&i=…   corps = un morceau (≤ 700 Ko) de la vidéo
+//   ?setup=finish&id=…&n=…&name=…   réassemble, publie la vidéo dans le chat
+//                                   privé de l'admin, l'enregistre (ordre d'envoi)
+//   ?setup=list                     vidéos PPV enregistrées
+//   ?setup=test&name=…              lance un vrai /ppv vers le chat de l'admin
+async function handleSetup(req: Request, u: URL): Promise<Response> {
+  const secret = process.env.PPV_SETUP_SECRET?.trim() ?? "";
+  if (secret.length < 24 || req.headers.get("x-setup-secret") !== secret) {
+    return new Response("not found", { status: 404 });
+  }
+  const action = u.searchParams.get("setup");
+  const id = (u.searchParams.get("id") ?? "").replace(/[^a-z0-9]/gi, "").slice(0, 32);
+  const model = PPV_DEFAULT_MODEL;
+
+  if (action === "chunk") {
+    const i = Number(u.searchParams.get("i"));
+    const body = Buffer.from(await req.arrayBuffer());
+    if (!id || !Number.isInteger(i) || i < 0 || body.length === 0 || body.length > 760_000) {
+      return Response.json({ ok: false, error: "morceau invalide" }, { status: 400 });
+    }
+    await setUploadChunk(id, i, body.toString("base64"));
+    return Response.json({ ok: true, i, bytes: body.length });
+  }
+
+  if (action === "finish") {
+    const n = Number(u.searchParams.get("n"));
+    const name = (u.searchParams.get("name") ?? "ppv.mp4").replace(/[^\w.-]/g, "_").slice(0, 60);
+    if (!id || !Number.isInteger(n) || n < 1 || n > 40) {
+      return Response.json({ ok: false, error: "paramètres invalides" }, { status: 400 });
+    }
+    const parts: Buffer[] = [];
+    for (let i = 0; i < n; i++) {
+      const b64 = await getUploadChunk(id, i);
+      if (!b64) return Response.json({ ok: false, error: `morceau ${i} manquant` }, { status: 400 });
+      parts.push(Buffer.from(b64, "base64"));
+    }
+    const video = Buffer.concat(parts);
+    const bot = new Bot(process.env.BOT_TOKEN!);
+    try {
+      const sent = await bot.api.sendVideo(ADMIN_ID, new InputFile(video, name), {
+        caption: `🗂️ PPV video saved (${name})`,
+        supports_streaming: true,
+      });
+      const file = sent.video;
+      if (!file) throw new Error("Telegram n'a pas renvoyé de fichier");
+      const pos = await addPpvPart(model, {
+        f: file.file_id,
+        u: file.file_unique_id,
+        d: Number(file.duration ?? 0),
+        b: file.file_size ?? video.length,
+        m: sent.message_id,
+      });
+      await deleteUploadChunks(id, n);
+      return Response.json({ ok: true, position: pos, bytes: video.length, messageId: sent.message_id });
+    } catch (err) {
+      return Response.json(
+        { ok: false, error: err instanceof Error ? err.message : String(err) },
+        { status: 502 }
+      );
+    }
+  }
+
+  if (action === "list") {
+    const parts = await getPpvParts(model);
+    return Response.json({
+      ok: true,
+      parts: parts.map((p, i) => ({ role: i === 0 ? "PPV 1" : i === 1 ? "PPV 2" : "unused", seconds: p.d, bytes: p.b, m: p.m })),
+    });
+  }
+
+  if (action === "test") {
+    const name = cleanFanName(u.searchParams.get("name") ?? "Test") ?? "Test";
+    const bot = createBot();
+    await bot.init();
+    const now = Math.floor(Date.now() / 1000);
+    const admin = { id: ADMIN_ID, is_bot: false, first_name: "Admin" };
+    const text = `/ppv ${name}`;
+    await bot.handleUpdate({
+      update_id: now,
+      message: {
+        message_id: 1,
+        date: now,
+        chat: { id: ADMIN_ID, type: "private", first_name: "Admin" },
+        from: admin,
+        text,
+        entities: [{ type: "bot_command", offset: 0, length: 4 }],
+      },
+    } as Parameters<typeof bot.handleUpdate>[0]);
+    return Response.json({ ok: true, started: text });
+  }
+
+  return Response.json({ ok: false, error: "action inconnue" }, { status: 400 });
+}
+
 export async function POST(req: Request): Promise<Response> {
+  const setupUrl = new URL(req.url);
+  if (setupUrl.searchParams.has("setup")) return handleSetup(req, setupUrl);
   try {
     if (!handleUpdate) {
       handleUpdate = webhookCallback(createBot(), "std/http", {

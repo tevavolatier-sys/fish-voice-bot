@@ -131,7 +131,11 @@ const telegram = createServer((req, res) => {
     let result: unknown = true;
     if (method === "getMe") result = { id: 1, is_bot: true, first_name: "Voice", username: "voice_bot" };
     if (method === "sendMessage" || method === "sendVideo" || method === "sendAudio") {
-      result = { message_id: nextMsg++, date: 0, chat: { id: GROUP, type: "supergroup" } };
+      const id = nextMsg++;
+      result = { message_id: id, date: 0, chat: { id: GROUP, type: "supergroup" } };
+      if (method === "sendVideo") {
+        (result as Record<string, unknown>).video = { file_id: `PART_${savedVideos}`, file_unique_id: `UV${id}`, width: 1920, height: 1080, duration: 25, file_size: Number(body.bytes ?? 0) };
+      }
     }
     if (method === "getFile") {
       result = { file_id: String(body.file_id), file_unique_id: "x", file_path: `videos/${String(body.file_id)}` };
@@ -207,6 +211,35 @@ async function main() {
     const cmdLen = text.split(" ")[0].length;
     return send({ message: { message_id: uid + 500, date: 0, chat, from, text, entities: [{ type: "bot_command", offset: 0, length: cmdLen }] } });
   };
+
+  if (process.env.SIM_SETUP === "1") {
+    // Enregistrement par la porte d'admin (morceaux de 700 Ko), sans Telegram
+    process.env.PPV_SETUP_SECRET = "x".repeat(32);
+    const hdr = { "x-setup-secret": process.env.PPV_SETUP_SECRET };
+    for (const [k, f] of partFiles.entries()) {
+      const data = readFileSync(join(PARTS_DIR, f));
+      const id = `sim${k}`;
+      const CH = 700_000;
+      const n = Math.ceil(data.length / CH);
+      for (let i = 0; i < n; i++) {
+        const r = await POST(new Request(`https://x/api/webhook?setup=chunk&id=${id}&i=${i}`, { method: "POST", headers: hdr, body: data.subarray(i * CH, (i + 1) * CH) }));
+        if (!r.ok) throw new Error(`morceau ${i}: ${await r.text()}`);
+      }
+      const fin = await POST(new Request(`https://x/api/webhook?setup=finish&id=${id}&n=${n}&name=${f}`, { method: "POST", headers: hdr }));
+      console.log(`  porte d'admin : ${f} en ${n} morceaux → ${await fin.text()}`);
+    }
+    const bad = await POST(new Request("https://x/api/webhook?setup=list", { method: "POST", headers: { "x-setup-secret": "mauvais" } }));
+    console.log(`  sans le bon secret → HTTP ${bad.status}`);
+    const lst = await POST(new Request("https://x/api/webhook?setup=list", { method: "POST", headers: hdr }));
+    console.log(`  liste → ${await lst.text()}`);
+    const tst = await POST(new Request("https://x/api/webhook?setup=test&name=Test", { method: "POST", headers: hdr }));
+    console.log(`  test → ${await tst.text()}`);
+    await waitFor(() => calls.filter((c) => c.method === "sendVideo").length >= partFiles.length + 3, "3 vidéos du test");
+    console.log("  " + calls.filter((c) => c.method === "sendVideo").slice(-3).map((c) => `${String(c.body.caption)} · chat ${c.body.chat_id}`).join("\n  "));
+    redis.close();
+    telegram.close();
+    process.exit(0);
+  }
 
   console.log(`▶ l'admin envoie les ${partFiles.length} vidéos en un album, légende /ppvadd (arrivées simultanées)`);
   await Promise.all(
