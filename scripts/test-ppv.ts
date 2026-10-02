@@ -42,7 +42,7 @@ for (const bad of ["", "J", "123", "Max2", "[moaning]", "Julien!", "a".repeat(21
 
 assert.equal(
   fillLine(DEFAULT_LINES.preview.context, "Julien"),
-  "[soft tone] Julien… n'oublie pas que pour le snap, il faut tenir jusqu'au bout…"
+  "[soft tone] Julien… n'oublie pas, il faut tenir jusqu'au bout…"
 );
 assert.ok(fillLine(DEFAULT_LINES.paid1.context, "Max").startsWith("[soft tone] Max… "));
 
@@ -129,9 +129,9 @@ let s = d;
 for (let i = 0; i < 50; i++) s = adjustNum(s, "room.reflections", 1);
 assert.equal(s.room.reflections, 1);
 s = adjustNum(adjustNum(d, "room.warmthDb", 1), "room.warmthDb", 1);
-assert.equal(s.room.warmthDb, 2.5);
+assert.equal(s.room.warmthDb, 3);
 assert.equal(isCustomRoom(s), true);
-assert.equal(d.room.warmthDb, 1.5); // l'original n'est pas modifié
+assert.equal(d.room.warmthDb, 2); // l'original n'est pas modifié
 for (let i = 0; i < 30; i++) s = adjustNum(s, "temperature", -1);
 assert.equal(s.temperature, 0.1);
 for (const p of NUM_PARAMS) {

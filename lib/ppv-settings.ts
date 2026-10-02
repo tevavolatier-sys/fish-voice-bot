@@ -48,8 +48,8 @@ export interface PpvSettings {
 export const DEFAULT_LINES: Record<LineKey, PpvLine> = {
   preview: {
     // Texte de Teva le 2026-10-02 (preview = vidéo IMG_2904, 9 premières s)
-    fixed: "[soft tone] n'oublie pas que pour le snap, il faut tenir jusqu'au bout…",
-    context: "[soft tone] {name}… n'oublie pas que pour le snap, il faut tenir jusqu'au bout…",
+    fixed: "[soft tone] n'oublie pas, il faut tenir jusqu'au bout…",
+    context: "[soft tone] {name}… n'oublie pas, il faut tenir jusqu'au bout…",
     name: "before",
   },
   paid1: {

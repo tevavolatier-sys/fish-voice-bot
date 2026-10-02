@@ -905,7 +905,7 @@ function createBot(): Bot {
           "Type /ppv followed by the fan's first name, like:\n" +
           "/ppv Julien\n\n" +
           "You get 2 files with the girl's voice saying his name:\n" +
-          "🎁 a FREE preview video: \"Julien… n'oublie pas que pour le snap, il faut tenir jusqu'au bout…\"\n" +
+          "🎁 a FREE preview video: \"Julien… n'oublie pas, il faut tenir jusqu'au bout…\"\n" +
           "💰 the PPV 1 video: \"Julien… hmm, c'est chaud\"\n" +
           "Under it: buttons to change the volume and the voice effect.\n" +
           "(PPV 2 is the same for every fan: it's already in the vault.)\n\n" +
