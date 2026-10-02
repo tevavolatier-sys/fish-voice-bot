@@ -42,7 +42,7 @@ for (const bad of ["", "J", "123", "Max2", "[moaning]", "Julien!", "a".repeat(21
 
 assert.equal(
   fillLine(DEFAULT_LINES.preview.context, "Julien"),
-  "[soft tone] Julien… n'oublie pas, il faut tenir jusqu'au bout…"
+  "[soft tone] Julien… [breath] n'oublie pas, il faut tenir jusqu'au bout…"
 );
 assert.ok(fillLine(DEFAULT_LINES.paid1.context, "Max").startsWith("[soft tone] Max… "));
 
@@ -147,6 +147,7 @@ assert.equal(targetDbFor(adjustNum(d, "volumeOffsetDb", -1), 2), -56);
 assert.equal(deriveContext("[soft tone] Hmm, c'est chaud.", "before"), "[soft tone] {name}… Hmm, c'est chaud.");
 assert.equal(deriveContext("[soft tone] Hmm, c'est chaud.", "after"), "[soft tone] Hmm, c'est chaud… {name}.");
 assert.equal(nameAloneFor(d, "paid1"), "[soft tone] {name}…");
+assert.equal(deriveContext("[soft tone] [breath] viens.", "before"), "[soft tone] {name}… [breath] viens.");
 const t = setLineText(d, "paid1", "[whispering] {name} viens  ici ");
 assert.ok(t);
 assert.equal(t!.lines.paid1.fixed, "[whispering] viens ici");

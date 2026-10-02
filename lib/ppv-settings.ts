@@ -48,8 +48,10 @@ export interface PpvSettings {
 export const DEFAULT_LINES: Record<LineKey, PpvLine> = {
   preview: {
     // Texte de Teva le 2026-10-02 (preview = vidéo IMG_2904, 9 premières s)
-    fixed: "[soft tone] n'oublie pas, il faut tenir jusqu'au bout…",
-    context: "[soft tone] {name}… n'oublie pas, il faut tenir jusqu'au bout…",
+    // Style « avec souffle » choisi le 2026-10-02 : le souffle vient APRÈS
+    // le prénom, sinon il serait pris pour le prénom (et le prénom perdu)
+    fixed: "[soft tone] [breath] n'oublie pas, il faut tenir jusqu'au bout…",
+    context: "[soft tone] {name}… [breath] n'oublie pas, il faut tenir jusqu'au bout…",
     name: "before",
   },
   paid1: {
@@ -80,7 +82,7 @@ export function defaultSettings(): PpvSettings {
     room: { ...EFFECT_PRESETS[DEFAULT_EFFECT].params },
     volumeOffsetDb: 0,
     defaultVolume: PPV_DEFAULT_VOLUME,
-    nameGainDb: 0,
+    nameGainDb: 2, // prénom un peu au-dessus : bien audible
     temperature: 0.55,
     topP: 0.7,
     speed: 1,
@@ -242,10 +244,18 @@ function splitTags(text: string): { tags: string; body: string } {
 }
 
 /** Phrase complète dite par le clone pour un prénom bien intoné. */
+// Souffles, soupirs… : jamais devant le prénom (on les prendrait pour lui)
+const BREATHY = /breath|sigh|inhale|exhale|pant|moan|gasp/i;
+
 export function deriveContext(fixed: string, pos: NamePos): string {
   const { tags, body } = splitTags(fixed);
   const lead = tags ? `${tags} ` : "";
-  if (pos === "before") return `${lead}{name}… ${body}`;
+  if (pos === "before") {
+    const all = tags.match(/\[[^\]]*\]/g) ?? [];
+    const front = all.filter((t) => !BREATHY.test(t)).join(" ");
+    const after = all.filter((t) => BREATHY.test(t)).join(" ");
+    return `${front ? `${front} ` : ""}{name}… ${after ? `${after} ` : ""}${body}`;
+  }
   return `${lead}${body.replace(/[\s.!?…,;:]+$/u, "")}… {name}.`;
 }
 
