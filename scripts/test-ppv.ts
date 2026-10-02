@@ -42,7 +42,7 @@ for (const bad of ["", "J", "123", "Max2", "[moaning]", "Julien!", "a".repeat(21
 
 assert.equal(
   fillLine(DEFAULT_LINES.preview.context, "Julien"),
-  "[soft tone] Julien… [breath] ça va être fou."
+  "[soft tone] Julien… n'oublie pas, il faut tenir jusqu'au bout…"
 );
 assert.ok(fillLine(DEFAULT_LINES.paid1.context, "Max").startsWith("[soft tone] Max… "));
 

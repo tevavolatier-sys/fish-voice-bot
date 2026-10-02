@@ -37,6 +37,7 @@ export interface PpvSettings {
   temperature: number;
   topP: number;
   speed: number;
+  previewStartSec: number; // début de la voix dans la vidéo de preview
   paid1StartSec: number; // début de la voix dans la vidéo PPV 1
   nameGapSec: number; // pause entre le prénom et la partie fixe
   paid2EndSec: number; // le soupir du PPV 2 finit à X s de la fin
@@ -46,9 +47,9 @@ export interface PpvSettings {
 
 export const DEFAULT_LINES: Record<LineKey, PpvLine> = {
   preview: {
-    // « toi et moi » retiré à la demande de Teva le 2026-10-02
-    fixed: "[soft tone] ça va être fou.",
-    context: "[soft tone] {name}… [breath] ça va être fou.",
+    // Texte de Teva le 2026-10-02 (preview = vidéo IMG_2904, 9 premières s)
+    fixed: "[soft tone] n'oublie pas, il faut tenir jusqu'au bout…",
+    context: "[soft tone] {name}… n'oublie pas, il faut tenir jusqu'au bout…",
     name: "before",
   },
   paid1: {
@@ -83,6 +84,7 @@ export function defaultSettings(): PpvSettings {
     temperature: 0.55,
     topP: 0.7,
     speed: 1,
+    previewStartSec: 0.5,
     paid1StartSec: 1.5,
     nameGapSec: NAME_GAP_SEC.before,
     paid2EndSec: 0.6,
@@ -106,6 +108,7 @@ export type NumKey =
   | "temperature"
   | "topP"
   | "speed"
+  | "previewStartSec"
   | "paid1StartSec"
   | "nameGapSec"
   | "paid2EndSec";
@@ -154,6 +157,8 @@ export const NUM_PARAMS: NumParam[] = [
     help: "Lower = steadier. Works together with temperature." },
   { key: "speed", section: "voice", label: "Speed", unit: "×", min: 0.7, max: 1.3, step: 0.05,
     help: "Speaking speed of the names and of NEW takes." },
+  { key: "previewStartSec", section: "timing", label: "Preview voice at", unit: " s", min: 0, max: 8, step: 0.25,
+    help: "Where the voice starts in the free preview video (long names; short names start a bit later)." },
   { key: "paid1StartSec", section: "timing", label: "PPV 1 voice at", unit: " s", min: 0, max: 15, step: 0.25,
     help: "Where the voice starts in the PPV 1 video (long names). Short names start a bit later, so the fixed part always lands at the same moment." },
   { key: "nameGapSec", section: "timing", label: "Pause after name", unit: " s", min: 0.05, max: 0.8, step: 0.05,
@@ -348,6 +353,7 @@ export function resetPart(s: PpvSettings, part: ResetPart): PpvSettings {
     next.topP = d.topP;
     next.speed = d.speed;
   } else if (part === "timing") {
+    next.previewStartSec = d.previewStartSec;
     next.paid1StartSec = d.paid1StartSec;
     next.nameGapSec = d.nameGapSec;
     next.paid2EndSec = d.paid2EndSec;

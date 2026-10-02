@@ -198,6 +198,17 @@ export async function setPpvEffect(userId: number, effect: string): Promise<void
   await getRedis().set(`ppveff:${userId}`, effect);
 }
 
+/** 🎁 Vidéo de la preview gratuite (sinon : fond noir) */
+export async function getPpvPreview(model: string): Promise<PpvPart | null> {
+  const raw = await getRedis().get<string | PpvPart>(`ppv:preview:${model}`);
+  if (!raw) return null;
+  return typeof raw === "string" ? (JSON.parse(raw) as PpvPart) : raw;
+}
+
+export async function setPpvPreview(model: string, part: PpvPart): Promise<void> {
+  await getRedis().set(`ppv:preview:${model}`, JSON.stringify(part));
+}
+
 /** ⚙️ Réglages PPV (JSON complet, validé à la lecture par normalizeSettings) */
 export async function getPpvSettingsRaw(): Promise<unknown> {
   const raw = await getRedis().get<unknown>("ppvcfg");

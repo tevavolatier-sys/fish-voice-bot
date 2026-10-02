@@ -32,6 +32,8 @@ import {
   savePpvSettings,
   saveFixedCandidate,
   getFixedCandidate,
+  getPpvPreview,
+  setPpvPreview,
   setUploadChunk,
   getUploadChunk,
   deleteUploadChunks,
@@ -400,13 +402,36 @@ async function makePpv(
         ? Math.max(0, cfg.paid1StartSec + NAME_MAX_SEC + cfg.nameGapSec - (line1Sec - fixed1Sec))
         : cfg.paid1StartSec;
     const [level, effect] = await Promise.all([userVolume(userId, cfg), userEffect(userId, cfg)]);
-    const previewVoice = cfg.previewEffect
-      ? await roomVoiceSameLevel(vPreview, roomFor(cfg, effect))
-      : vPreview;
-    const preview = await blackVideoFromAudio(previewVoice);
+    const previewPart = await getPpvPreview(model.key).catch(() => null);
+    let preview: { video: Buffer; duration: number; width?: number; height?: number };
+    if (previewPart) {
+      // Vidéo de preview : la voix posée dessus, partie fixe à instant constant
+      const [lineSec, fixedSec, room0] = await Promise.all([
+        audioSeconds(vPreview),
+        audioSeconds(fixed[0]),
+        roomVoice(fixed[0], roomFor(cfg, effect)),
+      ]);
+      const start =
+        cfg.lines.preview.name === "before"
+          ? Math.max(0, cfg.previewStartSec + NAME_MAX_SEC + cfg.nameGapSec - (lineSec - fixedSec))
+          : cfg.previewStartSec;
+      preview = await mixVoiceIntoVideo(
+        await downloadTelegramFile(ctx, previewPart.f),
+        vPreview,
+        { mode: "start", at: start },
+        targetDbFor(cfg, level),
+        room0.meanDb,
+        undefined,
+        roomFor(cfg, effect)
+      );
+    } else {
+      const previewVoice = cfg.previewEffect
+        ? await roomVoiceSameLevel(vPreview, roomFor(cfg, effect))
+        : vPreview;
+      preview = { ...(await blackVideoFromAudio(previewVoice)), width: VIDEO_WIDTH, height: VIDEO_HEIGHT };
+    }
     await ctx.replyWithVideo(new InputFile(preview.video, `preview-${slug}.mp4`), {
-      width: VIDEO_WIDTH,
-      height: VIDEO_HEIGHT,
+      ...(preview.width && preview.height ? { width: preview.width, height: preview.height } : {}),
       duration: preview.duration,
       supports_streaming: true,
       caption: `🎁 FREE preview · ${name}`,
@@ -880,7 +905,7 @@ function createBot(): Bot {
           "Type /ppv followed by the fan's first name, like:\n" +
           "/ppv Julien\n\n" +
           "You get 2 files with the girl's voice saying his name:\n" +
-          "🎁 a FREE preview (black screen): \"Julien… ça va être fou\"\n" +
+          "🎁 a FREE preview video: \"Julien… n'oublie pas, il faut tenir jusqu'au bout…\"\n" +
           "💰 the PPV 1 video: \"Julien… hmm, c'est chaud\"\n" +
           "Under it: buttons to change the volume and the voice effect.\n" +
           "(PPV 2 is the same for every fan: it's already in the vault.)\n\n" +
@@ -1249,6 +1274,24 @@ function createBot(): Bot {
   bot.on(["message:video", "message:document"], async (ctx, next) => {
     if (ctx.from?.id !== ADMIN_ID) return next();
     const msg = ctx.message;
+    if (/^\/ppvpreview\b/i.test((msg.caption ?? "").trim())) {
+      const file =
+        msg.video ?? (msg.document?.mime_type?.startsWith("video/") ? msg.document : undefined);
+      if (!file || (file.file_size ?? 0) > 20 * 1_048_576) {
+        await ctx.reply("❌ Send a video under 20 MB with the caption /ppvpreview.");
+        return;
+      }
+      const key = ppvModel(await loadSettings())?.key ?? PPV_DEFAULT_MODEL;
+      await setPpvPreview(key, {
+        f: file.file_id,
+        u: file.file_unique_id,
+        d: "duration" in file ? Number(file.duration ?? 0) : 0,
+        b: file.file_size ?? 0,
+        m: msg.message_id,
+      });
+      await ctx.reply("✅ This video is now the FREE preview: the voice with the fan's name is put on it.");
+      return;
+    }
     const cmd = (msg.caption ?? "").trim().match(/^\/ppvadd(?:@\w+)?(?:\s+([a-z]+))?/i);
     let modelKey: string | null = null;
     if (cmd) {
@@ -1504,13 +1547,17 @@ async function handleSetup(req: Request, u: URL): Promise<Response> {
       });
       const file = sent.video;
       if (!file) throw new Error("Telegram n'a pas renvoyé de fichier");
-      const pos = await addPpvPart(model, {
+      const part = {
         f: file.file_id,
         u: file.file_unique_id,
         d: Number(file.duration ?? 0),
         b: file.file_size ?? video.length,
         m: sent.message_id,
-      });
+      };
+      const pos =
+        u.searchParams.get("role") === "preview"
+          ? (await setPpvPreview(model, part), "preview")
+          : await addPpvPart(model, part);
       await deleteUploadChunks(id, n);
       return Response.json({ ok: true, position: pos, bytes: video.length, messageId: sent.message_id });
     } catch (err) {
