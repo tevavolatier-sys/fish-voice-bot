@@ -127,7 +127,7 @@ export const EFFECT_PRESETS: Record<
     about: "real voice in the room, full sound, almost no tin can",
     params: {
       highpass: 75, lowpass: 14000, warmthDb: 2, boomCutDb: -0.5, presenceDb: 0.5,
-      compression: 1, reflections: 0.1, reverb: 0.03, reverbSec: 0.35, width: 0.5,
+      compression: 1, reflections: 0, reverb: 0, reverbSec: 0.1, width: 0.5,
     },
   },
   bedroom: {
