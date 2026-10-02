@@ -419,7 +419,7 @@ async function makePpv(
         await downloadTelegramFile(ctx, previewPart.f),
         vPreview,
         { mode: "start", at: start },
-        targetDbFor(cfg, level),
+        targetDbFor(cfg, level) + cfg.previewGainDb,
         room0.meanDb,
         undefined,
         roomFor(cfg, effect)

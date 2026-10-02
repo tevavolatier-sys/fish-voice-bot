@@ -34,6 +34,7 @@ export interface PpvSettings {
   volumeOffsetDb: number; // décale les 5 niveaux de volume
   defaultVolume: number; // niveau d'un chatter qui n'a rien choisi
   nameGainDb: number; // prénom plus fort / plus doux que la partie fixe
+  previewGainDb: number; // voix de la preview vidéo plus « proche » (plus forte)
   temperature: number;
   topP: number;
   speed: number;
@@ -83,6 +84,7 @@ export function defaultSettings(): PpvSettings {
     volumeOffsetDb: 0,
     defaultVolume: PPV_DEFAULT_VOLUME,
     nameGainDb: 2, // prénom un peu au-dessus : bien audible
+    previewGainDb: 6, // preview : voix rapprochée (demande de Teva le 2026-10-02)
     temperature: 0.55,
     topP: 0.7,
     speed: 1,
@@ -107,6 +109,7 @@ export type NumKey =
   | "volumeOffsetDb"
   | "defaultVolume"
   | "nameGainDb"
+  | "previewGainDb"
   | "temperature"
   | "topP"
   | "speed"
@@ -151,6 +154,8 @@ export const NUM_PARAMS: NumParam[] = [
     help: "Moves the 5 volume levels up or down together (for every chatter)." },
   { key: "defaultVolume", section: "volume", label: "Default level", unit: "/5", min: 1, max: 5, step: 1,
     help: "Level for a chatter who never tapped a volume button." },
+  { key: "previewGainDb", section: "volume", label: "Preview voice", unit: " dB", min: -12, max: 15, step: 1,
+    help: "Voice in the free preview video: + = closer / louder, − = further." },
   { key: "nameGainDb", section: "volume", label: "Name volume", unit: " dB", min: -6, max: 6, step: 0.5,
     help: "The fan's name louder (+) or softer (−) than the fixed part." },
   { key: "temperature", section: "voice", label: "Temperature", unit: "", min: 0.1, max: 1, step: 0.05,
@@ -355,6 +360,7 @@ export function resetPart(s: PpvSettings, part: ResetPart): PpvSettings {
     next.previewEffect = d.previewEffect;
   } else if (part === "volume") {
     next.volumeOffsetDb = d.volumeOffsetDb;
+    next.previewGainDb = d.previewGainDb;
     next.defaultVolume = d.defaultVolume;
     next.nameGainDb = d.nameGainDb;
   } else if (part === "voice") {
