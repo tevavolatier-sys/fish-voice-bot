@@ -46,14 +46,15 @@ export interface PpvSettings {
 
 export const DEFAULT_LINES: Record<LineKey, PpvLine> = {
   preview: {
-    fixed: "[soft tone] toi et moi, ça va être fou.",
-    context: "[soft tone] {name}… [breath] toi et moi, ça va être fou.",
+    // « toi et moi » retiré à la demande de Teva le 2026-10-02
+    fixed: "[soft tone] ça va être fou.",
+    context: "[soft tone] {name}… [breath] ça va être fou.",
     name: "before",
   },
   paid1: {
     // Prise « PPV1-A1 » choisie par Teva le 2026-10-01, prénom AU DÉBUT
-    fixed: "[soft tone] Hmm, c'est chaud, toi et moi.",
-    context: "[soft tone] {name}… Hmm, c'est chaud, toi et moi.",
+    fixed: "[soft tone] Hmm, c'est chaud.",
+    context: "[soft tone] {name}… Hmm, c'est chaud.",
     name: "before",
   },
   paid2: {
@@ -66,8 +67,8 @@ export const DEFAULT_LINES: Record<LineKey, PpvLine> = {
 
 /** Texte d'où viennent les prises enregistrées AVANT le champ `t` */
 export const LEGACY_FIXED_TEXT: Record<LineKey, string> = {
-  preview: DEFAULT_LINES.preview.fixed,
-  paid1: DEFAULT_LINES.paid1.fixed,
+  preview: "[soft tone] toi et moi, ça va être fou.",
+  paid1: "[soft tone] Hmm, c'est chaud, toi et moi.",
   paid2: "[sighing] Hmmm… [breath] [groaning] mmmh… [panting]",
 };
 

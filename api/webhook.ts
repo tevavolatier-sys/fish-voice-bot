@@ -880,8 +880,8 @@ function createBot(): Bot {
           "Type /ppv followed by the fan's first name, like:\n" +
           "/ppv Julien\n\n" +
           "You get 2 files with the girl's voice saying his name:\n" +
-          "🎁 a FREE preview (black screen): \"Julien… toi et moi, ça va être fou\"\n" +
-          "💰 the PPV 1 video: \"Julien… hmm, c'est chaud, toi et moi\"\n" +
+          "🎁 a FREE preview (black screen): \"Julien… ça va être fou\"\n" +
+          "💰 the PPV 1 video: \"Julien… hmm, c'est chaud\"\n" +
           "Under it: buttons to change the volume and the voice effect.\n" +
           "(PPV 2 is the same for every fan: it's already in the vault.)\n\n" +
           "(First name only: letters, 2 to 20 characters.)"
@@ -950,7 +950,7 @@ function createBot(): Bot {
         await ctx.answerCallbackQuery({
           text: p
             ? `${p.label} (${fmtNum(p, p.min)} → ${fmtNum(p, p.max)})\n${p.help}`
-            : "BEFORE: « Julien… toi et moi… » · AFTER: « …toi et moi, Julien. »",
+            : "BEFORE: « Julien… c'est chaud. » · AFTER: « c'est chaud… Julien. »",
           show_alert: true,
         });
         return;
@@ -1024,7 +1024,7 @@ function createBot(): Bot {
     if (!m || !key) {
       await ctx.reply(
         "✍️ Send: /ppvtext preview|ppv1|ppv2 <new text>\n" +
-          "Example: /ppvtext ppv1 [soft tone] Hmm, c'est chaud, toi et moi.\n" +
+          "Example: /ppvtext ppv1 [soft tone] Hmm, c'est chaud.\n" +
           "Don't write the name: it's added automatically (before/after: ⚙️ /ppvsettings → ⏱️ Timing)."
       );
       return;

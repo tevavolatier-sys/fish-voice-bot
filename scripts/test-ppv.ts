@@ -42,7 +42,7 @@ for (const bad of ["", "J", "123", "Max2", "[moaning]", "Julien!", "a".repeat(21
 
 assert.equal(
   fillLine(DEFAULT_LINES.preview.context, "Julien"),
-  "[soft tone] Julien… [breath] toi et moi, ça va être fou."
+  "[soft tone] Julien… [breath] ça va être fou."
 );
 assert.ok(fillLine(DEFAULT_LINES.paid1.context, "Max").startsWith("[soft tone] Max… "));
 
@@ -154,8 +154,8 @@ assert.equal(t!.lines.paid1.context, "[whispering] {name}… viens ici");
 assert.equal(setLineText(d, "paid1", "[sighing]"), null);
 assert.equal(setLineText(d, "paid1", "x".repeat(300)), null);
 assert.equal(setLineText(d, "paid2", "[sighing] Ahh…")!.lines.paid2.context, "");
-assert.equal(readableLine(d.lines.paid1), "[name]… Hmm, c'est chaud, toi et moi.");
-assert.equal(readableLine(setNamePos(d, "paid1", "after").lines.paid1), "Hmm, c'est chaud, toi et moi… [name].");
+assert.equal(readableLine(d.lines.paid1), "[name]… Hmm, c'est chaud.");
+assert.equal(readableLine(setNamePos(d, "paid1", "after").lines.paid1), "Hmm, c'est chaud… [name].");
 assert.equal(setNamePos(d, "paid2", "after"), d); // PPV 2 : jamais de prénom
 // Remise à zéro : le texte par défaut retrouve sa phrase d'origine
 assert.deepEqual(resetPart(setNamePos(d, "preview", "after"), "timing").lines.preview, DEFAULT_LINES.preview);
