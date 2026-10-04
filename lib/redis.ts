@@ -198,6 +198,41 @@ export async function setPpvEffect(userId: number, effect: string): Promise<void
   await getRedis().set(`ppveff:${userId}`, effect);
 }
 
+// ── 📣 Mass messages PPV ──
+export async function getMassRaw(userId: number): Promise<unknown> {
+  const raw = await getRedis().get<unknown>(`mass:cfg:${userId}`);
+  if (typeof raw !== "string") return raw ?? null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+export async function saveMass(userId: number, cfg: object): Promise<void> {
+  await getRedis().set(`mass:cfg:${userId}`, JSON.stringify(cfg));
+}
+
+/** Texte généré, gardé 24 h pour ⭐ / 🌐 */
+export async function saveMassText(id: string, text: string): Promise<void> {
+  await getRedis().set(`mass:t:${id}`, text, { ex: 24 * 3600 });
+}
+
+export async function getMassText(id: string): Promise<string | null> {
+  return getRedis().get<string>(`mass:t:${id}`);
+}
+
+/** ⭐ Textes gardés (les 30 derniers, partagés par toute l'équipe) */
+export async function addMassFav(text: string): Promise<void> {
+  const r = getRedis();
+  await r.lpush("mass:fav", text);
+  await r.ltrim("mass:fav", 0, 29);
+}
+
+export async function getMassFavs(): Promise<string[]> {
+  return getRedis().lrange<string>("mass:fav", 0, 29);
+}
+
 /** 🎁 Vidéo de la preview gratuite (sinon : fond noir) */
 export async function getPpvPreview(model: string): Promise<PpvPart | null> {
   const raw = await getRedis().get<string | PpvPart>(`ppv:preview:${model}`);
