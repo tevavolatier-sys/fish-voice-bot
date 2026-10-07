@@ -11,12 +11,20 @@ export const maxDuration = 60;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Any = any;
 
-/** Signature HMAC SHA-256 (hex) du corps brut, cherchée dans les en-têtes */
+/**
+ * Signature HMAC SHA-256 du corps brut, cherchée dans les en-têtes : hex ou
+ * base64, avec ou sans préfixe « sha256= » (la doc OnlyFansAPI ne précise pas
+ * le format ; la 1re livraison réelle le confirmera dans leur tableau de bord).
+ */
 function signed(req: Request, raw: string, secret: string): boolean {
-  const want = createHmac("sha256", secret).update(raw).digest("hex");
+  const wants = ["hex", "base64"].map((enc) =>
+    createHmac("sha256", secret).update(raw).digest(enc as "hex" | "base64")
+  );
   for (const [, v] of req.headers) {
     const got = v.trim().replace(/^sha256=/i, "");
-    if (got.length === want.length && timingSafeEqual(Buffer.from(got), Buffer.from(want))) return true;
+    for (const want of wants) {
+      if (got.length === want.length && timingSafeEqual(Buffer.from(got), Buffer.from(want))) return true;
+    }
   }
   return false;
 }
