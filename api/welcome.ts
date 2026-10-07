@@ -3,6 +3,7 @@
 // POST → actions (mot de passe WELCOME_ADMIN_PASSWORD seulement s'il est défini)
 import { timingSafeEqual } from "node:crypto";
 import { requestsThisMonth } from "../lib/onlyfans.js";
+import { getRedis } from "../lib/redis.js";
 import {
   MONTHLY_LIMIT,
   STOP_AT,
@@ -57,6 +58,13 @@ export async function POST(req: Request): Promise<Response> {
       case "choose":
         await chooseTake(kindOf(a.kind), Math.max(0, Math.min(TAKE_COUNT - 1, Number(a.i) || 0)));
         return Response.json({ ok: true });
+      case "intro": {
+        // Enregistrement « Enchantée » de la modèle (base64), collé devant le prénom
+        const b64 = String(a.audio ?? "");
+        if (b64.length < 1000 || b64.length > 900_000) throw new Error("Audio invalide (1 s à 600 Ko).");
+        await getRedis().set("welcome:intro", b64);
+        return Response.json({ ok: true });
+      }
       case "test": {
         const { name, mp3 } = await buildWelcomeVoice(String(a.pseudo ?? ""));
         return Response.json({ ok: true, name, audio: mp3.toString("base64") });
