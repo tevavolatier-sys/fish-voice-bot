@@ -1,15 +1,16 @@
 # Où j'en suis — fish-voice-bot (07/10/2026)
 
 ## Fait
-- Vocal de bienvenue OnlyFans (Sienna) déployé : https://fish-voice-bot.vercel.app/api/welcome (sans mot de passe).
-- Vercel : ONLYFANS_API_KEY, ONLYFANS_WEBHOOK_SECRET, ajoutés ; prénom extrait par Gemini (clé déjà présente). Compte acct_55e3… (Sienna) enregistré.
+- Vocal de bienvenue OnlyFans (Sienna) EN PRODUCTION : actif, webhook OnlyFansAPI créé (wh_3dadc47b…, subscriptions.new, compte acct_55e3…), interface https://fish-voice-bot.vercel.app/api/welcome (sans mot de passe).
+- Vocal = Fish « Enchantée {prénom}… » (une phrase) + vrai enregistrement « moi c'est Sienna, bienvenue » + filtre téléphone (MP3 48k). Pseudo illisible → vocal de repli Fish. Prénom par règles (clé Gemini sur Vercel invalide → repli règles, ça marche).
+- Vitesse x1, éloignement coupé (WELCOME_DISTANCE=0), pièce sur le prénom coupée (WELCOME_NAME_ROOM=dry).
 
 ## En cours
-- Rien.
+- Attendre le 1er vrai abonné et vérifier le journal dans l'interface.
 
 ## Prochaine étape
-- Console OnlyFansAPI : webhook https://fish-voice-bot.vercel.app/api/of-webhook, événement subscriptions.new, secret = ONLYFANS_WEBHOOK_SECRET de .env.local.
-- Interface : générer/choisir les prises (fixe + repli), tester des pseudos, cocher Actif, vérifier avec un vrai nouvel abonné.
+- Si l'envoi réel échoue : regarder le journal (bouton Renvoyer) et les logs Vercel.
+- Remplacer la clé GEMINI_API_KEY sur Vercel (invalide) si on veut le LLM pour les pseudos tordus.
 - Ensuite : vidéos custom au 1er PPV + alerte chatter Telegram.
 
 ## À décider par Teva
