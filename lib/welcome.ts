@@ -13,6 +13,7 @@ import { fanFirstName } from "./fan-name.js";
 import { generateVoice } from "./fish.js";
 import { requestsThisMonth, sendChatMessage, uploadMedia } from "./onlyfans.js";
 import { extractNameAudio, joinFixedAndName } from "./ppv-voice.js";
+import { defaultSettings, voiceOpts } from "./ppv-settings.js";
 import { getRedis } from "./redis.js";
 import { ffmpegBinary, run } from "./video.js";
 
@@ -191,18 +192,23 @@ export async function voiceForName(name: string, take: ChosenTake | null): Promi
   }
   const fixed = take;
   if (!fixed) throw new Error("Aucune prise de la partie fixe choisie dans l'interface.");
+  const intro = await getRedis().get<string>("welcome:intro");
   const tags = leadingTags(fixed.text);
   const lead = tags ? `${tags} ` : "";
-  // Le clone dit « Alex… bienvenue dans mon » pour une intonation naturelle,
-  // puis on ne garde que le prénom. Repli : le prénom dit seul.
-  const sentence = await generateVoice(`${lead}${name}… ${shortContext(fixed.text)}`, voiceId());
+  // Comme le bot PPV : le clone dit la phrase ENTIÈRE pour une intonation naturelle
+  // (« Enchantée… Alex… moi c'est Sienna »), on ne garde que le prénom, avec les
+  // mêmes réglages de voix que le PPV. Repli : le prénom dit seul.
+  const opts = voiceOpts(defaultSettings());
+  const sentence = await generateVoice(
+    `${lead}${intro ? "Enchantée… " : ""}${name}… ${shortContext(fixed.text)}`, voiceId(), opts
+  );
   const nameAudio =
-    (await extractNameAudio(sentence, "before")) ?? (await generateVoice(`${lead}${name}…`, voiceId()));
-  const line = await joinFixedAndName(Buffer.from(fixed.audio, "base64"), nameAudio, "before");
-  // « Enchantée » enregistré par la modèle, collé devant : « Enchantée… Alex… Moi c'est Sienna »
-  const intro = await getRedis().get<string>("welcome:intro");
+    (await extractNameAudio(sentence, intro ? "middle" : "before").catch(() => null)) ??
+    (await generateVoice(`${lead}${name}…`, voiceId(), opts));
+  const line = await joinFixedAndName(Buffer.from(fixed.audio, "base64"), nameAudio, "before", 0.12, 1);
   if (!intro) return toMp3(line);
-  return toMp3(await joinFixedAndName(line, Buffer.from(intro, "base64"), "before", 0.02));
+  // « Enchantée » (vrai enregistrement) collé devant, quasi sans pause
+  return toMp3(await joinFixedAndName(line, Buffer.from(intro, "base64"), "before", 0.04));
 }
 
 // ── Envoi à un nouvel abonné ───────────────────────────────────────────────

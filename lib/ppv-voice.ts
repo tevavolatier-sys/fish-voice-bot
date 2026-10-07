@@ -72,11 +72,13 @@ export function voicedSpans(silences: Span[], duration: number): Span[] {
  */
 export function pickNameSpan(
   spans: Span[],
-  position: "before" | "after",
+  position: "before" | "after" | "middle",
   duration: number
 ): Span | null {
   if (spans.length < 2) return null; // pas de pause : impossible d'isoler
-  const span = position === "before" ? spans[0] : spans[spans.length - 1];
+  // middle : « Enchantée… Alex… moi c'est Sienna » → le 2e bloc (vocal de bienvenue)
+  if (position === "middle" && spans.length < 3) return null;
+  const span = position === "before" ? spans[0] : position === "middle" ? spans[1] : spans[spans.length - 1];
   const len = span.end - span.start;
   if (len < 0.25 || len > NAME_MAX_SEC) return null;
   const pad = 0.04;
@@ -100,7 +102,7 @@ async function withTmp<T>(fn: (dir: string) => Promise<T>): Promise<T> {
 /** Isole le prénom dans la phrase complète. null = pause introuvable. */
 export async function extractNameAudio(
   sentence: Buffer,
-  position: "before" | "after"
+  position: "before" | "after" | "middle"
 ): Promise<Buffer | null> {
   return withTmp(async (dir) => {
     const input = join(dir, "sentence.audio");
