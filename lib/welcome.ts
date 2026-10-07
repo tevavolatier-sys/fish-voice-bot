@@ -167,10 +167,10 @@ export const WELCOME_SPEED = Number(process.env.WELCOME_SPEED) || 1.1;
 export const WELCOME_FX = (process.env.WELCOME_FX ?? "on").trim().toLowerCase() !== "off";
 
 /**
- * Éloignement de la voix (0 = collée au micro, 1 = « un peu plus éloigné »,
+ * Éloignement de la voix (0 = comme avant, choix de Teva ; 1 = « un peu plus éloigné »,
  * demandé par Teva le 07/10/2026, jusqu'à 3). Réglable sans code : WELCOME_DISTANCE.
  */
-export const WELCOME_DISTANCE = Math.max(0, Math.min(3, Number(process.env.WELCOME_DISTANCE ?? 1) || 0));
+export const WELCOME_DISTANCE = Math.max(0, Math.min(3, Number(process.env.WELCOME_DISTANCE ?? 0) || 0));
 
 /** La pièce autour du téléphone (même moteur que l'effet « Far » du bot PPV) ; l'EQ reste dans PHONE_FX */
 function welcomeRoom(d: number): RoomParams {
