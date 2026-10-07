@@ -110,6 +110,7 @@ h1{font-size:22px;margin:0}h2{font-size:16px;margin:0}h3{font-size:14px;margin:1
 .top{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:16px}
 .pill{display:inline-flex;align-items:center;gap:8px;border-radius:999px;padding:6px 12px;font-weight:600;font-size:14px}
 .pill.on{background:var(--okbg);color:var(--ok)}.pill.off{background:var(--kobg);color:var(--ko)}
+#toggle.off{background:var(--ko);border-color:var(--ko)}#toggle.on{background:var(--ok);border-color:var(--ok)}
 .pill i{width:9px;height:9px;border-radius:50%;background:currentColor;display:inline-block}
 .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px;margin-bottom:14px}
 .card p.lead{margin:4px 0 0;color:var(--mute);font-size:14px}
@@ -165,7 +166,7 @@ details{margin-top:10px}summary{cursor:pointer;color:var(--mute);font-size:13px}
   <div id="app" hidden>
     <div class="top">
       <div><h1>Vocal de bienvenue — Sienna</h1><div class="hint">Chaque nouvel abonné reçoit un vocal « Enchantée <b>Prénom</b>… moi c'est Sienna, bienvenue ».</div></div>
-      <div class="row"><span class="pill" id="pill"><i></i><span id="pillText"></span></span><button id="refresh">↻ Actualiser</button></div>
+      <div class="row"><span class="pill" id="pill"><i></i><span id="pillText"></span></span><button class="main" id="toggle" style="min-width:110px">…</button><button id="refresh">↻ Actualiser</button></div>
     </div>
 
     <div class="card">
@@ -283,6 +284,14 @@ const fileB64 = (f) => new Promise((res, rej) => { const r = new FileReader(); r
 $("#go").onclick = () => { KEY = $("#pw").value; try { localStorage.setItem("welcomeKey", KEY); } catch {} load(); };
 $("#pw").onkeydown = (e) => { if (e.key === "Enter") $("#go").click(); };
 $("#refresh").onclick = () => load();
+// Bouton ON/OFF en haut : enregistre tout de suite, sans passer par « Enregistrer »
+$("#toggle").onclick = async (e) => {
+  const on = !DATA.settings.enabled;
+  if (on && (!DATA.takes.fixed || !DATA.takes.fallback)) return alert("Installe d'abord la partie fixe ET le vocal de repli.");
+  e.target.disabled = true;
+  try { await call("save", { settings: { enabled: on } }); } catch (err) { alert(err.message); }
+  await load(); e.target.disabled = false;
+};
 $("#filter").onchange = () => renderLog(DATA.log);
 $("#enabled").onchange = () => { $("#enabledLabel").textContent = $("#enabled").checked ? "Envoi automatique : ACTIF" : "Envoi automatique : ARRÊTÉ"; };
 
@@ -385,6 +394,8 @@ async function load() {
   if (d.used >= d.stopAt) why.push("le quota OnlyFansAPI est atteint");
   $("#blockers").innerHTML = why.length ? "⚠️ Pour que ça parte : " + why.join(" · ") + "." : "";
   $("#enabled").checked = s.enabled; $("#enabled").onchange();
+  $("#toggle").textContent = s.enabled ? "⏻ ON → couper" : "⏻ OFF → activer";
+  $("#toggle").className = "main " + (s.enabled ? "on" : "off");
   $("#accountId").value = s.accountId; $("#caption").value = s.caption;
   $("#delayMax").value = s.delayMax; $("#maxDelaySec").value = s.maxDelaySec;
   for (const kind of ["fixed", "fallback"]) {
