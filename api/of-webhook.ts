@@ -63,7 +63,14 @@ export async function POST(req: Request): Promise<Response> {
 
   if (body?.event === "subscriptions.new") {
     const fan = fanOf(body?.payload ?? {});
-    if (fan.id) waitUntil(handleNewSub(str(body?.account_id), fan.id, fan.name, fan.username));
+    // Heure de l'abonnement : celle du payload si elle existe, sinon la réception du webhook
+    const p = body?.payload ?? {};
+    // (seulement une date d'ABONNEMENT récente : pas la date de création du compte du fan)
+    const rawAt = p?.subscribedAt ?? p?.subscribed_at ?? p?.subscribedOnData?.subscribeAt;
+    const parsed = rawAt ? Date.parse(String(rawAt)) : NaN;
+    const age = Date.now() - parsed;
+    const subscribedAt = Number.isFinite(parsed) && age > -60_000 && age < 10 * 60_000 ? parsed : Date.now();
+    if (fan.id) waitUntil(handleNewSub(str(body?.account_id), fan.id, fan.name, fan.username, { subscribedAt }));
   }
   // Répondre vite : le vocal est généré et envoyé après la réponse
   return Response.json({ ok: true });

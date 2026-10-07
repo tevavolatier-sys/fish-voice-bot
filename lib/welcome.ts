@@ -36,6 +36,8 @@ export interface WelcomeSettings {
   caption: string;
   /** Attente aléatoire avant l'envoi, en secondes (max 30) */
   delayMax: number;
+  /** Au-delà de ce délai après l'abonnement, on n'envoie PLUS (Teva : 2 min) */
+  maxDelaySec: number;
 }
 
 export const DEFAULT_SETTINGS: WelcomeSettings = {
@@ -47,6 +49,7 @@ export const DEFAULT_SETTINGS: WelcomeSettings = {
     "[soft tone] Bienvenue dans mon univers ! C'est quoi ton nom ? Parce que je peux pas lire ton pseudo.",
   caption: "",
   delayMax: 20,
+  maxDelaySec: 120,
 };
 
 /** Forfait OnlyFansAPI : requêtes par mois, et seuil où l'on coupe tout */
@@ -69,6 +72,12 @@ export interface WelcomeLog {
   name: string;
   ok: boolean;
   error?: string;
+  /** sent = envoyé · late = trop tard, pas envoyé · error = échec */
+  status?: "sent" | "late" | "error";
+  /** Secondes entre l'abonnement et l'envoi (ou l'abandon) */
+  elapsedSec?: number;
+  /** Renvoi manuel depuis l'interface */
+  manual?: boolean;
 }
 
 // ── Réglages ────────────────────────────────────────────────────────────────
@@ -96,6 +105,7 @@ export async function saveWelcomeSettings(s: Partial<WelcomeSettings>): Promise<
     fallbackText: String(s.fallbackText ?? cur.fallbackText).trim().slice(0, 300) || DEFAULT_SETTINGS.fallbackText,
     caption: String(s.caption ?? cur.caption).trim().slice(0, 500),
     delayMax: Math.max(0, Math.min(30, Number(s.delayMax ?? cur.delayMax) || 0)),
+    maxDelaySec: Math.max(10, Math.min(3600, Number(s.maxDelaySec ?? cur.maxDelaySec) || 120)),
   };
   await getRedis().set(cfgKey, JSON.stringify(clean));
 }
@@ -324,14 +334,19 @@ export async function handleNewSub(
   accountId: string,
   fanId: string,
   displayName: string,
-  username = ""
+  username = "",
+  opts: { subscribedAt?: number; force?: boolean } = {}
 ): Promise<void> {
   const s = await getWelcomeSettings();
-  if (!s.enabled || !s.accountId || s.accountId !== accountId) return;
+  if (!s.accountId || s.accountId !== accountId) return;
+  if (!s.enabled && !opts.force) return;
+  const since = opts.subscribedAt ?? Date.now();
+  const elapsed = () => Math.round((Date.now() - since) / 10) / 100;
 
-  // Un seul vocal de bienvenue par fan, même s'il se réabonne
+  // Un seul vocal de bienvenue par fan, même s'il se réabonne (sauf renvoi manuel)
   const sentKey = `welcome:sent:${accountId}:${fanId}`;
-  if ((await getRedis().set(sentKey, "1", { nx: true })) !== "OK") return;
+  if (!opts.force && (await getRedis().set(sentKey, "1", { nx: true })) !== "OK") return;
+  if (opts.force) await getRedis().set(sentKey, "1");
 
   const log: WelcomeLog = {
     at: new Date().toISOString(),
@@ -340,20 +355,37 @@ export async function handleNewSub(
     username,
     name: "",
     ok: false,
+    status: "error",
+    manual: opts.force || undefined,
   };
+  const tooLate = () => !opts.force && elapsed() > s.maxDelaySec;
   try {
+    if (tooLate()) throw new Error(`Trop tard : ${Math.round(elapsed())} s après l'abonnement (max ${s.maxDelaySec} s)`);
     const used = await requestsThisMonth();
     if (used >= STOP_AT) {
       throw new Error(`Quota OnlyFansAPI presque atteint (${used}/${MONTHLY_LIMIT}) : envoi bloqué.`);
     }
     const { name, mp3 } = await buildWelcomeVoice(displayName, username);
     log.name = name;
-    if (s.delayMax > 0) await new Promise((r) => setTimeout(r, Math.random() * s.delayMax * 1000));
+    // Attente « naturelle », mais jamais au-delà de la limite
+    const room = Math.max(0, s.maxDelaySec - elapsed() - 15);
+    const wait = Math.min(s.delayMax, opts.force ? 0 : room);
+    if (wait > 0) await new Promise((r) => setTimeout(r, Math.random() * wait * 1000));
+    if (tooLate()) throw new Error(`Trop tard : ${Math.round(elapsed())} s après l'abonnement (max ${s.maxDelaySec} s)`);
     const mediaId = await uploadMedia(accountId, mp3, "voice.mp3");
     await sendChatMessage(accountId, fanId, s.caption, [mediaId]);
     log.ok = true;
+    log.status = "sent";
+    log.elapsedSec = elapsed();
   } catch (err) {
     log.error = String((err as Error)?.message ?? err).slice(0, 300);
+    log.elapsedSec = elapsed();
+    if (log.error.startsWith("Trop tard")) {
+      // Pas envoyé, et on n'enverra pas tout seul (le fan a déjà bougé) ; renvoi manuel possible
+      log.status = "late";
+      await addLog(log);
+      return;
+    }
     // Échec : on libère le fan pour pouvoir le renvoyer depuis l'interface
     await getRedis().del(sentKey);
     await alertAdmin(`⚠️ Vocal de bienvenue non envoyé (fan ${displayName || username || fanId}) : ${log.error}`);
