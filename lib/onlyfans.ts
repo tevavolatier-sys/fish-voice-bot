@@ -27,7 +27,10 @@ async function api<T>(accountId: string, route: string, init: RequestInit): Prom
   let res: Response | null = null;
   let text = "";
   // Panne passagère du proxy OnlyFansAPI (503 « not_sent ») : 2 nouveaux essais
-  for (let i = 0; i < 3; i++) {
+  // Proxy OnlyFansAPI → OnlyFans parfois indisponible quelques secondes (503 « not_sent »,
+  // rien n'est parti) : on réessaie jusqu'à 6 fois, ~75 s au total, pour rester dans les 2 min.
+  const waits = [4000, 8000, 12000, 20000, 30000];
+  for (let i = 0; i <= waits.length; i++) {
     await count();
     res = await fetch(`${BASE()}/${accountId}${route}`, {
       ...init,
@@ -35,8 +38,8 @@ async function api<T>(accountId: string, route: string, init: RequestInit): Prom
       signal: AbortSignal.timeout(45_000),
     });
     text = await res.text();
-    if (res.status !== 503 || !/not_sent/.test(text)) break;
-    await new Promise((r) => setTimeout(r, 3000 * (i + 1)));
+    if (res.status !== 503 || !/not_sent/.test(text) || i === waits.length) break;
+    await new Promise((r) => setTimeout(r, waits[i]));
   }
   if (!res!.ok) throw new Error(`OnlyFansAPI ${res!.status} : ${text.slice(0, 300)}`);
   return (text ? JSON.parse(text) : {}) as T;
