@@ -1,6 +1,6 @@
 // Interface web du vocal de bienvenue (Sienna) : https://<projet>.vercel.app/api/welcome
 // GET  → la page (aucune donnée dedans)
-// POST → actions, protégées par le mot de passe WELCOME_ADMIN_PASSWORD
+// POST → actions (mot de passe WELCOME_ADMIN_PASSWORD seulement s'il est défini)
 import { timingSafeEqual } from "node:crypto";
 import { requestsThisMonth } from "../lib/onlyfans.js";
 import {
@@ -24,7 +24,8 @@ export const maxDuration = 60;
 function authorized(req: Request): boolean {
   const want = process.env.WELCOME_ADMIN_PASSWORD ?? "";
   const got = req.headers.get("x-admin-key") ?? "";
-  return want.length > 0 && got.length === want.length && timingSafeEqual(Buffer.from(got), Buffer.from(want));
+  if (!want) return true; // pas de mot de passe voulu (choix de Teva, 07/10/2026)
+  return got.length === want.length && timingSafeEqual(Buffer.from(got), Buffer.from(want));
 }
 
 const kindOf = (v: unknown): TakeKind => (v === "fallback" ? "fallback" : "fixed");
@@ -286,7 +287,7 @@ function renderLog(log) {
 
 let DATA = null;
 async function load() {
-  if (!KEY) return showLogin();
+
   try { DATA = await call("load"); } catch (err) { if ($("#login").hidden) alert(err.message); return; }
   const d = DATA, s = d.settings;
   $("#login").hidden = true; $("#app").hidden = false;
