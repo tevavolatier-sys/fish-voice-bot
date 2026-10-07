@@ -156,15 +156,46 @@ function shortContext(fixedText: string): string {
 /** Vitesse du vocal final (x1.1 : à vitesse normale elle semblait « bourrée », Teva 07/10/2026). Hauteur de voix conservée. */
 export const WELCOME_SPEED = Number(process.env.WELCOME_SPEED) || 1.1;
 
+/**
+ * Effet « vocal envoyé depuis un téléphone » (WELCOME_FX=off pour le couper).
+ * Appliqué au vocal ENTIER, donc aux trois morceaux (vrai « Enchantée », prénom
+ * Fish, vraie partie fixe) à la fois : même micro, même souffle de fond, même
+ * compression → les coutures s'entendent moins et la voix Fish perd son côté
+ * trop propre. Puis MP3 basse qualité, comme un vrai vocal.
+ */
+export const WELCOME_FX = (process.env.WELCOME_FX ?? "on").trim().toLowerCase() !== "off";
+
+const PHONE_FX =
+  // micro de téléphone : pas de graves, aigus coupés
+  "highpass=f=140,lowpass=f=7200," +
+  // compression typique des vocaux (la voix est toujours « devant »)
+  "acompressor=threshold=0.15:ratio=3:attack=8:release=140:makeup=1.6," +
+  // un peu de présence (2,8 kHz) comme une capsule de smartphone
+  "equalizer=f=2800:width_type=o:width=1.5:g=1.5";
+
+function mp3Args(inp: string, out: string): string[] {
+  const tempo = `atempo=${WELCOME_SPEED}`;
+  if (!WELCOME_FX) {
+    return ["-y", "-hide_banner", "-i", inp, "-af", tempo, "-ac", "1", "-c:a", "libmp3lame", "-b:a", "128k", out];
+  }
+  // souffle de pièce très léger sous tout le vocal : plus de silences « morts » entre les morceaux
+  const graph =
+    `[0:a]${tempo},aresample=48000,${PHONE_FX}[v];` +
+    `anoisesrc=color=pink:amplitude=0.0035:sample_rate=48000:seed=7[n];` +
+    `[v][n]amix=inputs=2:duration=first:dropout_transition=0,volume=2[a]`; // le ffmpeg embarqué divise par 2 (pas d'option normalize) → on compense;
+  return [
+    "-y", "-hide_banner", "-i", inp, "-filter_complex", graph, "-map", "[a]",
+    "-ac", "1", "-ar", "24000", "-c:a", "libmp3lame", "-b:a", "48k", out,
+  ];
+}
+
 async function toMp3(audio: Buffer): Promise<Buffer> {
   const dir = await mkdtemp(join(tmpdir(), "welc-"));
   try {
     const inp = join(dir, "in.audio");
     const out = join(dir, "out.mp3");
     await writeFile(inp, audio);
-    const r = await run(await ffmpegBinary(), [
-      "-y", "-hide_banner", "-i", inp, "-af", `atempo=${WELCOME_SPEED}`, "-ac", "1", "-c:a", "libmp3lame", "-b:a", "128k", out,
-    ]);
+    const r = await run(await ffmpegBinary(), mp3Args(inp, out));
     if (r.code !== 0) throw new Error(`conversion mp3 : ${r.stderr.slice(-300)}`);
     return await readFile(out);
   } finally {
