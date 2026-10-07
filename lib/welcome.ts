@@ -133,6 +133,12 @@ export async function chooseTake(kind: TakeKind, i: number): Promise<void> {
   await getRedis().set(takeKey(kind), JSON.stringify(chosen));
 }
 
+/** Vrai enregistrement de la modèle à la place d'une prise Fish (text = ce qu'elle dit) */
+export async function uploadTake(kind: TakeKind, text: string, audioB64: string): Promise<void> {
+  const chosen: ChosenTake = { text, audio: audioB64, at: new Date().toISOString() };
+  await getRedis().set(takeKey(kind), JSON.stringify(chosen));
+}
+
 // ── Assemblage du vocal d'un fan ───────────────────────────────────────────
 
 /** Tags Fish du début de la partie fixe (« [soft tone] »), repris devant le prénom */

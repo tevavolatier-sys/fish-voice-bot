@@ -6,6 +6,7 @@ import { requestsThisMonth } from "../lib/onlyfans.js";
 import { getRedis } from "../lib/redis.js";
 import {
   MONTHLY_LIMIT,
+  uploadTake,
   STOP_AT,
   TAKE_COUNT,
   buildWelcomeVoice,
@@ -63,6 +64,13 @@ export async function POST(req: Request): Promise<Response> {
         const b64 = String(a.audio ?? "");
         if (b64.length < 1000 || b64.length > 900_000) throw new Error("Audio invalide (1 s à 600 Ko).");
         await getRedis().set("welcome:intro", b64);
+        return Response.json({ ok: true });
+      }
+      case "upload": {
+        // Vrai enregistrement de la modèle comme prise (fixe ou repli)
+        const b64 = String(a.audio ?? "");
+        if (b64.length < 1000 || b64.length > 900_000) throw new Error("Audio invalide (1 s à 600 Ko).");
+        await uploadTake(kindOf(a.kind), String(a.text ?? ""), b64);
         return Response.json({ ok: true });
       }
       case "test": {
