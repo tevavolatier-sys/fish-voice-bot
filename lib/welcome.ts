@@ -12,6 +12,7 @@ import { ADMIN_ID, modelByKey } from "./config.js";
 import { fanFirstName } from "./fan-name.js";
 import { generateVoice } from "./fish.js";
 import { requestsThisMonth, sendChatMessage, uploadMedia } from "./onlyfans.js";
+import { roomVoiceSameLevel, type RoomParams } from "./ppv.js";
 import { extractNameAudio, joinFixedAndName } from "./ppv-voice.js";
 import { defaultSettings, voiceOpts } from "./ppv-settings.js";
 import { getRedis } from "./redis.js";
@@ -165,13 +166,30 @@ export const WELCOME_SPEED = Number(process.env.WELCOME_SPEED) || 1.1;
  */
 export const WELCOME_FX = (process.env.WELCOME_FX ?? "on").trim().toLowerCase() !== "off";
 
+/**
+ * Éloignement de la voix (0 = collée au micro, 1 = « un peu plus éloigné »,
+ * demandé par Teva le 07/10/2026, jusqu'à 3). Réglable sans code : WELCOME_DISTANCE.
+ */
+export const WELCOME_DISTANCE = Math.max(0, Math.min(3, Number(process.env.WELCOME_DISTANCE ?? 1) || 0));
+
+/** La pièce autour du téléphone (même moteur que l'effet « Far » du bot PPV) ; l'EQ reste dans PHONE_FX */
+function welcomeRoom(d: number): RoomParams {
+  return {
+    highpass: 20, lowpass: 20000, warmthDb: 0, presenceDb: 0, compression: 0,
+    boomCutDb: -1.5 * d, // moins d'effet de proximité quand on s'éloigne
+    reflections: 0.35 * d, // murs proches
+    reverb: 0.08 * d, reverbSec: 0.45 + 0.15 * d, // traîne de la pièce
+    width: 1,
+  };
+}
+
 const PHONE_FX =
   // micro de téléphone : pas de graves, aigus coupés
-  "highpass=f=140,lowpass=f=7200," +
+  `highpass=f=140,lowpass=f=${7200 - 400 * WELCOME_DISTANCE},` +
   // compression typique des vocaux (la voix est toujours « devant »)
   "acompressor=threshold=0.15:ratio=3:attack=8:release=140:makeup=1.6," +
   // un peu de présence (2,8 kHz) comme une capsule de smartphone
-  "equalizer=f=2800:width_type=o:width=1.5:g=1.5";
+  `equalizer=f=2800:width_type=o:width=1.5:g=${1.5 - 0.4 * WELCOME_DISTANCE}`;
 
 function mp3Args(inp: string, out: string): string[] {
   const tempo = `atempo=${WELCOME_SPEED}`;
@@ -180,7 +198,8 @@ function mp3Args(inp: string, out: string): string[] {
   }
   // souffle de pièce très léger sous tout le vocal : plus de silences « morts » entre les morceaux
   const graph =
-    `[0:a]${tempo},aresample=48000,${PHONE_FX}[v];` +
+    // (mono d'abord : la pièce sort en stéréo ; plus loin = un peu moins fort devant le souffle)
+    `[0:a]${tempo},aformat=sample_rates=48000:channel_layouts=mono,${PHONE_FX},volume=${-1.2 * WELCOME_DISTANCE}dB[v];` +
     `anoisesrc=color=pink:amplitude=0.0035:sample_rate=48000:seed=7[n];` +
     `[v][n]amix=inputs=2:duration=first:dropout_transition=0,volume=2[a]`; // le ffmpeg embarqué divise par 2 (pas d'option normalize) → on compense;
   return [
@@ -189,12 +208,14 @@ function mp3Args(inp: string, out: string): string[] {
   ];
 }
 
-async function toMp3(audio: Buffer): Promise<Buffer> {
+export async function toMp3(audio: Buffer): Promise<Buffer> {
   const dir = await mkdtemp(join(tmpdir(), "welc-"));
   try {
     const inp = join(dir, "in.audio");
     const out = join(dir, "out.mp3");
-    await writeFile(inp, audio);
+    // D'abord la pièce (stéréo, même niveau), puis le micro de téléphone et le souffle
+    const src = WELCOME_FX && WELCOME_DISTANCE > 0 ? await roomVoiceSameLevel(audio, welcomeRoom(WELCOME_DISTANCE)) : audio;
+    await writeFile(inp, src);
     const r = await run(await ffmpegBinary(), mp3Args(inp, out));
     if (r.code !== 0) throw new Error(`conversion mp3 : ${r.stderr.slice(-300)}`);
     return await readFile(out);
