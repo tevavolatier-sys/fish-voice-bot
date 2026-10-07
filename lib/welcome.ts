@@ -202,7 +202,7 @@ export async function voiceForName(name: string, take: ChosenTake | null): Promi
   // « Enchantée » enregistré par la modèle, collé devant : « Enchantée… Alex… Moi c'est Sienna »
   const intro = await getRedis().get<string>("welcome:intro");
   if (!intro) return toMp3(line);
-  return toMp3(await joinFixedAndName(line, Buffer.from(intro, "base64"), "before", 0.12));
+  return toMp3(await joinFixedAndName(line, Buffer.from(intro, "base64"), "before", 0.02));
 }
 
 // ── Envoi à un nouvel abonné ───────────────────────────────────────────────
