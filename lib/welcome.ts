@@ -12,7 +12,7 @@ import { ADMIN_ID, modelByKey } from "./config.js";
 import { fanFirstName } from "./fan-name.js";
 import { generateVoice } from "./fish.js";
 import { requestsThisMonth, sendChatMessage, uploadMedia } from "./onlyfans.js";
-import { roomVoiceSameLevel, type RoomParams } from "./ppv.js";
+import { EFFECT_PRESETS, isEffectKey, roomVoiceSameLevel, type RoomParams } from "./ppv.js";
 import { audioSeconds, extractNameAudio, joinFixedAndName } from "./ppv-voice.js";
 import { defaultSettings, voiceOpts } from "./ppv-settings.js";
 import { getRedis } from "./redis.js";
@@ -258,7 +258,14 @@ export async function voiceForName(name: string, take: ChosenTake | null): Promi
   // Garde-fou : un prénom isolé ne peut pas durer plus que ~0,15 s par lettre (+0,35 s)
   if (nameAudio && (await audioSeconds(nameAudio).catch(() => 99)) > 0.35 + 0.15 * name.length) nameAudio = null;
   nameAudio ??= await generateVoice(`${lead}${name}…`, voiceId(), opts);
-  const line = await joinFixedAndName(Buffer.from(fixed.audio, "base64"), nameAudio, "before", 0.12, 1);
+  // Le prénom Fish sonnait « IA » entre les deux vrais enregistrements (07/10/2026) :
+  // on le passe dans une pièce (même moteur que le PPV) pour lui donner l'air
+  // d'avoir été enregistré au même endroit, et on ne le met plus en avant (-1 dB).
+  const roomKey = process.env.WELCOME_NAME_ROOM?.trim() || "bedroom";
+  if (isEffectKey(roomKey) && roomKey !== "dry") {
+    nameAudio = await roomVoiceSameLevel(nameAudio, EFFECT_PRESETS[roomKey].params).catch(() => nameAudio!);
+  }
+  const line = await joinFixedAndName(Buffer.from(fixed.audio, "base64"), nameAudio, "before", 0.12, -1);
   if (!intro) return toMp3(line);
   // « Enchantée » (vrai enregistrement) collé devant, quasi sans pause
   return toMp3(await joinFixedAndName(line, Buffer.from(intro, "base64"), "before", 0.04));
