@@ -155,7 +155,7 @@ function shortContext(fixedText: string): string {
 }
 
 /** Vitesse du vocal final (x1.1 : à vitesse normale elle semblait « bourrée », Teva 07/10/2026). Hauteur de voix conservée. */
-export const WELCOME_SPEED = Number(process.env.WELCOME_SPEED) || 1.1;
+export const WELCOME_SPEED = Number(process.env.WELCOME_SPEED) || 1; // x1 : retour à la vitesse normale (Teva, 07/10/2026)
 
 /**
  * Effet « vocal envoyé depuis un téléphone » (WELCOME_FX=off pour le couper).
