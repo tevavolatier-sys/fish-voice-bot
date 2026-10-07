@@ -145,6 +145,9 @@ function shortContext(fixedText: string): string {
   return body.split(/\s+/).slice(0, 4).join(" ").replace(/[,;:….!?]+$/, "");
 }
 
+/** Vitesse du vocal final (x1.1 : à vitesse normale elle semblait « bourrée », Teva 07/10/2026). Hauteur de voix conservée. */
+export const WELCOME_SPEED = Number(process.env.WELCOME_SPEED) || 1.1;
+
 async function toMp3(audio: Buffer): Promise<Buffer> {
   const dir = await mkdtemp(join(tmpdir(), "welc-"));
   try {
@@ -152,7 +155,7 @@ async function toMp3(audio: Buffer): Promise<Buffer> {
     const out = join(dir, "out.mp3");
     await writeFile(inp, audio);
     const r = await run(await ffmpegBinary(), [
-      "-y", "-hide_banner", "-i", inp, "-ac", "1", "-c:a", "libmp3lame", "-b:a", "128k", out,
+      "-y", "-hide_banner", "-i", inp, "-af", `atempo=${WELCOME_SPEED}`, "-ac", "1", "-c:a", "libmp3lame", "-b:a", "128k", out,
     ]);
     if (r.code !== 0) throw new Error(`conversion mp3 : ${r.stderr.slice(-300)}`);
     return await readFile(out);
@@ -177,7 +180,7 @@ export async function buildWelcomeVoice(
 export async function voiceForName(name: string, take: ChosenTake | null): Promise<Buffer> {
   if (!name) {
     if (!take) throw new Error("Aucune prise « pseudo illisible » choisie dans l'interface.");
-    return Buffer.from(take.audio, "base64");
+    return toMp3(Buffer.from(take.audio, "base64"));
   }
   const fixed = take;
   if (!fixed) throw new Error("Aucune prise de la partie fixe choisie dans l'interface.");
