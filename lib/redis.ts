@@ -6,7 +6,7 @@ import { Redis } from "@upstash/redis";
 // manquent (l'erreur claire est renvoyée au moment de l'utilisation).
 let client: Redis | null = null;
 
-function getRedis(): Redis {
+export function getRedis(): Redis {
   if (client) return client;
   const url = process.env.UPSTASH_REDIS_REST_URL ?? process.env.KV_REST_API_URL;
   const token =
