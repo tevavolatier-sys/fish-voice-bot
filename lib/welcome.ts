@@ -39,7 +39,8 @@ export interface WelcomeSettings {
 export const DEFAULT_SETTINGS: WelcomeSettings = {
   enabled: false,
   accountId: "",
-  fixedText: "[soft tone] Bienvenue dans mon univers… alors, quoi de neuf ?",
+  // {name} = prénom du fan : la phrase est dite EN ENTIER par Fish pour chaque fan
+  fixedText: "[soft tone] Enchantée {name}… Moi c'est Sienna, bienvenuuue !",
   fallbackText:
     "[soft tone] Bienvenue dans mon univers ! C'est quoi ton nom ? Parce que je peux pas lire ton pseudo.",
   caption: "",
@@ -181,6 +182,11 @@ export async function voiceForName(name: string, take: ChosenTake | null): Promi
   if (!name) {
     if (!take) throw new Error("Aucune prise « pseudo illisible » choisie dans l'interface.");
     return toMp3(Buffer.from(take.audio, "base64"));
+  }
+  // Texte avec {name} : phrase complète générée pour ce fan (intonation naturelle)
+  const tpl = (await getWelcomeSettings()).fixedText;
+  if (tpl.includes("{name}")) {
+    return toMp3(await generateVoice(tpl.replaceAll("{name}", name), voiceId()));
   }
   const fixed = take;
   if (!fixed) throw new Error("Aucune prise de la partie fixe choisie dans l'interface.");
