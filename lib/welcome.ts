@@ -208,6 +208,25 @@ function mp3Args(inp: string, out: string): string[] {
   ];
 }
 
+/** Retire les silences au début et à la fin d'un audio (WAV mono). */
+async function trimSilence(audio: Buffer): Promise<Buffer> {
+  const dir = await mkdtemp(join(tmpdir(), "trim-"));
+  try {
+    const inp = join(dir, "in.audio");
+    const out = join(dir, "out.wav");
+    await writeFile(inp, audio);
+    const r = await run(await ffmpegBinary(), [
+      "-y", "-hide_banner", "-i", inp,
+      "-af", "silenceremove=start_periods=1:start_threshold=-40dB:start_silence=0.03,areverse,silenceremove=start_periods=1:start_threshold=-40dB:start_silence=0.05,areverse",
+      "-ac", "1", "-c:a", "pcm_s16le", out,
+    ]);
+    if (r.code !== 0) throw new Error(`trim : ${r.stderr.slice(-300)}`);
+    return await readFile(out);
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
 export async function toMp3(audio: Buffer): Promise<Buffer> {
   const dir = await mkdtemp(join(tmpdir(), "welc-"));
   try {
@@ -244,9 +263,17 @@ export async function voiceForName(name: string, take: ChosenTake | null): Promi
   }
   const fixed = take;
   if (!fixed) throw new Error("Aucune prise de la partie fixe choisie dans l'interface.");
-  const intro = await getRedis().get<string>("welcome:intro");
   const tags = leadingTags(fixed.text);
   const lead = tags ? `${tags} ` : "";
+  // Mode par défaut (07/10/2026, après essais) : Fish dit « Enchantée Alex… » en UNE
+  // phrase courte et naturelle, sans découpage ; une seule couture avec le vrai
+  // « moi c'est Sienna ». WELCOME_INTRO_MODE=real → ancien mode (vrai « Enchantée » + prénom découpé).
+  if ((process.env.WELCOME_INTRO_MODE?.trim() || "fish") !== "real") {
+    const hello = await generateVoice(`${lead}Enchantée ${name}…`, voiceId(), voiceOpts(defaultSettings()));
+    const trimmed = await trimSilence(hello);
+    return toMp3(await joinFixedAndName(Buffer.from(fixed.audio, "base64"), trimmed, "before", 0.12, 0));
+  }
+  const intro = await getRedis().get<string>("welcome:intro");
   // Comme le bot PPV : le clone dit « Alex… moi c'est Sienna » en entier pour une
   // intonation naturelle, on ne garde que le prénom (1er bloc avant la pause), avec
   // les mêmes réglages de voix que le PPV. Repli : le prénom dit seul.
@@ -261,7 +288,7 @@ export async function voiceForName(name: string, take: ChosenTake | null): Promi
   // Le prénom Fish sonnait « IA » entre les deux vrais enregistrements (07/10/2026) :
   // on le passe dans une pièce (même moteur que le PPV) pour lui donner l'air
   // d'avoir été enregistré au même endroit, et on ne le met plus en avant (-1 dB).
-  const roomKey = process.env.WELCOME_NAME_ROOM?.trim() || "bedroom";
+  const roomKey = process.env.WELCOME_NAME_ROOM?.trim() || "dry"; // la pièce sur le prénom seul rendait pire (07/10)
   if (isEffectKey(roomKey) && roomKey !== "dry") {
     nameAudio = await roomVoiceSameLevel(nameAudio, EFFECT_PRESETS[roomKey].params).catch(() => nameAudio!);
   }
