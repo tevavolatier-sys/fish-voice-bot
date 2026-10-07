@@ -62,7 +62,18 @@ export async function sendChatMessage(
   text: string,
   mediaIds: string[]
 ): Promise<void> {
-  const body: Record<string, unknown> = { text };
-  if (mediaIds.length) body.mediaFiles = mediaIds;
-  await api(accountId, `/chats/${fanId}/messages`, { method: "POST", body: JSON.stringify(body) });
+  // Un texte vide est refusé (422 « text must be a string », Laravel le transforme en null) :
+  // vocal seul → pas de champ text ; si l'API l'exige quand même, on met un emoji.
+  const send = (t?: string) => {
+    const body: Record<string, unknown> = {};
+    if (t) body.text = t;
+    if (mediaIds.length) body.mediaFiles = mediaIds;
+    return api(accountId, `/chats/${fanId}/messages`, { method: "POST", body: JSON.stringify(body) });
+  };
+  try {
+    await send(text.trim() || undefined);
+  } catch (err) {
+    if (text.trim() || !/text/i.test(String(err))) throw err;
+    await send("🎙️");
+  }
 }
