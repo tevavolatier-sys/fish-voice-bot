@@ -13,7 +13,7 @@ import { fanFirstName } from "./fan-name.js";
 import { generateVoice } from "./fish.js";
 import { requestsThisMonth, sendChatMessage, uploadMedia } from "./onlyfans.js";
 import { roomVoiceSameLevel, type RoomParams } from "./ppv.js";
-import { extractNameAudio, joinFixedAndName } from "./ppv-voice.js";
+import { audioSeconds, extractNameAudio, joinFixedAndName } from "./ppv-voice.js";
 import { defaultSettings, voiceOpts } from "./ppv-settings.js";
 import { getRedis } from "./redis.js";
 import { ffmpegBinary, run } from "./video.js";
@@ -247,16 +247,17 @@ export async function voiceForName(name: string, take: ChosenTake | null): Promi
   const intro = await getRedis().get<string>("welcome:intro");
   const tags = leadingTags(fixed.text);
   const lead = tags ? `${tags} ` : "";
-  // Comme le bot PPV : le clone dit la phrase ENTIÈRE pour une intonation naturelle
-  // (« Enchantée… Alex… moi c'est Sienna »), on ne garde que le prénom, avec les
-  // mêmes réglages de voix que le PPV. Repli : le prénom dit seul.
+  // Comme le bot PPV : le clone dit « Alex… moi c'est Sienna » en entier pour une
+  // intonation naturelle, on ne garde que le prénom (1er bloc avant la pause), avec
+  // les mêmes réglages de voix que le PPV. Repli : le prénom dit seul.
+  // (Bug du 07/10/2026 : avec « Enchantée… » dans la phrase, Fish ne marquait pas
+  // toujours la pause et le bloc gardé était « moi c'est Sienna » au lieu du prénom.)
   const opts = voiceOpts(defaultSettings());
-  const sentence = await generateVoice(
-    `${lead}${intro ? "Enchantée… " : ""}${name}… ${shortContext(fixed.text)}`, voiceId(), opts
-  );
-  const nameAudio =
-    (await extractNameAudio(sentence, intro ? "middle" : "before").catch(() => null)) ??
-    (await generateVoice(`${lead}${name}…`, voiceId(), opts));
+  const sentence = await generateVoice(`${lead}${name}… ${shortContext(fixed.text)}`, voiceId(), opts);
+  let nameAudio = await extractNameAudio(sentence, "before").catch(() => null);
+  // Garde-fou : un prénom isolé ne peut pas durer plus que ~0,15 s par lettre (+0,35 s)
+  if (nameAudio && (await audioSeconds(nameAudio).catch(() => 99)) > 0.35 + 0.15 * name.length) nameAudio = null;
+  nameAudio ??= await generateVoice(`${lead}${name}…`, voiceId(), opts);
   const line = await joinFixedAndName(Buffer.from(fixed.audio, "base64"), nameAudio, "before", 0.12, 1);
   if (!intro) return toMp3(line);
   // « Enchantée » (vrai enregistrement) collé devant, quasi sans pause
