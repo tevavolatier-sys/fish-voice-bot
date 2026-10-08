@@ -1,4 +1,4 @@
-# Où j'en suis — fish-voice-bot (07/10/2026)
+# Où j'en suis — fish-voice-bot (08/10/2026)
 
 ## Fait
 - Vocal de bienvenue OnlyFans (Sienna) EN PRODUCTION : webhook OnlyFansAPI wh_3dadc47b… (subscriptions.new + messages.received, géré par l'API via l'action `webhookSetup`), interface https://fish-voice-bot.vercel.app/api/welcome. Prénom par LLM Gemini (vérifié).
@@ -7,14 +7,14 @@
 - Automatisation : Claude pilote l'interface par script (WELCOME_AUTOMATION_KEY sur Vercel, copie locale dans .env.automation, ignoré par git) et déploie (règle dans .claude/settings.local.json, autorisée par Teva le 07/10).
 - Selfie « papier avec le prénom » : photo de Sienna installée en prod, zone OK, vocal testé OK. Selfie DÉSACTIVÉ : l'IA Gemini image refuse (« modèles image pas dans l'offre gratuite », 429).
 
-- Teva a choisi OpenAI GPT Image Mini (≈ 0,01 $/selfie, ≈ 10 $/mois pour ~1 100 selfies) plutôt que Gemini (≈ 37 $/mois). Code OpenAI fait : masque exact de la zone, composition « zone seule » sur la vraie photo (testé en local avec une fausse image IA : OK), Gemini en secours. Déployé, selfie toujours DÉSACTIVÉ.
+- SELFIE IA ACTIVÉ le 08/10 (OpenAI gpt-image-1-mini, qualité medium, ≈ 0,01 $/selfie ; clé OPENAI_API_KEY sur Vercel). Fonctionnement : seule une vignette autour de la feuille part chez OpenAI (pas de visage → modération OK, 15-25 s), masque = zone d'écriture, puis seule l'encre reliée au prénom est reportée sur la vraie photo (papier/visage/corps intacts, traits parasites effacés), contrôle « prénom coupé » → 2e essai, 2e essai aussi sur refus de modération. Testé en prod : Alex, Dark, Jean, Christopher, Maxou nickel. Pas de secours texte (Teva : fait faux) : si l'IA échoue, vocal seul + raison dans le journal. Gemini en secours seulement si sa facturation est activée (pas le cas).
 
 ## En cours
-- Attente de la clé OpenAI de Teva (platform.openai.com → Billing carte + 5 $ → API keys).
+- Premiers vrais envois vocal + selfie : surveiller le journal (colonne « + selfie IA », remarques, erreurs).
 
 ## Prochaine étape
-1. Dès réception de la clé : `npx vercel env add OPENAI_API_KEY production` → `npx vercel --prod` → `selfieTest` IA sur « Alex2595839Xxx » → montrer le résultat → `selfieSave enabled` si OK.
-2. Si la modération OpenAI refuse la photo (décolleté) : essayer une autre photo plus sage, ou Gemini (carte Google).
+1. Claude : après quelques abonnés, relire le journal (`load` via la clé d'automatisation) : part de selfies réussis, délais (budget 55 s), erreurs OpenAI/modération ; ajuster si besoin (qualité low pour 3× moins cher si le rendu reste bon).
+2. Test A/B : verdict à partir de 30 fans finis par groupe (interface).
 3. Surveiller le journal (premiers envois avec le nouveau code) et le test A/B (verdict à partir de 30 fans finis par groupe).
 - Ensuite : vidéos custom au 1er PPV + alerte chatter Telegram.
 
