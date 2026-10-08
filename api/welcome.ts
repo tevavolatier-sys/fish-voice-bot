@@ -4,8 +4,8 @@
 import { timingSafeEqual } from "node:crypto";
 import { abReset, abStats } from "../lib/ab.js";
 import { fanFirstName, llmProviders } from "../lib/fan-name.js";
-import { getSelfiePhoto, getSelfieSettings, makeSelfie, saveSelfiePhoto, saveSelfieSettings, selfieGuide, type SelfieSettings } from "../lib/selfie.js";
-import { requestsThisMonth } from "../lib/onlyfans.js";
+import { getSelfiePhoto, getSelfieSettings, hasSelfiePhoto, makeSelfie, saveSelfiePhoto, saveSelfieSettings, selfieGuide, type SelfieSettings } from "../lib/selfie.js";
+import { ensureWebhook, requestsThisMonth } from "../lib/onlyfans.js";
 import { getRedis } from "../lib/redis.js";
 import {
   MONTHLY_LIMIT,
@@ -27,10 +27,12 @@ import {
 export const maxDuration = 60;
 
 function authorized(req: Request): boolean {
-  const want = process.env.WELCOME_ADMIN_PASSWORD ?? "";
   const got = req.headers.get("x-admin-key") ?? "";
-  if (!want) return true; // pas de mot de passe voulu (choix de Teva, 07/10/2026)
-  return got.length === want.length && timingSafeEqual(Buffer.from(got), Buffer.from(want));
+  // Deux clés valables : le mot de passe de Teva, et la clé d'automatisation (Claude pilote
+  // l'interface par script : photo, essais, interrupteurs) — WELCOME_AUTOMATION_KEY sur Vercel
+  const keys = [process.env.WELCOME_ADMIN_PASSWORD, process.env.WELCOME_AUTOMATION_KEY].filter((k): k is string => Boolean(k));
+  if (!keys.length) return true; // pas de mot de passe voulu (choix de Teva, 07/10/2026)
+  return keys.some((want) => got.length === want.length && timingSafeEqual(Buffer.from(got), Buffer.from(want)));
 }
 
 const kindOf = (v: unknown): TakeKind => (v === "fallback" ? "fallback" : "fixed");
@@ -87,15 +89,24 @@ export async function POST(req: Request): Promise<Response> {
         return Response.json({ ok: true, name, audio: mp3.toString("base64") });
       }
       case "selfieLoad":
-        return Response.json({ ok: true, settings: await getSelfieSettings(), hasPhoto: Boolean(await getSelfiePhoto()) });
+        return Response.json({ ok: true, settings: await getSelfieSettings(), hasPhoto: await hasSelfiePhoto() });
       case "selfiePhoto": {
         const b64 = String(a.image ?? "");
-        if (b64.length < 1000 || b64.length > 12_000_000) throw new Error("Photo invalide (max 8 Mo).");
+        if (b64.length < 1000 || b64.length > 5_500_000) throw new Error("Photo invalide (max 4 Mo après réduction).");
         return Response.json({ ok: true, ...(await saveSelfiePhoto(Buffer.from(b64, "base64"))) });
       }
-      case "selfieSave":
-        await saveSelfieSettings(a.settings as Partial<SelfieSettings>);
+      case "selfieSave": {
+        const st = a.settings as Partial<SelfieSettings>;
+        if (st?.enabled && !(await hasSelfiePhoto())) throw new Error("Installe d'abord la photo de base avant d'activer le selfie.");
+        await saveSelfieSettings(st);
         return Response.json({ ok: true });
+      }
+      case "webhookSetup": {
+        // Déclare / complète le webhook OnlyFansAPI de ce déploiement (API, pas de console)
+        const url = `${new URL(req.url).origin}/api/of-webhook`;
+        const r = await ensureWebhook(url, ["subscriptions.new", "messages.received"]);
+        return Response.json({ ok: true, url, ...r });
+      }
       case "selfieZone": {
         // Aperçu de la zone d'écriture (liseré rouge) sur la photo installée
         await saveSelfieSettings(a.settings as Partial<SelfieSettings>);
@@ -368,7 +379,7 @@ async function call(action, data = {}) {
     headers: { "Content-Type": "application/json", "x-admin-key": KEY },
     body: JSON.stringify({ action, ...data }),
   });
-  const j = await r.json().catch(() => ({ ok: false, error: "Réponse illisible" }));
+  const j = await r.json().catch(() => ({ ok: false, error: "Erreur " + r.status + (r.status === 413 ? " : fichier trop lourd pour le serveur" : r.status === 504 ? " : délai dépassé" : "") }));
   if (r.status === 401) { showLogin(KEY ? "Mot de passe incorrect." : ""); throw new Error(j.error); }
   if (!j.ok) throw new Error(j.error || "Erreur");
   return j;
@@ -379,6 +390,21 @@ const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<
 const player = (b64, type = "audio/mpeg") => '<audio controls preload="none" src="data:' + type + ';base64,' + b64 + '"></audio>';
 const fmtSec = (s) => s == null ? "–" : s < 60 ? Math.round(s) + " s" : Math.floor(s / 60) + " min " + Math.round(s % 60) + " s";
 const fileB64 = (f) => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result.split(",")[1]); r.onerror = rej; r.readAsDataURL(f); });
+// Photo réduite dans le navigateur (1280 px max, JPEG) : Vercel refuse les corps de requête > 4,5 Mo
+const imageB64 = (f) => new Promise((res, rej) => {
+  const img = new Image();
+  const url = URL.createObjectURL(f);
+  img.onload = () => {
+    const k = Math.min(1, 1280 / Math.max(img.width, img.height));
+    const c = document.createElement("canvas");
+    c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+    c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+    URL.revokeObjectURL(url);
+    res(c.toDataURL("image/jpeg", 0.9).split(",")[1]);
+  };
+  img.onerror = () => { URL.revokeObjectURL(url); rej(new Error("Image illisible")); };
+  img.src = url;
+});
 
 $("#go").onclick = () => { KEY = $("#pw").value; try { localStorage.setItem("welcomeKey", KEY); } catch {} load(); };
 $("#pw").onkeydown = (e) => { if (e.key === "Enter") $("#go").click(); };
@@ -511,9 +537,9 @@ $("#sfSave").onclick = async (e) => {
 $("#sfUpload").onclick = async (e) => {
   const f = $("#sfFile").files[0];
   if (!f) return say($("#sfMsg"), "Choisis d'abord la photo.", false);
-  if (f.size > 8 * 1024 * 1024) return say($("#sfMsg"), "Photo trop lourde (max 8 Mo).", false);
+  if (f.size > 30 * 1024 * 1024) return say($("#sfMsg"), "Photo trop lourde (max 30 Mo).", false);
   e.target.disabled = true; say($("#sfMsg"), "Envoi de la photo…", true);
-  try { const r = await call("selfiePhoto", { image: await fileB64(f) }); say($("#sfMsg"), "Photo installée ✓ (" + Math.round(r.bytes / 1024) + " Ko). Essaie avec un pseudo.", true); loadSelfie(); }
+  try { const r = await call("selfiePhoto", { image: await imageB64(f) }); say($("#sfMsg"), "Photo installée ✓ (" + Math.round(r.bytes / 1024) + " Ko). Essaie avec un pseudo.", true); loadSelfie(); }
   catch (err) { say($("#sfMsg"), err.message, false); }
   e.target.disabled = false;
 };

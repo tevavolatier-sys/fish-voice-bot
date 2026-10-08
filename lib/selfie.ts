@@ -3,7 +3,7 @@
 //   - mode « text » : ffmpeg pose le prénom en police manuscrite (secours automatique si l'IA
 //                     échoue, ou mode choisi dans l'interface)
 // La photo de base et les réglages sont dans Redis (interface /api/welcome).
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getRedis } from "./redis.js";
@@ -36,11 +36,12 @@ export interface SelfieSettings {
 export const DEFAULT_SELFIE: SelfieSettings = {
   enabled: false,
   mode: "ai",
-  x: 73,
-  y: 66,
+  // Texte posé : au centre de la zone d'écriture (ci-dessous), inclinaison du papier
+  x: 76,
+  y: 59,
   angle: 6,
   size: 17,
-  maxWidth: 36,
+  maxWidth: 32,
   color: "14143a",
   prompt: "",
   fallback: false,
@@ -51,12 +52,19 @@ export const DEFAULT_SELFIE: SelfieSettings = {
 const CFG_KEY = "welcome:selfie:cfg";
 const PHOTO_KEY = "welcome:selfie:photo";
 const FONT = join(process.cwd(), "assets", "Caveat-Bold.ttf");
-/** Modèles d'image Gemini essayés dans l'ordre (le 1er qui répond gagne) ; WELCOME_IMAGE_MODEL passe devant */
+/**
+ * Modèles d'image Gemini essayés dans l'ordre (IDs stables au 07/10/2026 ; les « -preview » sont
+ * arrêtés, 2.5-flash-image est réservé aux anciens utilisateurs) ; WELCOME_IMAGE_MODEL passe devant.
+ * ⚠️ Aucun modèle image n'existe dans l'offre gratuite : la clé Gemini doit être sur un projet
+ * Google Cloud avec facturation (≈ 0,04 $ par selfie avec nano-banana-2.1).
+ */
 const IMAGE_MODELS = () =>
-  [process.env.WELCOME_IMAGE_MODEL?.trim(), "gemini-3.1-flash-image", "gemini-2.5-flash-image"].filter(
+  [process.env.WELCOME_IMAGE_MODEL?.trim(), "gemini-nano-banana-2.1", "gemini-3.1-flash-image", "gemini-3.1-flash-lite-image"].filter(
     (m, i, a): m is string => Boolean(m) && a.indexOf(m) === i
   );
-const AI_TIMEOUT_MS = 45_000;
+/** Délai max par modèle, et budget total de la cascade (la fonction Vercel de 60 s fait aussi la voix et les uploads) */
+const AI_TIMEOUT_MS = 25_000;
+const AI_BUDGET_MS = 35_000;
 
 function parse<T>(raw: unknown): T | null {
   if (raw == null) return null;
@@ -69,7 +77,11 @@ export async function getSelfieSettings(): Promise<SelfieSettings> {
 
 export async function saveSelfieSettings(s: Partial<SelfieSettings>): Promise<void> {
   const cur = await getSelfieSettings();
-  const num = (v: unknown, d: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, Number(v ?? d) || 0));
+  // Champ vide ou illisible → on garde la valeur actuelle (jamais 0 par accident)
+  const num = (v: unknown, d: number, lo: number, hi: number) => {
+    const n = Number(v);
+    return v === "" || v == null || !Number.isFinite(n) ? d : Math.max(lo, Math.min(hi, n));
+  };
   const clean: SelfieSettings = {
     enabled: Boolean(s.enabled ?? cur.enabled),
     mode: s.mode === "text" ? "text" : s.mode === "ai" ? "ai" : cur.mode,
@@ -95,7 +107,24 @@ function cleanZone(z: unknown): [number, number][] | null {
     if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
     out.push([Math.max(0, Math.min(100, x)), Math.max(0, Math.min(100, y))]);
   }
+  // Quadrilatère dégénéré (coins confondus, champs vidés) : refusé
+  let area = 0;
+  for (let i = 0; i < 4; i++) {
+    const [x1, y1] = out[i], [x2, y2] = out[(i + 1) % 4];
+    area += x1 * y2 - x2 * y1;
+  }
+  if (Math.abs(area) / 2 < 1) return null;
   return out;
+}
+
+/** Centre et largeur (en %) de la zone d'écriture */
+function zoneBox(zone: [number, number][]): { cx: number; cy: number; width: number } {
+  const xs = zone.map((p) => p[0]), ys = zone.map((p) => p[1]);
+  return {
+    cx: xs.reduce((a, b) => a + b, 0) / 4,
+    cy: ys.reduce((a, b) => a + b, 0) / 4,
+    width: Math.max(...xs) - Math.min(...xs),
+  };
 }
 
 /**
@@ -126,6 +155,11 @@ export async function getSelfiePhoto(): Promise<Buffer | null> {
   return b64 ? Buffer.from(b64, "base64") : null;
 }
 
+/** Une photo de base est-elle installée ? (sans la télécharger) */
+export async function hasSelfiePhoto(): Promise<boolean> {
+  return (await getRedis().exists(PHOTO_KEY)) === 1;
+}
+
 async function withTmp<T>(fn: (dir: string) => Promise<T>): Promise<T> {
   const dir = await mkdtemp(join(tmpdir(), "selfie-"));
   try {
@@ -135,22 +169,26 @@ async function withTmp<T>(fn: (dir: string) => Promise<T>): Promise<T> {
   }
 }
 
-/** Photo de base : ramenée à 1280 px max et en JPEG (Redis : 1 Mo max par valeur) */
+/**
+ * Photo de base : ramenée à 1280 px max et en JPEG. Redis (Upstash) refuse une valeur
+ * de plus de 1 Mo : on compresse de plus en plus jusqu'à tenir (base64 = ×1,33).
+ */
 export async function saveSelfiePhoto(image: Buffer): Promise<{ bytes: number }> {
-  const jpeg = await withTmp(async (dir) => {
+  const b64 = await withTmp(async (dir) => {
     const inp = join(dir, "in.img");
-    const out = join(dir, "out.jpg");
     await writeFile(inp, image);
-    const r = await run(await ffmpegBinary(), [
-      "-y", "-hide_banner", "-i", inp, "-frames:v", "1",
-      "-vf", "scale='min(1280,iw)':-2", "-q:v", "4", out,
-    ]);
-    if (r.code !== 0) throw new Error(`Photo illisible : ${r.stderr.slice(-200)}`);
-    return readFile(out);
+    const bin = await ffmpegBinary();
+    for (const q of [4, 6, 8, 11, 15]) {
+      const out = join(dir, `out-${q}.jpg`);
+      const r = await run(bin, ["-y", "-hide_banner", "-i", inp, "-frames:v", "1", "-vf", "scale='min(1280,iw)':-2", "-q:v", String(q), out]);
+      if (r.code !== 0) throw new Error(`Photo illisible : ${r.stderr.slice(-200)}`);
+      const b = (await readFile(out)).toString("base64");
+      if (b.length <= 950_000) return b;
+    }
+    throw new Error("Photo trop lourde même compressée : envoie un JPEG plus simple.");
   });
-  if (jpeg.length > 900_000) throw new Error("Photo trop lourde même réduite : envoie un JPEG plus petit.");
-  await getRedis().set(PHOTO_KEY, jpeg.toString("base64"));
-  return { bytes: jpeg.length };
+  await getRedis().set(PHOTO_KEY, b64);
+  return { bytes: Math.round((b64.length * 3) / 4) };
 }
 
 async function imageSize(file: string): Promise<{ w: number; h: number }> {
@@ -176,11 +214,16 @@ export async function selfieByText(photo: Buffer, name: string, s: SelfieSetting
     const oh = Math.round(ch * 1.5);
     const cx = Math.round((w * s.x) / 100);
     const cy = Math.round((h * s.y) / 100);
-    const text = name.replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/:/g, "\\:");
-    const font = FONT.replace(/\\/g, "/").replace(/:/g, "\\:");
+    // Le prénom passe par un fichier : une apostrophe (D'Angelo) casserait le graphe en ligne
+    const txt = join(dir, "name.txt");
+    await writeFile(txt, name, "utf8");
+    const ff = (p: string) => p.replace(/\\/g, "/").replace(/:/g, "\\:");
+    await access(FONT).catch(() => {
+      throw new Error("police Caveat absente du déploiement (assets/Caveat-Bold.ttf, includeFiles dans vercel.json)");
+    });
     const graph =
       `color=c=black@0:s=${cw}x${ch}:d=1,format=rgba,` +
-      `drawtext=fontfile='${font}':text='${text}':fontcolor=0x${s.color}@0.88:fontsize=${fontSize}:x=(w-tw)/2:y=(h-th)/2,` +
+      `drawtext=fontfile='${ff(FONT)}':textfile='${ff(txt)}':fontcolor=0x${s.color}@0.88:fontsize=${fontSize}:x=(w-tw)/2:y=(h-th)/2,` +
       `rotate=${s.angle}*PI/180:c=none:ow=${ow}:oh=${oh},boxblur=0.6:1[t];` +
       `[0:v][t]overlay=x=${cx - Math.round(ow / 2)}:y=${cy - Math.round(oh / 2)}:format=auto`;
     const r = await run(await ffmpegBinary(), [
@@ -196,10 +239,16 @@ export async function selfieByAi(photo: Buffer, name: string, s: SelfieSettings)
   const key = process.env.GEMINI_API_KEY;
   if (!key) throw new Error("GEMINI_API_KEY manquante");
   const guide = await selfieGuide(photo, s);
+  // Gemini n'a pas de masque : on décrit la zone en mots (« semantic masking ») ET on montre
+  // le cadre rouge sur une 2e image, pour que le prénom reste sur la feuille, loin des doigts.
+  const z = zoneBox(s.zone);
+  const where = `${z.cy < 50 ? "upper" : "lower"} ${z.cx < 40 ? "left" : z.cx > 60 ? "right" : "middle"} part of the frame`;
   const prompt =
     `Photo editing task (inpainting). Image 1 is a real selfie of a woman holding a blank white sheet of paper. ` +
     `Image 2 is the same photo with a RED OUTLINE: that outline marks the ONLY area where writing is allowed ` +
-    `(the blank part of the sheet, away from her fingers). ` +
+    `(the blank part of the sheet, away from her fingers). In words, the allowed area is the ${where}, ` +
+    `on the blank sheet above her fingers. Image 2 is only a guide: copy nothing from it except the position ` +
+    `of the area; base the result on image 1. ` +
     `Edit image 1: write the name "${name}" on the sheet as if she had written it herself with a black felt-tip ` +
     `marker: real handwriting, slightly irregular strokes, ink slightly uneven, large, centered inside the allowed ` +
     `area with comfortable margins, never touching or crossing the outline, never over her hand or outside the sheet, ` +
@@ -210,27 +259,52 @@ export async function selfieByAi(photo: Buffer, name: string, s: SelfieSettings)
     (s.prompt ? ` ${s.prompt}` : "");
   const img = (b: Buffer) => ({ inline_data: { mime_type: "image/jpeg", data: b.toString("base64") } });
   let lastErr = "";
+  const t0 = Date.now();
   for (const model of IMAGE_MODELS()) {
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
-      method: "POST",
-      headers: { "x-goog-api-key": key, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [{ role: "user", parts: [{ text: prompt }, img(photo), img(guide)] }],
-        generationConfig: { responseModalities: ["IMAGE"], temperature: 0.3 },
-      }),
-      signal: AbortSignal.timeout(AI_TIMEOUT_MS),
-    });
+    const left = AI_BUDGET_MS - (Date.now() - t0);
+    if (left < 5_000) break; // plus le temps d'essayer un autre modèle dans la fonction Vercel
+    const timeout = Math.min(AI_TIMEOUT_MS, left);
+    let res: Response;
+    try {
+      res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+        method: "POST",
+        headers: { "x-goog-api-key": key, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ role: "user", parts: [{ text: prompt }, img(photo), img(guide)] }],
+          // Pas de temperature : Gemini 3 recommande la valeur par défaut ; 1K par défaut (2K = double prix)
+          generationConfig: { responseModalities: ["IMAGE"] },
+        }),
+        signal: AbortSignal.timeout(timeout),
+      });
+    } catch (err) {
+      const e = err as Error;
+      lastErr = `${model} → ${e?.name === "TimeoutError" ? `pas de réponse en ${Math.round(timeout / 1000)} s` : String(e?.message ?? err).slice(0, 120)}`;
+      continue;
+    }
     if (!res.ok) {
-      lastErr = `${model} → ${res.status} ${(await res.text().catch(() => "")).slice(0, 160)}`;
-      if (res.status === 404 || res.status === 400) continue; // modèle inconnu / non supporté : suivant
+      const body = (await res.text().catch(() => "")).slice(0, 300);
+      lastErr = `${model} → ${res.status} ${body.slice(0, 160)}`;
+      if (/location is not supported/i.test(body)) {
+        throw new Error("Gemini image : région non prise en charge (Polynésie) — ça marche depuis Vercel (USA), pas en local");
+      }
+      if (res.status === 429 && /limit:\s*0|billing|free[_ ]tier/i.test(body)) {
+        throw new Error(
+          "Gemini image : les modèles image ne sont pas dans l'offre gratuite. Activer la facturation sur le projet Google Cloud de la clé (aistudio.google.com/apikey → projet → Facturation), régénérer la clé si elle date d'avant, puis réessayer."
+        );
+      }
+      if (res.status === 429) lastErr += " (quota images/min atteint, ou clé sans facturation)";
+      if ([400, 404, 429, 503].includes(res.status)) continue; // inconnu / non supporté / quota (par modèle) / saturé : suivant
       throw new Error(`Gemini image : ${lastErr}`);
     }
     const d = (await res.json()) as {
-      candidates?: { content?: { parts?: { inlineData?: { mimeType?: string; data?: string } }[] }; finishReason?: string }[];
+      candidates?: { content?: { parts?: { text?: string; inlineData?: { mimeType?: string; data?: string } }[] }; finishReason?: string }[];
+      promptFeedback?: { blockReason?: string };
     };
     const part = d.candidates?.[0]?.content?.parts?.find((p) => p.inlineData?.data);
     if (!part?.inlineData?.data) {
-      lastErr = `${model} → pas d'image (${d.candidates?.[0]?.finishReason ?? "réponse vide"})`;
+      const why = d.promptFeedback?.blockReason ?? d.candidates?.[0]?.finishReason ?? "réponse vide";
+      const said = d.candidates?.[0]?.content?.parts?.find((p) => p.text)?.text?.slice(0, 80);
+      lastErr = `${model} → pas d'image (${why}${said ? ` : ${said}` : ""})`;
       continue;
     }
     return finishAi(Buffer.from(part.inlineData.data, "base64"));
@@ -261,8 +335,9 @@ export async function makeSelfie(
   const s = await getSelfieSettings();
   if (!name || (!s.enabled && !opts.force)) return null;
   const photo = await getSelfiePhoto();
-  if (!photo) return null;
+  if (!photo) throw new Error("pas de photo de base installée (interface → carte Selfie)");
   const mode = opts.mode ?? s.mode;
+  if (mode === "ai" && !process.env.GEMINI_API_KEY) throw new Error("GEMINI_API_KEY manquante sur Vercel");
   if (mode === "ai") {
     try {
       return { jpeg: await selfieByAi(photo, name, s), how: "ai" };

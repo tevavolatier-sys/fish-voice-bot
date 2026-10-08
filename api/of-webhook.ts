@@ -1,6 +1,7 @@
-// Webhooks OnlyFansAPI. À déclarer dans la console OnlyFansAPI (Webhooks → Add Webhook)
-// avec https://<projet>.vercel.app/api/of-webhook, événements « subscriptions.new »
-// et « messages.received » (test A/B), et le même secret que ONLYFANS_WEBHOOK_SECRET.
+// Webhooks OnlyFansAPI : subscriptions.new (vocal de bienvenue) et messages.received (test A/B).
+// Déclaré/mis à jour automatiquement par l'action « webhookSetup » de api/welcome.ts
+// (API OnlyFansAPI /webhooks), avec le secret ONLYFANS_WEBHOOK_SECRET.
+// Une 401 répétée (mauvais secret) met le webhook en pause après 20 échecs (événements perdus).
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { waitUntil } from "@vercel/functions";
 import { recordReply } from "../lib/ab.js";
@@ -66,8 +67,9 @@ export async function POST(req: Request): Promise<Response> {
     const fan = fanOf(body?.payload ?? {});
     // Heure de l'abonnement : celle du payload si elle existe, sinon la réception du webhook
     const p = body?.payload ?? {};
-    // (seulement une date d'ABONNEMENT récente : pas la date de création du compte du fan)
-    const rawAt = p?.subscribedAt ?? p?.subscribed_at ?? p?.subscribedOnData?.subscribeAt;
+    // Doc OnlyFansAPI : la date de l'événement est payload.createdAt (ISO 8601) ;
+    // secours : user.subscribedOnData.subscribeAt (abonnement du fan à la créatrice)
+    const rawAt = p?.createdAt ?? p?.user?.subscribedOnData?.subscribeAt;
     const parsed = rawAt ? Date.parse(String(rawAt)) : NaN;
     const age = Date.now() - parsed;
     const subscribedAt = Number.isFinite(parsed) && age > -60_000 && age < 10 * 60_000 ? parsed : Date.now();

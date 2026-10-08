@@ -351,10 +351,15 @@ export async function handleNewSub(
   if (!s.enabled && !opts.force) return;
   const since = opts.subscribedAt ?? Date.now();
   const elapsed = () => Math.round((Date.now() - since) / 10) / 100;
+  // Budget de la fonction Vercel (60 s) : secondes qu'il reste pour finir proprement
+  const t0 = Date.now();
+  const left = () => 55 - (Date.now() - t0) / 1000;
 
-  // Un seul vocal de bienvenue par fan, même s'il se réabonne (sauf renvoi manuel)
+  // Un seul vocal de bienvenue par fan, même s'il se réabonne (sauf renvoi manuel).
+  // Verrou de 10 min d'abord ; rendu permanent seulement après l'envoi réussi, pour
+  // qu'un fan perdu (fonction tuée par le délai Vercel) reste renvoyable.
   const sentKey = `welcome:sent:${accountId}:${fanId}`;
-  if (!opts.force && (await getRedis().set(sentKey, "1", { nx: true })) !== "OK") return;
+  if (!opts.force && (await getRedis().set(sentKey, "1", { nx: true, ex: 600 })) !== "OK") return;
   if (opts.force) await getRedis().set(sentKey, "1");
 
   const log: WelcomeLog = {
@@ -384,29 +389,47 @@ export async function handleNewSub(
     if (used >= STOP_AT) {
       throw new Error(`Quota OnlyFansAPI presque atteint (${used}/${MONTHLY_LIMIT}) : envoi bloqué.`);
     }
-    const { name, mp3 } = await buildWelcomeVoice(displayName, username);
+    const name = await fanFirstName(displayName, username);
     log.name = name;
-    // Selfie « papier avec le prénom » en même temps que la voix (IA, secours texte) ; jamais bloquant
-    const selfie = await makeSelfie(name).catch((err) => {
-      log.selfieError = String((err as Error)?.message ?? err).slice(0, 200);
-      return null;
-    });
+    // Voix et selfie « papier avec le prénom » en parallèle ; le selfie n'est jamais bloquant
+    const [mp3, selfieResult] = await Promise.all([
+      voiceForName(name, await getChosenTake(name ? "fixed" : "fallback")),
+      makeSelfie(name).catch((err) => {
+        log.selfieError = String((err as Error)?.message ?? err).slice(0, 200);
+        return null;
+      }),
+    ]);
+    let selfie = selfieResult;
     if (selfie) {
       log.selfie = selfie.how;
       if (selfie.aiError) log.selfieError = selfie.aiError;
     }
-    // Attente « naturelle », mais jamais au-delà de la limite
+    // Attente « naturelle », mais jamais au-delà de la limite ni du budget Vercel
     const room = Math.max(0, s.maxDelaySec - elapsed() - 15);
-    const wait = Math.min(s.delayMax, opts.force ? 0 : room);
+    const wait = Math.min(s.delayMax, opts.force ? 0 : room, Math.max(0, left() - 15));
     if (wait > 0) await new Promise((r) => setTimeout(r, Math.random() * wait * 1000));
     if (tooLate()) throw new Error(`Trop tard : ${Math.round(elapsed())} s après l'abonnement (max ${s.maxDelaySec} s)`);
+    if (selfie && left() < 12) {
+      selfie = null;
+      delete log.selfie;
+      log.selfieError = "abandonné : plus assez de temps dans la fonction";
+    }
     const mediaIds: string[] = [];
     if (selfie) mediaIds.push(await uploadMedia(accountId, selfie.jpeg, "selfie.jpg"));
     mediaIds.push(await uploadMedia(accountId, mp3, "voice.mp3"));
-    await sendChatMessage(accountId, fanId, s.caption, mediaIds);
+    try {
+      await sendChatMessage(accountId, fanId, s.caption, mediaIds);
+    } catch (err) {
+      // Photo + audio refusés ensemble ? Le vocal (l'essentiel) part seul.
+      if (mediaIds.length < 2) throw err;
+      log.selfieError = `message avec selfie refusé : ${String((err as Error)?.message ?? err).slice(0, 120)}`;
+      delete log.selfie;
+      await sendChatMessage(accountId, fanId, s.caption, [mediaIds[mediaIds.length - 1]]);
+    }
     log.ok = true;
     log.status = "sent";
     log.elapsedSec = elapsed();
+    await getRedis().set(sentKey, "1"); // permanent : ce fan a eu son vocal
     await markSent(accountId, fanId);
   } catch (err) {
     log.error = String((err as Error)?.message ?? err).slice(0, 300);
