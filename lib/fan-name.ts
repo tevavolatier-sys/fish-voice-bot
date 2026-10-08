@@ -73,51 +73,66 @@ async function ask(raw: string): Promise<string | null> {
     return d.choices?.[0]?.message?.content ?? null;
   };
 
+  // Chaque fournisseur configuré est essayé à son tour (une clé invalide ne bloque pas les suivants)
+  const providers: (() => Promise<string | null>)[] = [];
   if (process.env.GEMINI_API_KEY) {
-    const res = await fetch(
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-lite-latest:generateContent",
-      {
-        method: "POST",
-        headers: { "x-goog-api-key": process.env.GEMINI_API_KEY, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: SYSTEM }] },
-          contents: [{ role: "user", parts: [{ text: user }] }],
-          generationConfig: { temperature: 0, maxOutputTokens: 10 },
-        }),
-        signal: AbortSignal.timeout(TIMEOUT_MS),
-      }
-    );
-    if (!res.ok) return null;
-    const d = (await res.json()) as { candidates?: { content?: { parts?: { text?: string }[] } }[] };
-    return d.candidates?.[0]?.content?.parts?.map((p) => p.text ?? "").join("") ?? null;
+    providers.push(async () => {
+      const res = await fetch(
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-lite-latest:generateContent",
+        {
+          method: "POST",
+          headers: { "x-goog-api-key": process.env.GEMINI_API_KEY!, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            systemInstruction: { parts: [{ text: SYSTEM }] },
+            contents: [{ role: "user", parts: [{ text: user }] }],
+            generationConfig: { temperature: 0, maxOutputTokens: 10 },
+          }),
+          signal: AbortSignal.timeout(TIMEOUT_MS),
+        }
+      );
+      if (!res.ok) return null;
+      const d = (await res.json()) as { candidates?: { content?: { parts?: { text?: string }[] } }[] };
+      return d.candidates?.[0]?.content?.parts?.map((p) => p.text ?? "").join("") ?? null;
+    });
   }
   if (process.env.GROQ_API_KEY) {
-    return openAiStyle("https://api.groq.com/openai/v1/chat/completions", process.env.GROQ_API_KEY, "llama-3.3-70b-versatile");
+    providers.push(() => openAiStyle("https://api.groq.com/openai/v1/chat/completions", process.env.GROQ_API_KEY!, "llama-3.3-70b-versatile"));
   }
   if (process.env.DEEPSEEK_API_KEY) {
-    return openAiStyle("https://api.deepseek.com/chat/completions", process.env.DEEPSEEK_API_KEY, "deepseek-chat");
+    providers.push(() => openAiStyle("https://api.deepseek.com/chat/completions", process.env.DEEPSEEK_API_KEY!, "deepseek-chat"));
   }
   if (process.env.ANTHROPIC_API_KEY) {
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "x-api-key": process.env.ANTHROPIC_API_KEY,
-        "anthropic-version": "2023-06-01",
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "claude-haiku-4-5",
-        max_tokens: 10,
-        system: SYSTEM,
-        messages: [{ role: "user", content: user }],
-      }),
-      signal: AbortSignal.timeout(TIMEOUT_MS),
+    providers.push(async () => {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "x-api-key": process.env.ANTHROPIC_API_KEY!,
+          "anthropic-version": "2023-06-01",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "claude-haiku-4-5",
+          max_tokens: 10,
+          system: SYSTEM,
+          messages: [{ role: "user", content: user }],
+        }),
+        signal: AbortSignal.timeout(TIMEOUT_MS),
+      });
+      if (!res.ok) return null;
+      const d = (await res.json()) as { content?: { type: string; text?: string }[] };
+      return d.content?.find((b) => b.type === "text")?.text ?? null;
     });
-    if (!res.ok) return null;
-    const d = (await res.json()) as { content?: { type: string; text?: string }[] };
-    return d.content?.find((b) => b.type === "text")?.text ?? null;
+  }
+  for (const p of providers) {
+    const out = await p().catch(() => null);
+    if (out) return out;
   }
   return null;
+}
+
+/** Fournisseurs LLM configurés, dans l'ordre d'essai */
+export function llmProviders(): string[] {
+  return (["GEMINI", "GROQ", "DEEPSEEK", "ANTHROPIC"] as const).filter((k) => process.env[`${k}_API_KEY`]).map((k) => k.toLowerCase());
 }
 
 /**

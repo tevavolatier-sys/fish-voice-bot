@@ -3,6 +3,7 @@
 // POST → actions, protégées par le mot de passe WELCOME_ADMIN_PASSWORD (Vercel)
 import { timingSafeEqual } from "node:crypto";
 import { abReset, abStats } from "../lib/ab.js";
+import { fanFirstName, llmProviders } from "../lib/fan-name.js";
 import { requestsThisMonth } from "../lib/onlyfans.js";
 import { getRedis } from "../lib/redis.js";
 import {
@@ -97,7 +98,13 @@ export async function POST(req: Request): Promise<Response> {
   }
 }
 
-export async function GET(): Promise<Response> {
+export async function GET(req?: Request): Promise<Response> {
+  // Contrôle de santé de l'IA des prénoms (pseudo fixe, rien de secret) : /api/welcome?check=name
+  if (req && new URL(req.url).searchParams.get("check") === "name") {
+    const name = await fanFirstName("Alex2595839Xxx");
+    const llm = llmProviders();
+    return Response.json({ name, llm, viaLlm: llm.length > 0 && name === "Alex" });
+  }
   return new Response(PAGE, { headers: { "Content-Type": "text/html; charset=utf-8" } });
 }
 
