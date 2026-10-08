@@ -371,7 +371,7 @@ export async function compositeZone(
 export async function renderInk(dir: string, original: string, alphaRaw: string, w: number, h: number, out: string): Promise<void> {
   const bin = await ffmpegBinary();
   const raw = ["-f", "rawvideo", "-pix_fmt", "gray"];
-  const inkMax = Math.max(0.3, Math.min(1, Number(process.env.WELCOME_INK) || 0.88));
+  const inkMax = Math.max(0.3, Math.min(1, Number(process.env.WELCOME_INK) || 0.72));
   const blur = Math.max(0, Math.min(3, Number(process.env.WELCOME_INK_BLUR ?? 0.6)));
   const pressure = Math.max(0, Math.min(1, Number(process.env.WELCOME_INK_PRESSURE ?? 0.45)));
   const fiber = Math.max(0, Math.min(1, Number(process.env.WELCOME_INK_FIBER ?? 0.12)));
@@ -386,7 +386,7 @@ export async function renderInk(dir: string, original: string, alphaRaw: string,
     // 2) bords fibreux : bruit fin ajouté au contour avant un léger lissage (bavure dans les fibres, pas d'aérographe)
     `color=c=0x808080:s=${w}x${h}:d=1,format=gray,noise=alls=${Math.round(fiber * 60)}:allf=u:all_seed=${seed()},gblur=sigma=0.7[f];` +
     `[1:v]format=gray[a0];[a0][f]blend=all_expr='if(gt(A,8),clip(A+(B-128)*0.6,0,255),A)'[ar];` +
-    `[ar][m]blend=all_expr='A*B/255',${blur > 0 ? `gblur=sigma=${blur.toFixed(2)},` : ""}lutyuv=y='clip(val*1.7,0,255)'[a1];` +
+    `[ar][m]blend=all_expr='A*B/255',${blur > 0 ? `gblur=sigma=${blur.toFixed(2)},` : ""}lutyuv=y='clip(val*1.45,0,255)'[a1];` +
     // 3) encre nettement plus chargée aux croisements, boucles et reprises (double couche de feutre)
     `[a1]split[a1a][a1b];[a1b]gblur=sigma=3[dense];[a1a][dense]blend=all_expr='min(255,A*(0.82+0.6*B/255))'[a2];` +
     // 4) stries d'encre : 6 % de variation fine à l'intérieur du trait

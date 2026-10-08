@@ -455,9 +455,10 @@ function renderAb(ab, on) {
   const mins = (m) => m == null ? "–" : m < 60 ? Math.round(m) + " min" : m < 1440 ? (m / 60).toFixed(1).replace(".0", "") + " h" : (m / 1440).toFixed(1).replace(".0", "") + " j";
   const conf = ab.confidence == null ? null : Math.round(ab.confidence * 100);
   $("#abStats").innerHTML =
-    '<div class="stat ok"><b>' + pct(v.rate) + '</b><span>répondent AVEC vocal</span></div>' +
-    '<div class="stat"><b>' + pct(n.rate) + '</b><span>répondent SANS vocal</span></div>' +
-    '<div class="stat ' + (ab.diffPts > 0 ? "ok" : ab.diffPts < 0 ? "ko" : "") + '"><b>' + (ab.diffPts == null ? "–" : sign(Math.round(ab.diffPts)) + " pts") + '</b><span>écart' + (ab.ratio ? " (×" + ab.ratio.toFixed(1).replace(".0", "") + ")" : "") + '</span></div>' +
+    '<div class="stat ok"><b>' + pct(v.rate ?? v.soFar) + '</b><span>répondent AVEC vocal' + (v.rate == null && v.soFar != null ? ' <i>(provisoire)</i>' : '') + '</span></div>' +
+    '<div class="stat"><b>' + pct(n.rate ?? n.soFar) + '</b><span>répondent SANS vocal' + (n.rate == null && n.soFar != null ? ' <i>(provisoire)</i>' : '') + '</span></div>' +
+    (() => { const d = ab.diffPts != null ? ab.diffPts : (v.soFar != null && n.soFar != null ? (v.soFar - n.soFar) * 100 : null); const prov = ab.diffPts == null && d != null;
+      return '<div class="stat ' + (d > 0 ? "ok" : d < 0 ? "ko" : "") + '"><b>' + (d == null ? "–" : sign(Math.round(d)) + " pts") + '</b><span>écart' + (ab.ratio ? " (×" + ab.ratio.toFixed(1).replace(".0", "") + ")" : "") + (prov ? " <i>(provisoire)</i>" : "") + '</span></div>'; })() +
     '<div class="stat ' + (conf >= 95 ? "ok" : conf >= 80 ? "warn" : "") + '"><b>' + (conf == null ? "–" : conf + " %") + '</b><span>confiance que l’écart est réel<div class="bar"><div style="width:' + (conf || 0) + '%;background:' + (conf >= 95 ? "var(--ok)" : "var(--warn)") + '"></div></div></span></div>';
   const row = (label, a, b) => "<tr><td>" + label + "</td><td>" + a + "</td><td>" + b + "</td></tr>";
   const share = (k, g) => g.done ? "<b>" + g[k] + "</b> <span class=hint>(" + Math.round(g[k] / g.done * 100) + " %)</span>" : "–";
@@ -468,10 +469,11 @@ function renderAb(ab, on) {
     row("… en moins de 24 h", share("within24h", v), share("within24h", n)) +
     row("Délai médian avant la réponse", mins(v.medianMin), mins(n.medianMin)) +
     row("Encore dans les 48 h (dont déjà répondu)", v.pending + " (" + v.pendingReplied + ")", n.pending + " (" + n.pendingReplied + ")") +
-    "</tbody><tfoot>" + row("Reply rate global, tous fans confondus", "<b>" + pct(ab.all.rate) + "</b> <span class=hint>(" + ab.all.replied + " / " + ab.all.done + ")</span>", "") + "</tfoot>";
+    row("Reply rate provisoire (tous les fans du groupe, 48 h finies ou non)", "<b>" + pct(v.soFar) + "</b> <span class=hint>(" + (v.replied + v.pendingReplied) + " / " + (v.done + v.pending) + ")</span>", "<b>" + pct(n.soFar) + "</b> <span class=hint>(" + (n.replied + n.pendingReplied) + " / " + (n.done + n.pending) + ")</span>") +
+    "</tbody><tfoot>" + row("Reply rate global, tous fans confondus", "<b>" + pct(ab.all.rate) + "</b> <span class=hint>(" + ab.all.replied + " / " + ab.all.done + " finis)</span> · provisoire <b>" + pct(ab.all.soFar) + "</b> <span class=hint>(" + ab.all.repliedSoFar + " / " + ab.all.total + ")</span>", "") + "</tfoot>";
   const since = ab.since ? "Depuis le " + new Date(ab.since).toLocaleDateString("fr-FR") + ". " : "";
   let verdict;
-  if (!v.done && !n.done) verdict = "Aucun fan n’a encore fini ses 48 h.";
+  if (!v.done && !n.done) verdict = "Aucun fan n’a encore fini ses 48 h : les taux affichés sont provisoires (réponses reçues jusqu’ici).";
   else if (ab.significant === true) verdict = v.rate > n.rate ? "✅ Le vocal fait répondre plus de fans : écart fiable." : "❌ Le vocal ne fait pas mieux (voire moins bien) : écart fiable.";
   else if (ab.significant === false) verdict = "Pas d’écart fiable entre les deux groupes avec " + Math.min(v.done, n.done) + " fans par groupe" + (ab.needPerGroup ? " : encore ~" + ab.needPerGroup + " fans par groupe pour trancher." : ".");
   else verdict = "Trop tôt pour conclure : encore ~" + ab.needPerGroup + " fans terminés par groupe (minimum 30).";

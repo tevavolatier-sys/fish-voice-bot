@@ -70,6 +70,8 @@ export interface AbGroupStats {
   pending: number;
   /** … dont déjà une réponse */
   pendingReplied: number;
+  /** Taux provisoire : réponses à ce jour / tous les fans du groupe (48 h finies ou non), null si aucun */
+  soFar: number | null;
   /** Taux de réponse sur les fans « done » (0–1), null si aucun */
   rate: number | null;
   /** Réponses rapides parmi les « done » */
@@ -96,10 +98,10 @@ export interface AbStats {
   /** Fans encore nécessaires par groupe (estimation) avant un verdict */
   needPerGroup: number;
   /** Tous fans confondus (test ou pas) : terminés / ont répondu */
-  all: { done: number; replied: number; rate: number | null };
+  all: { done: number; replied: number; rate: number | null; total: number; repliedSoFar: number; soFar: number | null };
 }
 
-const empty = (): AbGroupStats => ({ done: 0, replied: 0, pending: 0, pendingReplied: 0, rate: null, within1h: 0, within24h: 0, medianMin: null });
+const empty = (): AbGroupStats => ({ done: 0, replied: 0, pending: 0, pendingReplied: 0, soFar: null, rate: null, within1h: 0, within24h: 0, medianMin: null });
 
 /** Fonction d'erreur (approximation d'Abramowitz-Stegun), pour la p-value du test z */
 function erf(x: number): number {
@@ -118,12 +120,14 @@ export function computeStats(entries: AbEntry[], now = Date.now()): AbStats {
   const voice = empty();
   const none = empty();
   const delays = { voice: [] as number[], none: [] as number[] };
-  const all = { done: 0, replied: 0, rate: null as number | null };
+  const all = { done: 0, replied: 0, rate: null as number | null, total: 0, repliedSoFar: 0, soFar: null as number | null };
   let excluded = 0;
   let since: number | null = null;
   for (const e of entries) {
     since = since === null ? e.at : Math.min(since, e.at);
     const finished = now - e.at >= AB_WINDOW_MS;
+    all.total++;
+    if (e.r) all.repliedSoFar++;
     if (finished) {
       all.done++;
       if (e.r) all.replied++;
@@ -147,8 +151,13 @@ export function computeStats(entries: AbEntry[], now = Date.now()): AbStats {
       delays[e.g].push(d / 60_000);
     }
   }
-  for (const g of [voice, none]) g.rate = g.done ? g.replied / g.done : null;
+  for (const g of [voice, none]) {
+    g.rate = g.done ? g.replied / g.done : null;
+    const total = g.done + g.pending;
+    g.soFar = total ? (g.replied + g.pendingReplied) / total : null;
+  }
   all.rate = all.done ? all.replied / all.done : null;
+  all.soFar = all.total ? all.repliedSoFar / all.total : null;
   voice.medianMin = median(delays.voice);
   none.medianMin = median(delays.none);
   // Test z sur deux proportions, seuil 95 % ; verdict seulement avec au moins 30 fans finis par groupe
