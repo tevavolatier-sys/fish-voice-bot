@@ -119,7 +119,8 @@ export async function POST(req: Request): Promise<Response> {
       case "selfieTest": {
         const name = await fanFirstName(String(a.pseudo ?? ""));
         if (!name) return Response.json({ ok: true, name: "", image: null });
-        const r = await makeSelfie(name, { force: true, mode: a.mode === "text" ? "text" : a.mode === "ai" ? "ai" : undefined });
+        const ai = { model: String(a.model ?? ""), quality: String(a.quality ?? ""), style: String(a.style ?? "") };
+        const r = await makeSelfie(name, { force: true, mode: a.mode === "text" ? "text" : a.mode === "ai" ? "ai" : undefined, ai });
         if (!r) throw new Error("Aucune photo de base : charge d'abord le selfie.");
         return Response.json({ ok: true, name, how: r.how, provider: r.provider, note: r.note, aiError: r.aiError, image: r.jpeg.toString("base64") });
       }

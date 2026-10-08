@@ -439,7 +439,19 @@ export function cropGeometry(zone: [number, number][], w: number, h: number): { 
   return { x: x0, y: y0, cw, ch, zone: zc };
 }
 
-export async function selfieByOpenAi(photo: Buffer, name: string, s: SelfieSettings, budgetMs: number): Promise<{ jpeg: Buffer; note?: string }> {
+/** Réglages IA ponctuels (essais depuis l'interface) : modèle, qualité, description du style d'écriture */
+export interface AiOverrides {
+  model?: string;
+  quality?: string;
+  style?: string;
+}
+
+/** Description par défaut de l'écriture (ce qui rend « fait à la main ») */
+export const DEFAULT_STYLE =
+  "as if she had written it herself with a black felt-tip marker: real handwriting, slightly irregular " +
+  "strokes, following the sheet's angle, perspective and lighting (paper grain, soft shadow)";
+
+export async function selfieByOpenAi(photo: Buffer, name: string, s: SelfieSettings, budgetMs: number, ai: AiOverrides = {}): Promise<{ jpeg: Buffer; note?: string }> {
   const key = process.env.OPENAI_API_KEY;
   if (!key) throw new Error("OPENAI_API_KEY manquante");
   const deadline = Date.now() + budgetMs;
@@ -462,8 +474,7 @@ export async function selfieByOpenAi(photo: Buffer, name: string, s: SelfieSetti
     const maskBuf = await readFile(mask);
     const basePrompt =
       `In the editable area (the blank white sheet of paper she is holding), write the name "${name}" ` +
-      `as if she had written it herself with a black felt-tip marker: real handwriting, slightly irregular ` +
-      `strokes, following the sheet's angle, perspective and lighting (paper grain, soft shadow). ` +
+      `${(ai.style?.trim() || process.env.WELCOME_STYLE?.trim() || DEFAULT_STYLE)}. ` +
       `SMALL handwriting: the name spans about half of the editable area's width and its letters are at most ` +
       `one third of the area's height, centered, with large empty margins all around; it must never touch the ` +
       `edges of the area. Keep the paper white and untouched around the name. ` +
@@ -478,12 +489,12 @@ export async function selfieByOpenAi(photo: Buffer, name: string, s: SelfieSetti
       if (timeout < 12_000) break; // plus le temps d'un nouvel essai
       const prompt = attempt === 1 ? basePrompt : `${basePrompt} IMPORTANT: the previous attempt was too large and got cut off. Write it clearly SMALLER, about one third of the area's width, well inside the area.`;
       const form = new FormData();
-      form.set("model", OPENAI_MODEL());
+      form.set("model", ai.model?.trim() || OPENAI_MODEL());
       form.set("prompt", prompt);
       form.set("image", new Blob([new Uint8Array(paddedBuf)], { type: "image/png" }), "photo.png");
       form.set("mask", new Blob([new Uint8Array(maskBuf)], { type: "image/png" }), "mask.png");
       form.set("size", g.W === g.H ? "1024x1024" : g.W < g.H ? "1024x1536" : "1536x1024");
-      form.set("quality", OPENAI_QUALITY());
+      form.set("quality", ai.quality?.trim() || OPENAI_QUALITY());
       form.set("output_format", "jpeg");
       form.set("n", "1");
       let res: Response;
@@ -627,7 +638,7 @@ async function finishGemini(photo: Buffer, s: SelfieSettings, img: Buffer): Prom
 }
 
 /** Vrai inpainting : OpenAI (masque) puis Gemini, selon les clés présentes */
-export async function selfieByAi(photo: Buffer, name: string, s: SelfieSettings): Promise<{ jpeg: Buffer; provider: "openai" | "gemini"; note?: string }> {
+export async function selfieByAi(photo: Buffer, name: string, s: SelfieSettings, ai: AiOverrides = {}): Promise<{ jpeg: Buffer; provider: "openai" | "gemini"; note?: string }> {
   const providers = aiProviders();
   if (!providers.length) throw new Error("aucune clé IA image (OPENAI_API_KEY ou GEMINI_API_KEY) sur Vercel");
   const errors: string[] = [];
@@ -637,7 +648,7 @@ export async function selfieByAi(photo: Buffer, name: string, s: SelfieSettings)
     if (left < 8_000) break;
     try {
       if (p === "openai") {
-        const r = await selfieByOpenAi(photo, name, s, left);
+        const r = await selfieByOpenAi(photo, name, s, left, ai);
         return { jpeg: r.jpeg, provider: p, note: r.note };
       }
       return { jpeg: await selfieByGemini(photo, name, s), provider: p };
@@ -654,7 +665,7 @@ export async function selfieByAi(photo: Buffer, name: string, s: SelfieSettings)
  */
 export async function makeSelfie(
   name: string,
-  opts: { force?: boolean; mode?: "ai" | "text" } = {}
+  opts: { force?: boolean; mode?: "ai" | "text"; ai?: AiOverrides } = {}
 ): Promise<{ jpeg: Buffer; how: "ai" | "text"; provider?: "openai" | "gemini"; note?: string; aiError?: string } | null> {
   const s = await getSelfieSettings();
   if (!name || (!s.enabled && !opts.force)) return null;
@@ -664,7 +675,7 @@ export async function makeSelfie(
   if (mode === "ai" && !aiProviders().length) throw new Error("aucune clé IA image (OPENAI_API_KEY ou GEMINI_API_KEY) sur Vercel");
   if (mode === "ai") {
     try {
-      const r = await selfieByAi(photo, name, s);
+      const r = await selfieByAi(photo, name, s, opts.ai ?? {});
       return { jpeg: r.jpeg, how: "ai", provider: r.provider, note: r.note };
     } catch (err) {
       const aiError = String((err as Error)?.message ?? err).slice(0, 200);
