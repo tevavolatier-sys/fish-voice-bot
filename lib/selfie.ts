@@ -313,8 +313,9 @@ export async function compositeZone(dir: string, original: string, aiImage: Buff
 }
 
 /**
- * Encre qui touche le bord de la zone (prénom trop grand, coupé) : moyenne 0-255 de la
- * carte d'encre dans la bande entre la zone et la zone rétrécie à 82 %. ≈ 0 si tout est dedans.
+ * Encre qui touche le bord de la zone (prénom trop grand, coupé) : part (×255) de la bande
+ * entre la zone et la zone rétrécie à 82 % couverte d'encre franche. ≈ 0 si tout est dedans
+ * (les ombres et nuances du papier, encre « faible », ne comptent pas).
  */
 export async function borderInk(dir: string, s: SelfieSettings, w: number, h: number, g: { W: number; H: number; ox: number; oy: number }): Promise<number> {
   const ink = join(dir, "ink.png");
@@ -328,7 +329,8 @@ export async function borderInk(dir: string, s: SelfieSettings, w: number, h: nu
     `[1:v]crop=${w}:${h}:${g.ox}:${g.oy},alphaextract,negate[z];` +
     `[2:v]crop=${w}:${h}:${g.ox}:${g.oy},alphaextract,negate[i];` +
     `[z][i]blend=all_expr='A*(255-B)/255',split[band][band2];` +
-    `[0:v][band]blend=all_expr='A*B/255',signalstats,metadata=print:key=lavfi.signalstats.YAVG:file='${ff(stIn)}'[o1];` +
+    `[0:v]lutyuv=y='if(gt(val,140),255,0)'[strong];` +
+    `[strong][band]blend=all_expr='A*B/255',signalstats,metadata=print:key=lavfi.signalstats.YAVG:file='${ff(stIn)}'[o1];` +
     `[band2]signalstats,metadata=print:key=lavfi.signalstats.YAVG:file='${ff(stBand)}'[o2]`;
   const r = await run(await ffmpegBinary(), [
     "-y", "-hide_banner", "-i", ink, "-i", outer, "-i", inner, "-filter_complex", graph,
@@ -340,12 +342,18 @@ export async function borderInk(dir: string, s: SelfieSettings, w: number, h: nu
   return bandAvg > 0 ? (inkAvg / bandAvg) * 255 : 0;
 }
 
-/** Masque et photo complétée, à usage de test (aperçu dans l'interface) */
+/** Ce qu'OpenAI reçoit : la vignette recadrée, zone modifiable en clair, reste assombri (aperçu dans l'interface) */
 export async function selfieMaskPreview(photo: Buffer, s: SelfieSettings): Promise<Buffer> {
   return withTmp(async (dir) => {
+    const full = join(dir, "full.jpg");
+    await writeFile(full, photo);
+    const { w: fw, h: fh } = await imageSize(full);
+    const c = cropGeometry(s.zone, fw, fh);
+    s = { ...s, zone: c.zone };
     const inp = join(dir, "in.jpg");
-    await writeFile(inp, photo);
-    const { w, h } = await imageSize(inp);
+    const cr = await run(await ffmpegBinary(), ["-y", "-hide_banner", "-i", full, "-vf", `crop=${c.cw}:${c.ch}:${c.x}:${c.y}`, "-frames:v", "1", "-q:v", "2", inp]);
+    if (cr.code !== 0) throw new Error(`recadrage : ${cr.stderr.slice(-200)}`);
+    const w = c.cw, h = c.ch;
     const g = padGeometry(w, h);
     const mask = await zoneMask(dir, s, w, h, g);
     const out = join(dir, "preview.jpg");
@@ -361,19 +369,43 @@ export async function selfieMaskPreview(photo: Buffer, s: SelfieSettings): Promi
  * OpenAI GPT Image : vrai inpainting avec masque (seule la zone d'écriture est modifiable),
  * puis composition sur la photo d'origine. Erreurs parlantes (clé, crédit, modération).
  */
+/**
+ * Recadrage autour de la zone d'écriture (feuille + un peu de contexte) : c'est cette vignette,
+ * et non le selfie entier, qui part chez OpenAI (pas de visage ni de décolleté → la modération
+ * ne bronche pas ; image plus petite → plus rapide et moins chère). Marges : 10 % à gauche/droite,
+ * 25 % en haut, 50 % en bas (la feuille continue sous le prénom).
+ */
+export function cropGeometry(zone: [number, number][], w: number, h: number): { x: number; y: number; cw: number; ch: number; zone: [number, number][] } {
+  const xs = zone.map((p) => (p[0] * w) / 100), ys = zone.map((p) => (p[1] * h) / 100);
+  const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
+  const bw = maxX - minX, bh = maxY - minY;
+  const x0 = Math.max(0, Math.round(minX - bw * 0.1)), x1 = Math.min(w, Math.round(maxX + bw * 0.1));
+  const y0 = Math.max(0, Math.round(minY - bh * 0.25)), y1 = Math.min(h, Math.round(maxY + bh * 0.5));
+  const cw = (x1 - x0) - ((x1 - x0) % 2), ch = (y1 - y0) - ((y1 - y0) % 2);
+  // La zone exprimée en % de la vignette
+  const zc = zone.map(([zx, zy]): [number, number] => [(((zx * w) / 100 - x0) / cw) * 100, (((zy * h) / 100 - y0) / ch) * 100]);
+  return { x: x0, y: y0, cw, ch, zone: zc };
+}
+
 export async function selfieByOpenAi(photo: Buffer, name: string, s: SelfieSettings, budgetMs: number): Promise<{ jpeg: Buffer; note?: string }> {
   const key = process.env.OPENAI_API_KEY;
   if (!key) throw new Error("OPENAI_API_KEY manquante");
   const deadline = Date.now() + budgetMs;
   return withTmp(async (dir) => {
-    const inp = join(dir, "in.jpg");
-    await writeFile(inp, photo);
-    const { w, h } = await imageSize(inp);
+    const full = join(dir, "full.jpg");
+    await writeFile(full, photo);
+    const { w: fw, h: fh } = await imageSize(full);
+    const c = cropGeometry(s.zone, fw, fh);
+    const sc: SelfieSettings = { ...s, zone: c.zone };
+    const inp = join(dir, "in.jpg"); // la vignette = « photo » de travail
+    const cr = await run(await ffmpegBinary(), ["-y", "-hide_banner", "-i", full, "-vf", `crop=${c.cw}:${c.ch}:${c.x}:${c.y}`, "-frames:v", "1", "-q:v", "2", inp]);
+    if (cr.code !== 0) throw new Error(`recadrage : ${cr.stderr.slice(-200)}`);
+    const w = c.cw, h = c.ch;
     const g = padGeometry(w, h);
     const padded = join(dir, "padded.png");
     const pr = await run(await ffmpegBinary(), ["-y", "-hide_banner", "-i", inp, "-vf", `pad=${g.W}:${g.H}:${g.ox}:${g.oy}:black`, "-frames:v", "1", padded]);
     if (pr.code !== 0) throw new Error(`cadrage : ${pr.stderr.slice(-200)}`);
-    const mask = await zoneMask(dir, s, w, h, g);
+    const mask = await zoneMask(dir, sc, w, h, g);
     const paddedBuf = await readFile(padded);
     const maskBuf = await readFile(mask);
     const basePrompt =
@@ -388,6 +420,7 @@ export async function selfieByOpenAi(photo: Buffer, name: string, s: SelfieSetti
       (s.prompt ? ` ${s.prompt}` : "");
     let note: string | undefined;
     let best: { jpeg: Buffer; touch: number } | null = null;
+    let lastRefusal = "";
     for (let attempt = 1; attempt <= 2; attempt++) {
       const timeout = Math.min(AI_TIMEOUT_MS, deadline - Date.now());
       if (timeout < 12_000) break; // plus le temps d'un nouvel essai
@@ -423,19 +456,31 @@ export async function selfieByOpenAi(photo: Buffer, name: string, s: SelfieSetti
           else if (res.status === 401) msg = "clé OpenAI invalide (OPENAI_API_KEY sur Vercel)";
           else if (/safety|moderation|content policy/i.test(msg)) msg = `photo refusée par la modération OpenAI (${msg.slice(0, 100)})`;
         } catch {}
+        // La modération OpenAI est capricieuse (même image acceptée puis refusée) : un 2e essai passe souvent
+        if (res.status === 400 && /modération/.test(msg) && attempt === 1) {
+          lastRefusal = msg;
+          note = "1er essai refusé par la modération, 2e essai";
+          continue;
+        }
         throw new Error(`OpenAI ${res.status} : ${msg}`);
       }
       const d = JSON.parse(text) as { data?: { b64_json?: string }[] };
       const b64 = d.data?.[0]?.b64_json;
       if (!b64) throw new Error("OpenAI : réponse sans image");
       const jpeg = await compositeZone(dir, inp, Buffer.from(b64, "base64"), mask, w, h, g);
-      const touch = await borderInk(dir, s, w, h, g);
+      const touch = await borderInk(dir, sc, w, h, g);
       if (!best || touch < best.touch) best = { jpeg, touch };
-      if (touch < 4) break; // rien ne touche le bord : bon (bande vide = 0, prénom coupé ≈ 10-25)
+      if (touch < 3) break; // rien ne touche le bord : bon (bande vide = 0, prénom coupé ≈ 10-25)
       note = attempt === 1 ? `prénom coupé au bord (${touch.toFixed(1)}), 2e essai` : `encore coupé au 2e essai (${touch.toFixed(1)})`;
     }
-    if (!best) throw new Error("OpenAI : pas le temps de générer le selfie");
-    return { jpeg: best.jpeg, note };
+    if (!best) throw new Error(lastRefusal ? `OpenAI 400 : ${lastRefusal}` : "OpenAI : pas le temps de générer le selfie");
+    // La vignette retouchée reprend sa place dans le selfie entier (hors zone, elle est identique à l'original)
+    const crop = join(dir, "crop.jpg");
+    const out = join(dir, "out.jpg");
+    await writeFile(crop, best.jpeg);
+    const r = await run(await ffmpegBinary(), ["-y", "-hide_banner", "-i", full, "-i", crop, "-filter_complex", `[0:v][1:v]overlay=${c.x}:${c.y}:format=auto`, "-frames:v", "1", "-q:v", "3", out]);
+    if (r.code !== 0) throw new Error(`remise en place : ${r.stderr.slice(-200)}`);
+    return { jpeg: await readFile(out), note };
   });
 }
 
