@@ -7,12 +7,14 @@
 - Automatisation : Claude pilote l'interface par script (WELCOME_AUTOMATION_KEY sur Vercel, copie locale dans .env.automation, ignoré par git) et déploie (règle dans .claude/settings.local.json, autorisée par Teva le 07/10).
 - Selfie « papier avec le prénom » : photo de Sienna installée en prod, zone OK, vocal testé OK. Selfie DÉSACTIVÉ : l'IA Gemini image refuse (« modèles image pas dans l'offre gratuite », 429).
 
+- Teva a choisi OpenAI GPT Image Mini (≈ 0,01 $/selfie, ≈ 10 $/mois pour ~1 100 selfies) plutôt que Gemini (≈ 37 $/mois). Code OpenAI fait : masque exact de la zone, composition « zone seule » sur la vraie photo (testé en local avec une fausse image IA : OK), Gemini en secours. Déployé, selfie toujours DÉSACTIVÉ.
+
 ## En cours
-- Selfie IA bloqué par la facturation Google (voir Prochaine étape).
+- Attente de la clé OpenAI de Teva (platform.openai.com → Billing carte + 5 $ → API keys).
 
 ## Prochaine étape
-1. Teva (seul point manuel) : https://aistudio.google.com/apikey → projet Google Cloud de la clé GEMINI_API_KEY → Facturation → associer une carte (Tier 1). ≈ 0,04 $ par selfie (nano-banana-2.1). Si la clé date d'avant : en créer une nouvelle et me la donner.
-2. Dès que c'est fait, Claude : `selfieTest` en IA → montrer le résultat à Teva → activer le selfie (`selfieSave enabled`).
+1. Dès réception de la clé : `npx vercel env add OPENAI_API_KEY production` → `npx vercel --prod` → `selfieTest` IA sur « Alex2595839Xxx » → montrer le résultat → `selfieSave enabled` si OK.
+2. Si la modération OpenAI refuse la photo (décolleté) : essayer une autre photo plus sage, ou Gemini (carte Google).
 3. Surveiller le journal (premiers envois avec le nouveau code) et le test A/B (verdict à partir de 30 fans finis par groupe).
 - Ensuite : vidéos custom au 1er PPV + alerte chatter Telegram.
 
