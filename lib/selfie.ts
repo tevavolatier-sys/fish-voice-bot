@@ -739,6 +739,21 @@ export async function placeNote(photo: Buffer, noteImage: Buffer, s: SelfieSetti
       ink[i] = Math.max(0, Math.min(255, Math.round(((base - lum[i] - 35) * 255) / 60)));
     }
     closeHoles(ink, nw, nh);
+    // On ne garde que l'INTÉRIEUR de la feuille : la table, le bord et l'ombre de la feuille (en haut
+    // de la note générée) donnaient des taches au-dessus du prénom
+    {
+      const bright = paper - 30;
+      const rowFrac = new Float32Array(nh), colFrac = new Float32Array(nw);
+      for (let y = 0; y < nh; y++) { let c = 0; for (let x = 0; x < nw; x++) if (lum[y * nw + x] >= bright) c++; rowFrac[y] = c / nw; }
+      for (let x = 0; x < nw; x++) { let c = 0; for (let y = 0; y < nh; y++) if (lum[y * nw + x] >= bright) c++; colFrac[x] = c / nh; }
+      let top = 0; while (top < nh && rowFrac[top] < 0.6) top++;
+      let bottom = nh - 1; while (bottom > top && rowFrac[bottom] < 0.6) bottom--;
+      let left = 0; while (left < nw && colFrac[left] < 0.6) left++;
+      let right = nw - 1; while (right > left && colFrac[right] < 0.6) right--;
+      const my = Math.round((bottom - top) * 0.04), mx = Math.round((right - left) * 0.04);
+      top += my; bottom -= my; left += mx; right -= mx;
+      for (let y = 0; y < nh; y++) for (let x = 0; x < nw; x++) if (y < top || y > bottom || x < left || x > right) ink[y * nw + x] = 0;
+    }
     const picked = pickNoteInk(ink, nw, nh);
     if (!picked) throw new Error("note générée illisible (pas d'encre nette)");
     const { alpha, x0, y0, x1, y1 } = picked;
