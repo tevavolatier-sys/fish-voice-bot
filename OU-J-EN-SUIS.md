@@ -15,8 +15,10 @@
 
 - 08/10 (Teva : « encore trop fake ») → méthode « note » (défaut, WELCOME_AI_METHOD=edit pour l'ancienne) : OpenAI GÉNÈRE une photo de note manuscrite (images/generations, 12-15 s), lib/selfie.ts placeNote découpe l'encre (pickNoteInk : taches sur la ligne du prénom, exit souligné/pointillés), la pose en perspective dans la zone (70 % de largeur, anti-crénelage) et renderInk fait le rendu feutre. Panel 4 : note 5,8 / edit 4,1 (unanime) → note par défaut ; trous blancs aux croisements corrigés (plancher papier médian + fermeture morphologique, closeHoles).
 
+- 08/10 (Teva : « trop parfait encore ») : consigne de note « bâclée » (NOTE_STYLE, surcharge WELCOME_NOTE_STYLE) + « geste de la main » dans placeNote (displace avec 2 champs aléatoires lisses, WELCOME_WOBBLE 0,6 ; bug corrigé : cartes en gris dès la source sinon fond à 16 → bandes grises) + filtre des taches loin du mot. Panel 5 en cours. Teva n'a toujours pas envoyé d'échantillon de l'écriture de Sienna (demandé 5×).
+
 ## En cours
-- Prod : mini + méthode note + encre vrai feutre v2. Pour passer sur gpt-image-1 (≈ 0,04 $/selfie, un peu plus crédible) : `vercel env add WELCOME_OPENAI_MODEL production` = gpt-image-1.
+- Prod : mini + méthode note bâclée + geste + encre vrai feutre v2. Pour passer sur gpt-image-1 (≈ 0,04 $/selfie, un peu plus crédible) : `vercel env add WELCOME_OPENAI_MODEL production` = gpt-image-1.
 - Premiers vrais envois vocal + selfie : surveiller le journal (colonne « + selfie IA », remarques, erreurs).
 
 ## Prochaine étape
