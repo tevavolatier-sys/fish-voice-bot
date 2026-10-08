@@ -68,8 +68,15 @@ export interface AbGroupStats {
   replied: number;
   /** Encore dans les 48 h */
   pending: number;
+  /** … dont déjà une réponse */
+  pendingReplied: number;
   /** Taux de réponse sur les fans « done » (0–1), null si aucun */
   rate: number | null;
+  /** Réponses rapides parmi les « done » */
+  within1h: number;
+  within24h: number;
+  /** Délai médian avant la 1re réponse (minutes), null si aucune */
+  medianMin: number | null;
 }
 
 export interface AbStats {
@@ -81,39 +88,92 @@ export interface AbStats {
   since: string | null;
   /** Écart significatif (test z à 95 %) ; null tant qu'il n'y a pas assez de fans */
   significant: boolean | null;
+  /** Confiance que l'écart est réel (0–1), null sans données */
+  confidence: number | null;
+  /** Écart en points (voice − none) et multiplicateur, null sans données */
+  diffPts: number | null;
+  ratio: number | null;
+  /** Fans encore nécessaires par groupe (estimation) avant un verdict */
+  needPerGroup: number;
+  /** Tous fans confondus (test ou pas) : terminés / ont répondu */
+  all: { done: number; replied: number; rate: number | null };
 }
 
-const empty = (): AbGroupStats => ({ done: 0, replied: 0, pending: 0, rate: null });
+const empty = (): AbGroupStats => ({ done: 0, replied: 0, pending: 0, pendingReplied: 0, rate: null, within1h: 0, within24h: 0, medianMin: null });
+
+/** Fonction d'erreur (approximation d'Abramowitz-Stegun), pour la p-value du test z */
+function erf(x: number): number {
+  const t = 1 / (1 + 0.3275911 * Math.abs(x));
+  const y = 1 - ((((1.061405429 * t - 1.453152027) * t + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-x * x);
+  return x >= 0 ? y : -y;
+}
+const median = (xs: number[]) => {
+  if (!xs.length) return null;
+  const a = [...xs].sort((p, q) => p - q);
+  const m = Math.floor(a.length / 2);
+  return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2;
+};
 
 export function computeStats(entries: AbEntry[], now = Date.now()): AbStats {
   const voice = empty();
   const none = empty();
+  const delays = { voice: [] as number[], none: [] as number[] };
+  const all = { done: 0, replied: 0, rate: null as number | null };
   let excluded = 0;
   let since: number | null = null;
   for (const e of entries) {
     since = since === null ? e.at : Math.min(since, e.at);
+    const finished = now - e.at >= AB_WINDOW_MS;
+    if (finished) {
+      all.done++;
+      if (e.r) all.replied++;
+    }
     if (e.g === "voice" && !e.s) {
       excluded++;
       continue;
     }
     const g = e.g === "voice" ? voice : none;
-    if (now - e.at < AB_WINDOW_MS) {
+    if (!finished) {
       g.pending++;
+      if (e.r) g.pendingReplied++;
       continue;
     }
     g.done++;
-    if (e.r) g.replied++;
+    if (e.r) {
+      g.replied++;
+      const d = e.r - e.at;
+      if (d <= 3600_000) g.within1h++;
+      if (d <= 24 * 3600_000) g.within24h++;
+      delays[e.g].push(d / 60_000);
+    }
   }
   for (const g of [voice, none]) g.rate = g.done ? g.replied / g.done : null;
-  // Test z sur deux proportions, seuil 95 % ; demande au moins 30 fans finis par groupe
+  all.rate = all.done ? all.replied / all.done : null;
+  voice.medianMin = median(delays.voice);
+  none.medianMin = median(delays.none);
+  // Test z sur deux proportions, seuil 95 % ; verdict seulement avec au moins 30 fans finis par groupe
   let significant: boolean | null = null;
-  if (voice.done >= 30 && none.done >= 30) {
+  let confidence: number | null = null;
+  let diffPts: number | null = null;
+  let ratio: number | null = null;
+  if (voice.done && none.done) {
+    diffPts = (voice.rate! - none.rate!) * 100;
+    ratio = none.rate! > 0 ? voice.rate! / none.rate! : null;
     const p = (voice.replied + none.replied) / (voice.done + none.done);
     const se = Math.sqrt(p * (1 - p) * (1 / voice.done + 1 / none.done));
     const z = se > 0 ? Math.abs(voice.rate! - none.rate!) / se : 0;
-    significant = z >= 1.96;
+    confidence = erf(z / Math.SQRT2); // = 1 − p-value (bilatérale)
+    if (voice.done >= 30 && none.done >= 30) significant = z >= 1.96;
   }
-  return { voice, none, excluded, since: since === null ? null : new Date(since).toISOString(), significant };
+  // Taille utile par groupe pour détecter l'écart observé (α 5 %, puissance 80 %), sinon 30
+  let needPerGroup = 30;
+  if (diffPts !== null && Math.abs(diffPts) >= 1) {
+    const p1 = voice.rate!, p2 = none.rate!, d = Math.abs(p1 - p2);
+    const n = Math.ceil(((1.96 + 0.84) ** 2 * (p1 * (1 - p1) + p2 * (1 - p2))) / (d * d));
+    needPerGroup = Math.max(30, n);
+  }
+  needPerGroup = Math.max(0, needPerGroup - Math.min(voice.done, none.done));
+  return { voice, none, excluded, since: since === null ? null : new Date(since).toISOString(), significant, confidence, diffPts, ratio, needPerGroup, all };
 }
 
 export async function abStats(accountId: string): Promise<AbStats> {

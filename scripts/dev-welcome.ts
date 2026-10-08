@@ -9,10 +9,23 @@ import { join } from "node:path";
 import { GET } from "../api/welcome.js";
 import { nameByRules } from "../lib/fan-name.js";
 import { ffmpegBinary, run } from "../lib/video.js";
+import { AB_WINDOW_MS, computeStats } from "../lib/ab.js";
 import { generateVoice } from "../lib/fish.js";
 import { DEFAULT_SETTINGS, MONTHLY_LIMIT, STOP_AT, voiceForName, voiceId, type ChosenTake, type WelcomeSettings } from "../lib/welcome.js";
 
 const FISH = Boolean(process.env.FISH_API_KEY);
+
+/** Faux test A/B : 40 fans par groupe, 55 % de réponses avec vocal, 30 % sans */
+function fakeAb() {
+  const now = Date.now();
+  const mk = (g: "voice" | "none", n: number, rate: number) =>
+    Array.from({ length: n }, (_, i) => {
+      const at = now - AB_WINDOW_MS - i * 3600_000 * 5;
+      const replied = (i * 7919) % 100 < rate * 100;
+      return { g, at, s: g === "voice" ? true : undefined, r: replied ? at + (((i * 31) % 40) + 1) * 60_000 * (i % 3 ? 1 : 30) : undefined };
+    });
+  return [...mk("voice", 40, 0.55), ...mk("none", 40, 0.3), { g: "voice" as const, at: now - 3600_000, s: true }, { g: "none" as const, at: now - 7200_000, r: now - 3000_000 }];
+}
 
 let settings: WelcomeSettings = { ...DEFAULT_SETTINGS };
 const takes: Record<string, ChosenTake | null> = { fixed: null, fallback: null };
@@ -36,7 +49,7 @@ async function handle(a: Record<string, unknown>): Promise<unknown> {
   switch (a.action) {
     case "load":
       return { ok: true, settings, takes, used: 1240, limit: MONTHLY_LIMIT, stopAt: STOP_AT, log,
-        ab: { voice: { done: 12, replied: 7, pending: 3, rate: 7 / 12 }, none: { done: 11, replied: 3, pending: 2, rate: 3 / 11 }, excluded: 1, since: new Date().toISOString(), significant: null } };
+        ab: computeStats(fakeAb(), Date.now()) };
     case "abReset":
       return { ok: true };
     case "save":

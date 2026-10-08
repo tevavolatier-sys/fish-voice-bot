@@ -158,6 +158,14 @@ audio{width:100%;height:36px}
 table{width:100%;border-collapse:collapse;font-size:13px}
 td,th{text-align:left;padding:7px 6px;border-bottom:1px solid var(--line);vertical-align:top}
 th{font-size:12px;color:var(--mute);font-weight:600}
+.ab-wrap{overflow-x:auto;margin-top:14px}
+table.ab{width:100%;border-collapse:collapse;font-size:14px}
+table.ab th,table.ab td{padding:7px 8px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap}
+table.ab th:first-child,table.ab td:first-child{text-align:left;color:var(--mute);font-weight:400}
+table.ab thead th{color:var(--ink);font-weight:600}
+table.ab td b{font-size:16px}
+.bar{height:8px;background:var(--line);border-radius:4px;overflow:hidden;margin-top:6px}
+.bar div{height:100%}
 .tag{display:inline-block;border-radius:6px;padding:2px 8px;font-size:12px;font-weight:600;white-space:nowrap}
 .tag.sent{background:var(--okbg);color:var(--ok)}.tag.late{background:var(--warnbg);color:var(--warn)}.tag.error{background:var(--kobg);color:var(--ko)}.tag.control{background:var(--line);color:var(--mute)}
 .log-wrap{overflow-x:auto}
@@ -199,6 +207,7 @@ details{margin-top:10px}summary{cursor:pointer;color:var(--mute);font-size:13px}
         <label class="switch"><input type="checkbox" id="abEnabled"> <span id="abLabel">Test</span></label></div>
       <p class="lead">Un nouvel abonné sur deux ne reçoit <b>pas</b> le vocal. On compare ensuite qui a écrit dans les 48 h. Les chatters ne voient rien.</p>
       <div class="stats" id="abStats"></div>
+      <div class="ab-wrap"><table id="abTable" class="ab"></table></div>
       <div class="hint" id="abHint" style="margin-top:10px"></div>
       <div class="row" style="margin-top:10px"><button class="sm" id="abReset">Remettre le test à zéro</button></div>
     </div>
@@ -331,18 +340,33 @@ $("#abReset").onclick = async () => {
 const pct = (r) => r == null ? "–" : Math.round(r * 100) + " %";
 function renderAb(ab, on) {
   $("#abLabel").textContent = on ? "Test A/B : EN COURS" : "Test A/B : arrêté (tout le monde reçoit le vocal)";
-  if (!ab) { $("#abStats").innerHTML = ""; $("#abHint").textContent = "Renseigne le compte acct_… pour démarrer."; return; }
+  if (!ab) { $("#abStats").innerHTML = ""; $("#abTable").innerHTML = ""; $("#abHint").textContent = "Renseigne le compte acct_… pour démarrer."; return; }
   const v = ab.voice, n = ab.none;
+  const sign = (x) => (x > 0 ? "+" : "") + x;
+  const mins = (m) => m == null ? "–" : m < 60 ? Math.round(m) + " min" : m < 1440 ? (m / 60).toFixed(1).replace(".0", "") + " h" : (m / 1440).toFixed(1).replace(".0", "") + " j";
+  const conf = ab.confidence == null ? null : Math.round(ab.confidence * 100);
   $("#abStats").innerHTML =
-    '<div class="stat ok"><b>' + pct(v.rate) + '</b><span>ont répondu, AVEC vocal<br>(' + v.replied + ' / ' + v.done + ')</span></div>' +
-    '<div class="stat"><b>' + pct(n.rate) + '</b><span>ont répondu, SANS vocal<br>(' + n.replied + ' / ' + n.done + ')</span></div>' +
-    '<div class="stat"><b>' + (v.pending + n.pending) + '</b><span>encore dans les 48 h</span></div>' +
-    '<div class="stat warn"><b>' + ab.excluded + '</b><span>hors test (vocal pas parti)</span></div>';
+    '<div class="stat ok"><b>' + pct(v.rate) + '</b><span>répondent AVEC vocal</span></div>' +
+    '<div class="stat"><b>' + pct(n.rate) + '</b><span>répondent SANS vocal</span></div>' +
+    '<div class="stat ' + (ab.diffPts > 0 ? "ok" : ab.diffPts < 0 ? "ko" : "") + '"><b>' + (ab.diffPts == null ? "–" : sign(Math.round(ab.diffPts)) + " pts") + '</b><span>écart' + (ab.ratio ? " (×" + ab.ratio.toFixed(1).replace(".0", "") + ")" : "") + '</span></div>' +
+    '<div class="stat ' + (conf >= 95 ? "ok" : conf >= 80 ? "warn" : "") + '"><b>' + (conf == null ? "–" : conf + " %") + '</b><span>confiance que l’écart est réel<div class="bar"><div style="width:' + (conf || 0) + '%;background:' + (conf >= 95 ? "var(--ok)" : "var(--warn)") + '"></div></div></span></div>';
+  const row = (label, a, b) => "<tr><td>" + label + "</td><td>" + a + "</td><td>" + b + "</td></tr>";
+  const share = (k, g) => g.done ? "<b>" + g[k] + "</b> <span class=hint>(" + Math.round(g[k] / g.done * 100) + " %)</span>" : "–";
+  $("#abTable").innerHTML = "<thead><tr><th></th><th>🎙️ Avec vocal</th><th>🚫 Sans vocal</th></tr></thead><tbody>" +
+    row("Fans terminés (48 h passées)", "<b>" + v.done + "</b>", "<b>" + n.done + "</b>") +
+    row("Ont répondu", share("replied", v), share("replied", n)) +
+    row("… en moins d’1 h", share("within1h", v), share("within1h", n)) +
+    row("… en moins de 24 h", share("within24h", v), share("within24h", n)) +
+    row("Délai médian avant la réponse", mins(v.medianMin), mins(n.medianMin)) +
+    row("Encore dans les 48 h (dont déjà répondu)", v.pending + " (" + v.pendingReplied + ")", n.pending + " (" + n.pendingReplied + ")") +
+    "</tbody><tfoot>" + row("Reply rate global, tous fans confondus", "<b>" + pct(ab.all.rate) + "</b> <span class=hint>(" + ab.all.replied + " / " + ab.all.done + ")</span>", "") + "</tfoot>";
   const since = ab.since ? "Depuis le " + new Date(ab.since).toLocaleDateString("fr-FR") + ". " : "";
-  let verdict = "Il faut au moins 30 fans finis dans chaque groupe pour conclure.";
-  if (ab.significant === true) verdict = v.rate > n.rate ? "✅ Le vocal fait répondre plus de fans : écart significatif." : "❌ Le vocal ne fait pas mieux (voire moins bien) : écart significatif.";
-  if (ab.significant === false) verdict = "Pas d'écart net entre les deux groupes pour l'instant.";
-  $("#abHint").textContent = since + verdict;
+  let verdict;
+  if (!v.done && !n.done) verdict = "Aucun fan n’a encore fini ses 48 h.";
+  else if (ab.significant === true) verdict = v.rate > n.rate ? "✅ Le vocal fait répondre plus de fans : écart fiable." : "❌ Le vocal ne fait pas mieux (voire moins bien) : écart fiable.";
+  else if (ab.significant === false) verdict = "Pas d’écart fiable entre les deux groupes avec " + Math.min(v.done, n.done) + " fans par groupe" + (ab.needPerGroup ? " : encore ~" + ab.needPerGroup + " fans par groupe pour trancher." : ".");
+  else verdict = "Trop tôt pour conclure : encore ~" + ab.needPerGroup + " fans terminés par groupe (minimum 30).";
+  $("#abHint").textContent = since + verdict + (ab.excluded ? " · " + ab.excluded + " fan(s) hors test (vocal pas parti)." : "");
 }
 
 $("#save").onclick = async (e) => {
