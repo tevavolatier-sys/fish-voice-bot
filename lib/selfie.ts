@@ -26,6 +26,11 @@ export interface SelfieSettings {
   prompt: string;
   /** Si l'IA échoue : poser le texte (true) ou ne pas envoyer de selfie (false, Teva : « je veux du vrai ») */
   fallback: boolean;
+  /**
+   * Zone d'écriture sur la feuille : 4 coins en % (haut-gauche, haut-droit, bas-droit, bas-gauche).
+   * Montrée à l'IA en liseré rouge (image guide) pour que le prénom reste SUR la feuille, loin de la main.
+   */
+  zone: [number, number][];
 }
 
 export const DEFAULT_SELFIE: SelfieSettings = {
@@ -39,6 +44,8 @@ export const DEFAULT_SELFIE: SelfieSettings = {
   color: "14143a",
   prompt: "",
   fallback: false,
+  // Photo de Sienna du 07/10/2026 : partie haute de la feuille, à l'écart des doigts
+  zone: [[61, 50], [97, 53], [93, 70], [57, 67]],
 };
 
 const CFG_KEY = "welcome:selfie:cfg";
@@ -74,8 +81,44 @@ export async function saveSelfieSettings(s: Partial<SelfieSettings>): Promise<vo
     color: /^[0-9a-f]{6}$/i.test(String(s.color ?? "")) ? String(s.color).toLowerCase() : cur.color,
     prompt: String(s.prompt ?? cur.prompt).trim().slice(0, 500),
     fallback: Boolean(s.fallback ?? cur.fallback),
+    zone: cleanZone(s.zone) ?? cur.zone,
   };
   await getRedis().set(CFG_KEY, JSON.stringify(clean));
+}
+
+function cleanZone(z: unknown): [number, number][] | null {
+  if (!Array.isArray(z) || z.length !== 4) return null;
+  const out: [number, number][] = [];
+  for (const p of z) {
+    if (!Array.isArray(p) || p.length !== 2) return null;
+    const x = Number(p[0]), y = Number(p[1]);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    out.push([Math.max(0, Math.min(100, x)), Math.max(0, Math.min(100, y))]);
+  }
+  return out;
+}
+
+/**
+ * Image guide : la photo avec la zone d'écriture en liseré rouge (pour l'IA et pour l'aperçu).
+ * Un cadre rouge plein écran est déformé (perspective) vers les 4 coins, puis posé sur la photo.
+ */
+export async function selfieGuide(photo: Buffer, s: SelfieSettings): Promise<Buffer> {
+  return withTmp(async (dir) => {
+    const inp = join(dir, "in.jpg");
+    const out = join(dir, "guide.jpg");
+    await writeFile(inp, photo);
+    const { w, h } = await imageSize(inp);
+    const px = (p: [number, number]) => `${Math.round((p[0] * w) / 100)}:${Math.round((p[1] * h) / 100)}`;
+    const [tl, tr, br, bl] = s.zone;
+    const t = Math.max(3, Math.round(w / 150));
+    const graph =
+      `color=c=0x00ff00:s=${w}x${h}:d=1,drawbox=x=0:y=0:w=iw:h=ih:color=red:t=${t},format=yuv444p,` +
+      `perspective=${px(tl)}:${px(tr)}:${px(bl)}:${px(br)}:sense=destination,format=rgba,colorkey=0x00ff00:0.3:0.1[g];` +
+      `[0:v][g]overlay=format=auto`;
+    const r = await run(await ffmpegBinary(), ["-y", "-hide_banner", "-i", inp, "-filter_complex", graph, "-frames:v", "1", "-q:v", "3", out]);
+    if (r.code !== 0) throw new Error(`guide : ${r.stderr.slice(-300)}`);
+    return readFile(out);
+  });
 }
 
 export async function getSelfiePhoto(): Promise<Buffer | null> {
@@ -152,21 +195,27 @@ export async function selfieByText(photo: Buffer, name: string, s: SelfieSetting
 export async function selfieByAi(photo: Buffer, name: string, s: SelfieSettings): Promise<Buffer> {
   const key = process.env.GEMINI_API_KEY;
   if (!key) throw new Error("GEMINI_API_KEY manquante");
+  const guide = await selfieGuide(photo, s);
   const prompt =
-    `Photo editing task (inpainting). This is a real selfie of a woman holding a blank white sheet of paper. ` +
-    `Write the name "${name}" on the sheet as if she had written it herself with a black felt-tip marker: ` +
-    `real handwriting, slightly irregular strokes, ink slightly uneven, large and centered on the visible part ` +
-    `of the sheet, following the sheet's angle, perspective, folds and lighting (shadows, paper grain). ` +
+    `Photo editing task (inpainting). Image 1 is a real selfie of a woman holding a blank white sheet of paper. ` +
+    `Image 2 is the same photo with a RED OUTLINE: that outline marks the ONLY area where writing is allowed ` +
+    `(the blank part of the sheet, away from her fingers). ` +
+    `Edit image 1: write the name "${name}" on the sheet as if she had written it herself with a black felt-tip ` +
+    `marker: real handwriting, slightly irregular strokes, ink slightly uneven, large, centered inside the allowed ` +
+    `area with comfortable margins, never touching or crossing the outline, never over her hand or outside the sheet, ` +
+    `following the sheet's angle, perspective and lighting (shadows, paper grain). ` +
     `Spell the name EXACTLY: "${name}". Change nothing else: same face, skin, hair, body, clothes, hands, ` +
-    `background, framing, colors and image quality. Return only the edited photo.` +
+    `background, framing, colors and image quality. The red outline must NOT appear in the result. ` +
+    `Return only the edited photo.` +
     (s.prompt ? ` ${s.prompt}` : "");
+  const img = (b: Buffer) => ({ inline_data: { mime_type: "image/jpeg", data: b.toString("base64") } });
   let lastErr = "";
   for (const model of IMAGE_MODELS()) {
     const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
       method: "POST",
       headers: { "x-goog-api-key": key, "Content-Type": "application/json" },
       body: JSON.stringify({
-        contents: [{ role: "user", parts: [{ text: prompt }, { inline_data: { mime_type: "image/jpeg", data: photo.toString("base64") } }] }],
+        contents: [{ role: "user", parts: [{ text: prompt }, img(photo), img(guide)] }],
         generationConfig: { responseModalities: ["IMAGE"], temperature: 0.3 },
       }),
       signal: AbortSignal.timeout(AI_TIMEOUT_MS),

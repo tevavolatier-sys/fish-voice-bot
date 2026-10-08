@@ -4,7 +4,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { abReset, abStats } from "../lib/ab.js";
 import { fanFirstName, llmProviders } from "../lib/fan-name.js";
-import { getSelfiePhoto, getSelfieSettings, makeSelfie, saveSelfiePhoto, saveSelfieSettings, type SelfieSettings } from "../lib/selfie.js";
+import { getSelfiePhoto, getSelfieSettings, makeSelfie, saveSelfiePhoto, saveSelfieSettings, selfieGuide, type SelfieSettings } from "../lib/selfie.js";
 import { requestsThisMonth } from "../lib/onlyfans.js";
 import { getRedis } from "../lib/redis.js";
 import {
@@ -96,6 +96,13 @@ export async function POST(req: Request): Promise<Response> {
       case "selfieSave":
         await saveSelfieSettings(a.settings as Partial<SelfieSettings>);
         return Response.json({ ok: true });
+      case "selfieZone": {
+        // Aperçu de la zone d'écriture (liseré rouge) sur la photo installée
+        await saveSelfieSettings(a.settings as Partial<SelfieSettings>);
+        const photo = await getSelfiePhoto();
+        if (!photo) throw new Error("Aucune photo de base : charge d'abord le selfie.");
+        return Response.json({ ok: true, image: (await selfieGuide(photo, await getSelfieSettings())).toString("base64") });
+      }
       case "selfieTest": {
         const name = await fanFirstName(String(a.pseudo ?? ""));
         if (!name) return Response.json({ ok: true, name: "", image: null });
@@ -304,6 +311,14 @@ details{margin-top:10px}summary{cursor:pointer;color:var(--mute);font-size:13px}
           <input id="sfPrompt" placeholder="ex. écris aussi « Bienvenue » au-dessus">
         </div>
       </div>
+      <label>Zone d'écriture sur la feuille (liseré rouge montré à l'IA : le prénom reste dedans, loin de la main)</label>
+      <div class="grid2">
+        <div><label>Haut-gauche (x, y en %)</label><div class="row"><input data-z="0,0" type="number" min="0" max="100"><input data-z="0,1" type="number" min="0" max="100"></div></div>
+        <div><label>Haut-droit</label><div class="row"><input data-z="1,0" type="number" min="0" max="100"><input data-z="1,1" type="number" min="0" max="100"></div></div>
+        <div><label>Bas-droit</label><div class="row"><input data-z="2,0" type="number" min="0" max="100"><input data-z="2,1" type="number" min="0" max="100"></div></div>
+        <div><label>Bas-gauche</label><div class="row"><input data-z="3,0" type="number" min="0" max="100"><input data-z="3,1" type="number" min="0" max="100"></div></div>
+      </div>
+      <div class="row" style="margin-top:8px"><button class="sm" id="sfZone">Voir la zone sur la photo</button></div>
       <details><summary>Réglages du texte posé (position du prénom sur le papier)</summary>
         <div class="grid2">
           <div><label>Centre horizontal (% largeur)</label><input id="sfX" type="number" min="0" max="100"></div>
@@ -471,9 +486,22 @@ async function loadSelfie() {
   $("#sfEnabled").checked = s.enabled; $("#sfFallback").checked = s.fallback;
   $("#sfLabel").textContent = s.enabled ? "Selfie : ACTIF" : "Selfie : arrêté";
   for (const k in sfFields) if (document.activeElement !== $(sfFields[k])) $(sfFields[k]).value = s[k];
+  for (const i of zoneInputs()) { const [p, c] = i.dataset.z.split(",").map(Number); if (document.activeElement !== i) i.value = s.zone[p][c]; }
   $("#sfPhotoState").innerHTML = d.hasPhoto ? "✓ Photo installée" : '<span class="ko">Aucune photo : choisis le selfie et clique « Installer ».</span>';
 }
-const readSelfie = () => { const o = { enabled: $("#sfEnabled").checked, fallback: $("#sfFallback").checked }; for (const k in sfFields) o[k] = $(sfFields[k]).value; return o; };
+const zoneInputs = () => [...document.querySelectorAll("[data-z]")];
+const readSelfie = () => {
+  const o = { enabled: $("#sfEnabled").checked, fallback: $("#sfFallback").checked, zone: [[0, 0], [0, 0], [0, 0], [0, 0]] };
+  for (const k in sfFields) o[k] = $(sfFields[k]).value;
+  for (const i of zoneInputs()) { const [p, c] = i.dataset.z.split(",").map(Number); o.zone[p][c] = Number(i.value); }
+  return o;
+};
+$("#sfZone").onclick = async (e) => {
+  e.target.disabled = true; say($("#sfMsg"), "Aperçu de la zone…", true);
+  try { const r = await call("selfieZone", { settings: readSelfie() }); say($("#sfMsg"), "Le prénom sera écrit dans le cadre rouge.", true); $("#sfOut").innerHTML = '<img src="data:image/jpeg;base64,' + r.image + '" style="max-width:100%;max-height:70vh;border-radius:10px">'; }
+  catch (err) { say($("#sfMsg"), err.message, false); }
+  e.target.disabled = false;
+};
 $("#sfEnabled").onchange = async (e) => { e.target.disabled = true; try { await call("selfieSave", { settings: { enabled: e.target.checked } }); } catch (err) { alert(err.message); } await loadSelfie(); e.target.disabled = false; };
 $("#sfSave").onclick = async (e) => {
   e.target.disabled = true;
