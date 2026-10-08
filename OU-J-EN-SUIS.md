@@ -18,7 +18,7 @@
 - 08/10 (Teva : « trop parfait encore ») : consigne de note « bâclée » (NOTE_STYLE, surcharge WELCOME_NOTE_STYLE) + « geste de la main » dans placeNote (displace avec 2 champs aléatoires lisses, WELCOME_WOBBLE 0,6 ; bug corrigé : cartes en gris dès la source sinon fond à 16 → bandes grises) + filtre des taches loin du mot. Panel 5 : 6,8/10 (Alex) contre 5,8 avant. Puis rendu feutre v3 (renderInk : pression avant saturation, bords fibreux faibles WELCOME_INK_FIBER 0,12, croisements ×0,6, stries) + geste à-coups + filtre cadres/soulignés (fill < 6 %). DÉPLOYÉ. Teva n'a toujours pas envoyé d'échantillon de l'écriture de Sienna (demandé 6×) : c'est le dernier levier réel.
 
 ## En cours
-- Prod : mini + méthode note bâclée + geste + encre vrai feutre v2. Pour passer sur gpt-image-1 (≈ 0,04 $/selfie, un peu plus crédible) : `vercel env add WELCOME_OPENAI_MODEL production` = gpt-image-1.
+- Prod : mini + méthode note bâclée + geste + rendu feutre v3 + 2e essai sur 5xx + filtres (cadres, fils pâles). Teva aime « Alex » et « Thomas » (08/10) ; 10 tests envoyés (Kevin, Maxime, Nicolas, Mathieu, Lucas, Antoine, Sébastien, Mohamed, Hugo, Romain), en attente de son retour. Pour passer sur gpt-image-1 (≈ 0,04 $/selfie, un peu plus crédible) : `vercel env add WELCOME_OPENAI_MODEL production` = gpt-image-1.
 - Premiers vrais envois vocal + selfie : surveiller le journal (colonne « + selfie IA », remarques, erreurs).
 
 ## Prochaine étape
