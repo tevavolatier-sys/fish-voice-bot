@@ -86,6 +86,8 @@ export interface WelcomeLog {
   /** Selfie avec le prénom joint : par l'IA ou en texte (secours) */
   selfie?: "ai" | "text";
   selfieError?: string;
+  /** Remarque de la génération (ex. 2e essai car prénom coupé) */
+  selfieNote?: string;
 }
 
 // ── Réglages ────────────────────────────────────────────────────────────────
@@ -403,6 +405,7 @@ export async function handleNewSub(
     if (selfie) {
       log.selfie = selfie.how;
       if (selfie.aiError) log.selfieError = selfie.aiError;
+      if (selfie.note) log.selfieNote = selfie.note;
     }
     // Attente « naturelle », mais jamais au-delà de la limite ni du budget Vercel
     const room = Math.max(0, s.maxDelaySec - elapsed() - 15);

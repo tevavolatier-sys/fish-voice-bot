@@ -121,7 +121,7 @@ export async function POST(req: Request): Promise<Response> {
         if (!name) return Response.json({ ok: true, name: "", image: null });
         const r = await makeSelfie(name, { force: true, mode: a.mode === "text" ? "text" : a.mode === "ai" ? "ai" : undefined });
         if (!r) throw new Error("Aucune photo de base : charge d'abord le selfie.");
-        return Response.json({ ok: true, name, how: r.how, provider: r.provider, aiError: r.aiError, image: r.jpeg.toString("base64") });
+        return Response.json({ ok: true, name, how: r.how, provider: r.provider, note: r.note, aiError: r.aiError, image: r.jpeg.toString("base64") });
       }
       case "retry": {
         const s = await getWelcomeSettings();
@@ -556,7 +556,7 @@ $("#sfTest").onclick = async (e) => {
     const r = await call("selfieTest", { pseudo, mode: $("#sfMode").value });
     if (!r.image) say($("#sfMsg"), "Pseudo illisible → pas de selfie.", true);
     else {
-      say($("#sfMsg"), "Prénom : " + r.name + " · méthode : " + (r.how === "ai" ? "IA " + (r.provider || "") : "texte posé") + (r.aiError ? " (IA en échec : " + r.aiError + ")" : ""), r.aiError ? "warn" : true);
+      say($("#sfMsg"), "Prénom : " + r.name + " · méthode : " + (r.how === "ai" ? "IA " + (r.provider || "") : "texte posé") + (r.note ? " · " + r.note : "") + (r.aiError ? " (IA en échec : " + r.aiError + ")" : ""), r.aiError ? "warn" : true);
       $("#sfOut").innerHTML = '<img src="data:image/jpeg;base64,' + r.image + '" style="max-width:100%;max-height:70vh;border-radius:10px">';
     }
   } catch (err) { say($("#sfMsg"), err.message, false); }
@@ -593,7 +593,7 @@ function renderLog(log) {
     <td>\${esc(l.display || l.fan)}\${l.username ? '<div class="hint">@' + esc(l.username) + "</div>" : ""}</td>
     <td>\${l.name ? esc(l.name) : '<span class="hint">repli</span>'}</td>
     <td>\${fmtSec(l.elapsedSec)}</td>
-    <td><span class="tag \${st}">\${TAG[st]}</span>\${l.selfie ? ' <span class="hint">+ selfie ' + (l.selfie === "ai" ? "IA" : "texte") + '</span>' : ""}\${detail ? '<div class="hint">' + detail + "</div>" : ""}\${l.selfieError ? '<div class="hint">selfie : ' + esc(l.selfieError) + "</div>" : ""}</td>
+    <td><span class="tag \${st}">\${TAG[st]}</span>\${l.selfie ? ' <span class="hint">+ selfie ' + (l.selfie === "ai" ? "IA" : "texte") + '</span>' : ""}\${detail ? '<div class="hint">' + detail + "</div>" : ""}\${l.selfieError ? '<div class="hint">selfie : ' + esc(l.selfieError) + "</div>" : ""}\${l.selfieNote ? '<div class="hint">selfie : ' + esc(l.selfieNote) + "</div>" : ""}</td>
     <td>\${st === "sent" ? "" : '<button class="sm" data-retry="' + i + '">' + (st === "control" ? "Envoyer quand même" : "Renvoyer") + '</button>'}</td></tr>\`;
   }).join("");
   t.querySelectorAll("[data-retry]").forEach((b) => b.onclick = async () => {
