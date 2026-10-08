@@ -35,7 +35,10 @@ async function handle(a: Record<string, unknown>): Promise<unknown> {
   const kind = a.kind === "fallback" ? "fallback" : "fixed";
   switch (a.action) {
     case "load":
-      return { ok: true, settings, takes, used: 1240, limit: MONTHLY_LIMIT, stopAt: STOP_AT, log };
+      return { ok: true, settings, takes, used: 1240, limit: MONTHLY_LIMIT, stopAt: STOP_AT, log,
+        ab: { voice: { done: 12, replied: 7, pending: 3, rate: 7 / 12 }, none: { done: 11, replied: 3, pending: 2, rate: 3 / 11 }, excluded: 1, since: new Date().toISOString(), significant: null } };
+    case "abReset":
+      return { ok: true };
     case "save":
       settings = { ...settings, ...(a.settings as Partial<WelcomeSettings>) };
       return { ok: true };

@@ -8,6 +8,7 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { enroll, markSent } from "./ab.js";
 import { ADMIN_ID, modelByKey } from "./config.js";
 import { fanFirstName } from "./fan-name.js";
 import { generateVoice } from "./fish.js";
@@ -38,6 +39,8 @@ export interface WelcomeSettings {
   delayMax: number;
   /** Au-delà de ce délai après l'abonnement, on n'envoie PLUS (Teva : 2 min) */
   maxDelaySec: number;
+  /** Test A/B : un abonné sur deux ne reçoit PAS le vocal (lib/ab.ts) */
+  abEnabled: boolean;
 }
 
 export const DEFAULT_SETTINGS: WelcomeSettings = {
@@ -50,6 +53,7 @@ export const DEFAULT_SETTINGS: WelcomeSettings = {
   caption: "",
   delayMax: 20,
   maxDelaySec: 120,
+  abEnabled: false,
 };
 
 /** Forfait OnlyFansAPI : requêtes par mois, et seuil où l'on coupe tout */
@@ -72,8 +76,8 @@ export interface WelcomeLog {
   name: string;
   ok: boolean;
   error?: string;
-  /** sent = envoyé · late = trop tard, pas envoyé · error = échec */
-  status?: "sent" | "late" | "error";
+  /** sent = envoyé · late = trop tard, pas envoyé · error = échec · control = sans vocal (test A/B) */
+  status?: "sent" | "late" | "error" | "control";
   /** Secondes entre l'abonnement et l'envoi (ou l'abandon) */
   elapsedSec?: number;
   /** Renvoi manuel depuis l'interface */
@@ -106,6 +110,7 @@ export async function saveWelcomeSettings(s: Partial<WelcomeSettings>): Promise<
     caption: String(s.caption ?? cur.caption).trim().slice(0, 500),
     delayMax: Math.max(0, Math.min(30, Number(s.delayMax ?? cur.delayMax) || 0)),
     maxDelaySec: Math.max(10, Math.min(3600, Number(s.maxDelaySec ?? cur.maxDelaySec) || 120)),
+    abEnabled: Boolean(s.abEnabled ?? cur.abEnabled),
   };
   await getRedis().set(cfgKey, JSON.stringify(clean));
 }
@@ -359,6 +364,16 @@ export async function handleNewSub(
     manual: opts.force || undefined,
   };
   const tooLate = () => !opts.force && elapsed() > s.maxDelaySec;
+  // Test A/B : le fan est tiré au sort ; groupe « sans vocal » → on n'envoie rien (sauf renvoi manuel)
+  if (s.abEnabled || opts.force) {
+    const group = await enroll(accountId, fanId, since, displayName || username);
+    if (group === "none" && !opts.force) {
+      log.status = "control";
+      log.ok = true;
+      await addLog(log);
+      return;
+    }
+  }
   try {
     if (tooLate()) throw new Error(`Trop tard : ${Math.round(elapsed())} s après l'abonnement (max ${s.maxDelaySec} s)`);
     const used = await requestsThisMonth();
@@ -377,6 +392,7 @@ export async function handleNewSub(
     log.ok = true;
     log.status = "sent";
     log.elapsedSec = elapsed();
+    await markSent(accountId, fanId);
   } catch (err) {
     log.error = String((err as Error)?.message ?? err).slice(0, 300);
     log.elapsedSec = elapsed();

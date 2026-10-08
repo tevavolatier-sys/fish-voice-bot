@@ -2,6 +2,7 @@
 // GET  → la page (aucune donnée dedans)
 // POST → actions, protégées par le mot de passe WELCOME_ADMIN_PASSWORD (Vercel)
 import { timingSafeEqual } from "node:crypto";
+import { abReset, abStats } from "../lib/ab.js";
 import { requestsThisMonth } from "../lib/onlyfans.js";
 import { getRedis } from "../lib/redis.js";
 import {
@@ -45,7 +46,13 @@ export async function POST(req: Request): Promise<Response> {
           requestsThisMonth(),
           readWelcomeLog(),
         ]);
-        return Response.json({ ok: true, settings, takes: { fixed, fallback }, used, limit: MONTHLY_LIMIT, stopAt: STOP_AT, log });
+        const ab = settings.accountId ? await abStats(settings.accountId) : null;
+        return Response.json({ ok: true, settings, takes: { fixed, fallback }, used, limit: MONTHLY_LIMIT, stopAt: STOP_AT, log, ab });
+      }
+      case "abReset": {
+        const s = await getWelcomeSettings();
+        if (s.accountId) await abReset(s.accountId);
+        return Response.json({ ok: true });
       }
       case "save":
         await saveWelcomeSettings(a.settings as Partial<WelcomeSettings>);
@@ -145,7 +152,7 @@ table{width:100%;border-collapse:collapse;font-size:13px}
 td,th{text-align:left;padding:7px 6px;border-bottom:1px solid var(--line);vertical-align:top}
 th{font-size:12px;color:var(--mute);font-weight:600}
 .tag{display:inline-block;border-radius:6px;padding:2px 8px;font-size:12px;font-weight:600;white-space:nowrap}
-.tag.sent{background:var(--okbg);color:var(--ok)}.tag.late{background:var(--warnbg);color:var(--warn)}.tag.error{background:var(--kobg);color:var(--ko)}
+.tag.sent{background:var(--okbg);color:var(--ok)}.tag.late{background:var(--warnbg);color:var(--warn)}.tag.error{background:var(--kobg);color:var(--ko)}.tag.control{background:var(--line);color:var(--mute)}
 .log-wrap{overflow-x:auto}
 details{margin-top:10px}summary{cursor:pointer;color:var(--mute);font-size:13px}
 #login{max-width:360px;margin:15vh auto}
@@ -178,6 +185,15 @@ details{margin-top:10px}summary{cursor:pointer;color:var(--mute);font-size:13px}
         <div class="stat"><b id="stAvg">–</b><span>délai moyen d'envoi</span></div>
       </div>
       <div class="hint" id="blockers" style="margin-top:10px"></div>
+    </div>
+
+    <div class="card">
+      <div class="head"><h2>Test A/B : vocal ou pas ?</h2>
+        <label class="switch"><input type="checkbox" id="abEnabled"> <span id="abLabel">Test</span></label></div>
+      <p class="lead">Un nouvel abonné sur deux ne reçoit <b>pas</b> le vocal. On compare ensuite qui a écrit dans les 48 h. Les chatters ne voient rien.</p>
+      <div class="stats" id="abStats"></div>
+      <div class="hint" id="abHint" style="margin-top:10px"></div>
+      <div class="row" style="margin-top:10px"><button class="sm" id="abReset">Remettre le test à zéro</button></div>
     </div>
 
     <div class="card">
@@ -252,7 +268,7 @@ details{margin-top:10px}summary{cursor:pointer;color:var(--mute);font-size:13px}
 
     <div class="card">
       <div class="head"><h2>Journal des envois</h2>
-        <select id="filter" style="width:auto"><option value="">Tout</option><option value="sent">Envoyés</option><option value="late">Trop tard</option><option value="error">Échecs</option></select></div>
+        <select id="filter" style="width:auto"><option value="">Tout</option><option value="sent">Envoyés</option><option value="control">Sans vocal (test)</option><option value="late">Trop tard</option><option value="error">Échecs</option></select></div>
       <div class="log-wrap" style="margin-top:10px"><table id="log"></table></div>
       <div class="hint" style="margin-top:8px">« Renvoyer » force l'envoi maintenant, même si le délai est dépassé.</div>
     </div>
@@ -294,6 +310,33 @@ $("#toggle").onclick = async (e) => {
 };
 $("#filter").onchange = () => renderLog(DATA.log);
 $("#enabled").onchange = () => { $("#enabledLabel").textContent = $("#enabled").checked ? "Envoi automatique : ACTIF" : "Envoi automatique : ARRÊTÉ"; };
+$("#abEnabled").onchange = async (e) => {
+  const on = e.target.checked;
+  e.target.disabled = true;
+  try { await call("save", { settings: { abEnabled: on } }); } catch (err) { alert(err.message); }
+  await load(); e.target.disabled = false;
+};
+$("#abReset").onclick = async () => {
+  if (!confirm("Effacer tous les fans du test A/B et repartir de zéro ?")) return;
+  try { await call("abReset"); } catch (err) { alert(err.message); }
+  load();
+};
+const pct = (r) => r == null ? "–" : Math.round(r * 100) + " %";
+function renderAb(ab, on) {
+  $("#abLabel").textContent = on ? "Test A/B : EN COURS" : "Test A/B : arrêté (tout le monde reçoit le vocal)";
+  if (!ab) { $("#abStats").innerHTML = ""; $("#abHint").textContent = "Renseigne le compte acct_… pour démarrer."; return; }
+  const v = ab.voice, n = ab.none;
+  $("#abStats").innerHTML =
+    '<div class="stat ok"><b>' + pct(v.rate) + '</b><span>ont répondu, AVEC vocal<br>(' + v.replied + ' / ' + v.done + ')</span></div>' +
+    '<div class="stat"><b>' + pct(n.rate) + '</b><span>ont répondu, SANS vocal<br>(' + n.replied + ' / ' + n.done + ')</span></div>' +
+    '<div class="stat"><b>' + (v.pending + n.pending) + '</b><span>encore dans les 48 h</span></div>' +
+    '<div class="stat warn"><b>' + ab.excluded + '</b><span>hors test (vocal pas parti)</span></div>';
+  const since = ab.since ? "Depuis le " + new Date(ab.since).toLocaleDateString("fr-FR") + ". " : "";
+  let verdict = "Il faut au moins 30 fans finis dans chaque groupe pour conclure.";
+  if (ab.significant === true) verdict = v.rate > n.rate ? "✅ Le vocal fait répondre plus de fans : écart significatif." : "❌ Le vocal ne fait pas mieux (voire moins bien) : écart significatif.";
+  if (ab.significant === false) verdict = "Pas d'écart net entre les deux groupes pour l'instant.";
+  $("#abHint").textContent = since + verdict;
+}
 
 $("#save").onclick = async (e) => {
   const s = { enabled: $("#enabled").checked, accountId: $("#accountId").value, caption: $("#caption").value,
@@ -352,7 +395,7 @@ $("#test").onclick = async (e) => {
 $("#pseudo").onkeydown = (e) => { if (e.key === "Enter") $("#test").click(); };
 
 const statusOf = (l) => l.status || (l.ok ? "sent" : "error");
-const TAG = { sent: "Envoyé", late: "Trop tard", error: "Échec" };
+const TAG = { sent: "Envoyé", late: "Trop tard", error: "Échec", control: "Sans vocal (test)" };
 
 function renderLog(log) {
   const f = $("#filter").value;
@@ -367,7 +410,7 @@ function renderLog(log) {
     <td>\${l.name ? esc(l.name) : '<span class="hint">repli</span>'}</td>
     <td>\${fmtSec(l.elapsedSec)}</td>
     <td><span class="tag \${st}">\${TAG[st]}</span>\${detail ? '<div class="hint">' + detail + "</div>" : ""}</td>
-    <td>\${st === "sent" ? "" : '<button class="sm" data-retry="' + i + '">Renvoyer</button>'}</td></tr>\`;
+    <td>\${st === "sent" ? "" : '<button class="sm" data-retry="' + i + '">' + (st === "control" ? "Envoyer quand même" : "Renvoyer") + '</button>'}</td></tr>\`;
   }).join("");
   t.querySelectorAll("[data-retry]").forEach((b) => b.onclick = async () => {
     const l = log[Number(b.dataset.retry)];
@@ -394,6 +437,7 @@ async function load() {
   if (d.used >= d.stopAt) why.push("le quota OnlyFansAPI est atteint");
   $("#blockers").innerHTML = why.length ? "⚠️ Pour que ça parte : " + why.join(" · ") + "." : "";
   $("#enabled").checked = s.enabled; $("#enabled").onchange();
+  $("#abEnabled").checked = s.abEnabled; renderAb(d.ab, s.abEnabled);
   $("#toggle").textContent = s.enabled ? "⏻ ON → couper" : "⏻ OFF → activer";
   $("#toggle").className = "main " + (s.enabled ? "on" : "off");
   $("#accountId").value = s.accountId; $("#caption").value = s.caption;

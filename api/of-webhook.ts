@@ -1,10 +1,11 @@
 // Webhooks OnlyFansAPI. À déclarer dans la console OnlyFansAPI (Webhooks → Add Webhook)
-// avec https://<projet>.vercel.app/api/of-webhook, événement « subscriptions.new »,
-// et le même secret que ONLYFANS_WEBHOOK_SECRET.
+// avec https://<projet>.vercel.app/api/of-webhook, événements « subscriptions.new »
+// et « messages.received » (test A/B), et le même secret que ONLYFANS_WEBHOOK_SECRET.
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { waitUntil } from "@vercel/functions";
+import { recordReply } from "../lib/ab.js";
 import { getRedis } from "../lib/redis.js";
-import { handleNewSub } from "../lib/welcome.js";
+import { getWelcomeSettings, handleNewSub } from "../lib/welcome.js";
 
 export const maxDuration = 60;
 
@@ -71,6 +72,15 @@ export async function POST(req: Request): Promise<Response> {
     const age = Date.now() - parsed;
     const subscribedAt = Number.isFinite(parsed) && age > -60_000 && age < 10 * 60_000 ? parsed : Date.now();
     if (fan.id) waitUntil(handleNewSub(str(body?.account_id), fan.id, fan.name, fan.username, { subscribedAt }));
+  } else if (body?.event === "messages.received") {
+    // Test A/B : un fan du test a écrit → on note sa première réponse (si dans les 48 h)
+    const fan = fanOf(body?.payload ?? {});
+    const accountId = str(body?.account_id);
+    if (fan.id && accountId) {
+      waitUntil(
+        getWelcomeSettings().then((s) => (s.accountId === accountId ? recordReply(accountId, fan.id) : false))
+      );
+    }
   }
   // Répondre vite : le vocal est généré et envoyé après la réponse
   return Response.json({ ok: true });
