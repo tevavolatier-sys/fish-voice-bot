@@ -4,6 +4,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { abReset, abStats } from "../lib/ab.js";
 import { fanFirstName, llmProviders } from "../lib/fan-name.js";
+import { getSelfiePhoto, getSelfieSettings, makeSelfie, saveSelfiePhoto, saveSelfieSettings, type SelfieSettings } from "../lib/selfie.js";
 import { requestsThisMonth } from "../lib/onlyfans.js";
 import { getRedis } from "../lib/redis.js";
 import {
@@ -84,6 +85,23 @@ export async function POST(req: Request): Promise<Response> {
       case "test": {
         const { name, mp3 } = await buildWelcomeVoice(String(a.pseudo ?? ""));
         return Response.json({ ok: true, name, audio: mp3.toString("base64") });
+      }
+      case "selfieLoad":
+        return Response.json({ ok: true, settings: await getSelfieSettings(), hasPhoto: Boolean(await getSelfiePhoto()) });
+      case "selfiePhoto": {
+        const b64 = String(a.image ?? "");
+        if (b64.length < 1000 || b64.length > 12_000_000) throw new Error("Photo invalide (max 8 Mo).");
+        return Response.json({ ok: true, ...(await saveSelfiePhoto(Buffer.from(b64, "base64"))) });
+      }
+      case "selfieSave":
+        await saveSelfieSettings(a.settings as Partial<SelfieSettings>);
+        return Response.json({ ok: true });
+      case "selfieTest": {
+        const name = await fanFirstName(String(a.pseudo ?? ""));
+        if (!name) return Response.json({ ok: true, name: "", image: null });
+        const r = await makeSelfie(name, { force: true, mode: a.mode === "text" ? "text" : a.mode === "ai" ? "ai" : undefined });
+        if (!r) throw new Error("Aucune photo de base : charge d'abord le selfie.");
+        return Response.json({ ok: true, name, how: r.how, aiError: r.aiError, image: r.jpeg.toString("base64") });
       }
       case "retry": {
         const s = await getWelcomeSettings();
@@ -268,6 +286,38 @@ details{margin-top:10px}summary{cursor:pointer;color:var(--mute);font-size:13px}
       <div data-takes></div>
     </div>
 
+    <div class="card" id="selfieCard">
+      <div class="head"><h2>Selfie « papier avec le prénom »</h2>
+        <label class="switch"><input type="checkbox" id="sfEnabled"> <span id="sfLabel">Selfie</span></label></div>
+      <p class="lead">Envoyé avec le vocal : la photo d'elle avec le papier, le prénom du fan écrit dessus. Pseudo illisible → pas de selfie.</p>
+      <div class="grid2">
+        <div>
+          <label>Photo de base (elle + papier blanc vide)</label>
+          <div class="row"><input type="file" id="sfFile" accept="image/*" style="flex:1"><button class="sm" id="sfUpload">Installer</button></div>
+          <div class="hint" id="sfPhotoState"></div>
+        </div>
+        <div>
+          <label>Méthode</label>
+          <select id="sfMode"><option value="ai">IA Gemini (réaliste, ~15 s, secours texte si échec)</option><option value="text">Texte posé (1 s, sans IA)</option></select>
+          <label for="sfPrompt">Consigne IA en plus (facultatif)</label>
+          <input id="sfPrompt" placeholder="ex. écris aussi « Bienvenue » au-dessus">
+        </div>
+      </div>
+      <details><summary>Réglages du texte posé (position du prénom sur le papier)</summary>
+        <div class="grid2">
+          <div><label>Centre horizontal (% largeur)</label><input id="sfX" type="number" min="0" max="100"></div>
+          <div><label>Centre vertical (% hauteur)</label><input id="sfY" type="number" min="0" max="100"></div>
+          <div><label>Inclinaison (°)</label><input id="sfAngle" type="number" min="-45" max="45" step="0.5"></div>
+          <div><label>Taille (% largeur)</label><input id="sfSize" type="number" min="3" max="60"></div>
+        </div>
+      </details>
+      <div class="row" style="margin-top:12px"><button class="main" id="sfSave">Enregistrer</button>
+        <input id="sfPseudo" placeholder="Pseudo test (Alex2595839Xxx)" style="flex:1;min-width:160px">
+        <button id="sfTest">🖼️ Essayer</button></div>
+      <div class="msg" id="sfMsg"></div>
+      <div id="sfOut" style="margin-top:8px"></div>
+    </div>
+
     <div class="card" data-kind="fallback">
       <h2>Vocal de repli : pseudo illisible</h2>
       <p class="lead">Envoyé tel quel quand aucun prénom n'est lisible (« u48392011 », « xkq77 »…).</p>
@@ -411,6 +461,49 @@ document.querySelectorAll("[data-kind]").forEach((card) => {
   };
 });
 
+// ── Selfie avec le prénom ──
+const sfFields = { x: "#sfX", y: "#sfY", angle: "#sfAngle", size: "#sfSize", prompt: "#sfPrompt", mode: "#sfMode" };
+async function loadSelfie() {
+  let d; try { d = await call("selfieLoad"); } catch { return; }
+  const s = d.settings;
+  $("#sfEnabled").checked = s.enabled;
+  $("#sfLabel").textContent = s.enabled ? "Selfie : ACTIF" : "Selfie : arrêté";
+  for (const k in sfFields) if (document.activeElement !== $(sfFields[k])) $(sfFields[k]).value = s[k];
+  $("#sfPhotoState").innerHTML = d.hasPhoto ? "✓ Photo installée" : '<span class="ko">Aucune photo : choisis le selfie et clique « Installer ».</span>';
+}
+const readSelfie = () => { const o = { enabled: $("#sfEnabled").checked }; for (const k in sfFields) o[k] = $(sfFields[k]).value; return o; };
+$("#sfEnabled").onchange = async (e) => { e.target.disabled = true; try { await call("selfieSave", { settings: { enabled: e.target.checked } }); } catch (err) { alert(err.message); } await loadSelfie(); e.target.disabled = false; };
+$("#sfSave").onclick = async (e) => {
+  e.target.disabled = true;
+  try { await call("selfieSave", { settings: readSelfie() }); say($("#sfMsg"), "Enregistré ✓", true); loadSelfie(); } catch (err) { say($("#sfMsg"), err.message, false); }
+  e.target.disabled = false;
+};
+$("#sfUpload").onclick = async (e) => {
+  const f = $("#sfFile").files[0];
+  if (!f) return say($("#sfMsg"), "Choisis d'abord la photo.", false);
+  if (f.size > 8 * 1024 * 1024) return say($("#sfMsg"), "Photo trop lourde (max 8 Mo).", false);
+  e.target.disabled = true; say($("#sfMsg"), "Envoi de la photo…", true);
+  try { const r = await call("selfiePhoto", { image: await fileB64(f) }); say($("#sfMsg"), "Photo installée ✓ (" + Math.round(r.bytes / 1024) + " Ko). Essaie avec un pseudo.", true); loadSelfie(); }
+  catch (err) { say($("#sfMsg"), err.message, false); }
+  e.target.disabled = false;
+};
+$("#sfTest").onclick = async (e) => {
+  const pseudo = $("#sfPseudo").value.trim();
+  if (!pseudo) return say($("#sfMsg"), "Écris un pseudo.", false);
+  e.target.disabled = true; say($("#sfMsg"), "Fabrication du selfie… (jusqu'à 30 s avec l'IA)", true); $("#sfOut").innerHTML = "";
+  try {
+    await call("selfieSave", { settings: readSelfie() });
+    const r = await call("selfieTest", { pseudo, mode: $("#sfMode").value });
+    if (!r.image) say($("#sfMsg"), "Pseudo illisible → pas de selfie.", true);
+    else {
+      say($("#sfMsg"), "Prénom : " + r.name + " · méthode : " + (r.how === "ai" ? "IA" : "texte posé") + (r.aiError ? " (IA en échec : " + r.aiError + ")" : ""), r.aiError ? "warn" : true);
+      $("#sfOut").innerHTML = '<img src="data:image/jpeg;base64,' + r.image + '" style="max-width:100%;max-height:70vh;border-radius:10px">';
+    }
+  } catch (err) { say($("#sfMsg"), err.message, false); }
+  e.target.disabled = false;
+};
+$("#sfPseudo").onkeydown = (e) => { if (e.key === "Enter") $("#sfTest").click(); };
+
 $("#test").onclick = async (e) => {
   const pseudo = $("#pseudo").value.trim();
   if (!pseudo) return say($("#testMsg"), "Écris un pseudo.", false);
@@ -440,7 +533,7 @@ function renderLog(log) {
     <td>\${esc(l.display || l.fan)}\${l.username ? '<div class="hint">@' + esc(l.username) + "</div>" : ""}</td>
     <td>\${l.name ? esc(l.name) : '<span class="hint">repli</span>'}</td>
     <td>\${fmtSec(l.elapsedSec)}</td>
-    <td><span class="tag \${st}">\${TAG[st]}</span>\${detail ? '<div class="hint">' + detail + "</div>" : ""}</td>
+    <td><span class="tag \${st}">\${TAG[st]}</span>\${l.selfie ? ' <span class="hint">+ selfie ' + (l.selfie === "ai" ? "IA" : "texte") + '</span>' : ""}\${detail ? '<div class="hint">' + detail + "</div>" : ""}\${l.selfieError ? '<div class="hint">selfie : ' + esc(l.selfieError) + "</div>" : ""}</td>
     <td>\${st === "sent" ? "" : '<button class="sm" data-retry="' + i + '">' + (st === "control" ? "Envoyer quand même" : "Renvoyer") + '</button>'}</td></tr>\`;
   }).join("");
   t.querySelectorAll("[data-retry]").forEach((b) => b.onclick = async () => {
@@ -499,6 +592,7 @@ async function load() {
     ? "Envois bloqués : seuil de sécurité atteint (" + d.stopAt.toLocaleString("fr-FR") + ")."
     : "2 requêtes par vocal (envoi du fichier + message). Blocage automatique à " + d.stopAt.toLocaleString("fr-FR") + ". Remise à zéro chaque mois.";
   renderLog(d.log);
+  loadSelfie();
 }
 load();
 </script>

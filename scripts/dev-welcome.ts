@@ -11,6 +11,7 @@ import { nameByRules } from "../lib/fan-name.js";
 import { ffmpegBinary, run } from "../lib/video.js";
 import { AB_WINDOW_MS, computeStats } from "../lib/ab.js";
 import { generateVoice } from "../lib/fish.js";
+import { DEFAULT_SELFIE, selfieByText, type SelfieSettings } from "../lib/selfie.js";
 import { DEFAULT_SETTINGS, MONTHLY_LIMIT, STOP_AT, voiceForName, voiceId, type ChosenTake, type WelcomeSettings } from "../lib/welcome.js";
 
 const FISH = Boolean(process.env.FISH_API_KEY);
@@ -28,6 +29,8 @@ function fakeAb() {
 }
 
 let settings: WelcomeSettings = { ...DEFAULT_SETTINGS };
+let selfie: SelfieSettings = { ...DEFAULT_SELFIE };
+let selfiePhoto: Buffer | null = null;
 const takes: Record<string, ChosenTake | null> = { fixed: null, fallback: null };
 const cands: Record<string, { text: string; audio: string }[]> = {};
 const log = [
@@ -52,6 +55,21 @@ async function handle(a: Record<string, unknown>): Promise<unknown> {
         ab: computeStats(fakeAb(), Date.now()) };
     case "abReset":
       return { ok: true };
+    case "selfieLoad":
+      return { ok: true, settings: selfie, hasPhoto: Boolean(selfiePhoto) };
+    case "selfiePhoto":
+      selfiePhoto = Buffer.from(String(a.image), "base64");
+      return { ok: true, bytes: selfiePhoto.length };
+    case "selfieSave":
+      selfie = { ...selfie, ...(a.settings as Partial<SelfieSettings>), x: Number((a.settings as SelfieSettings).x ?? selfie.x), y: Number((a.settings as SelfieSettings).y ?? selfie.y), angle: Number((a.settings as SelfieSettings).angle ?? selfie.angle), size: Number((a.settings as SelfieSettings).size ?? selfie.size) };
+      return { ok: true };
+    case "selfieTest": {
+      const name = nameByRules(String(a.pseudo ?? ""));
+      if (!name) return { ok: true, name: "", image: null };
+      if (!selfiePhoto) return { ok: false, error: "Charge d'abord la photo." };
+      const jpeg = await selfieByText(selfiePhoto, name, selfie);
+      return { ok: true, name, how: "text", aiError: a.mode === "ai" ? "IA indisponible en local" : undefined, image: jpeg.toString("base64") };
+    }
     case "save":
       settings = { ...settings, ...(a.settings as Partial<WelcomeSettings>) };
       return { ok: true };

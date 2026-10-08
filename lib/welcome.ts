@@ -9,6 +9,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { enroll, markSent } from "./ab.js";
+import { makeSelfie } from "./selfie.js";
 import { ADMIN_ID, modelByKey } from "./config.js";
 import { fanFirstName } from "./fan-name.js";
 import { generateVoice } from "./fish.js";
@@ -82,6 +83,9 @@ export interface WelcomeLog {
   elapsedSec?: number;
   /** Renvoi manuel depuis l'interface */
   manual?: boolean;
+  /** Selfie avec le prénom joint : par l'IA ou en texte (secours) */
+  selfie?: "ai" | "text";
+  selfieError?: string;
 }
 
 // ── Réglages ────────────────────────────────────────────────────────────────
@@ -382,13 +386,24 @@ export async function handleNewSub(
     }
     const { name, mp3 } = await buildWelcomeVoice(displayName, username);
     log.name = name;
+    // Selfie « papier avec le prénom » en même temps que la voix (IA, secours texte) ; jamais bloquant
+    const selfie = await makeSelfie(name).catch((err) => {
+      log.selfieError = String((err as Error)?.message ?? err).slice(0, 200);
+      return null;
+    });
+    if (selfie) {
+      log.selfie = selfie.how;
+      if (selfie.aiError) log.selfieError = selfie.aiError;
+    }
     // Attente « naturelle », mais jamais au-delà de la limite
     const room = Math.max(0, s.maxDelaySec - elapsed() - 15);
     const wait = Math.min(s.delayMax, opts.force ? 0 : room);
     if (wait > 0) await new Promise((r) => setTimeout(r, Math.random() * wait * 1000));
     if (tooLate()) throw new Error(`Trop tard : ${Math.round(elapsed())} s après l'abonnement (max ${s.maxDelaySec} s)`);
-    const mediaId = await uploadMedia(accountId, mp3, "voice.mp3");
-    await sendChatMessage(accountId, fanId, s.caption, [mediaId]);
+    const mediaIds: string[] = [];
+    if (selfie) mediaIds.push(await uploadMedia(accountId, selfie.jpeg, "selfie.jpg"));
+    mediaIds.push(await uploadMedia(accountId, mp3, "voice.mp3"));
+    await sendChatMessage(accountId, fanId, s.caption, mediaIds);
     log.ok = true;
     log.status = "sent";
     log.elapsedSec = elapsed();

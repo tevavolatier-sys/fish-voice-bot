@@ -4,6 +4,14 @@
     "api/webhook.ts": {
       "maxDuration": 60,
       "includeFiles": "node_modules/@ffmpeg-installer/**"
+    },
+    "api/of-webhook.ts": {
+      "maxDuration": 60,
+      "includeFiles": "{node_modules/@ffmpeg-installer/**,assets/**}"
+    },
+    "api/welcome.ts": {
+      "maxDuration": 60,
+      "includeFiles": "{node_modules/@ffmpeg-installer/**,assets/**}"
     }
   }
 }
