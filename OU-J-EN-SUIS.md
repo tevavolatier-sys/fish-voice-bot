@@ -11,8 +11,10 @@
 
 - 08/10 réalisme (Teva : « pas assez réaliste, il faut voir que c'est fait à la main ») : 3 panels de juges (workflows) → style cursif par défaut (DEFAULT_STYLE, surcharge WELCOME_STYLE), rendu « vrai feutre » déterministe dans compositeZone (encre qui assombrit le papier, pression variable par bruit, bords baveux, plus chargée aux croisements ; WELCOME_INK 0,84 / WELCOME_INK_BLUR 0,6 / WELCOME_INK_PRESSURE 0,45). Échantillon de la vraie écriture de Sienna possible (interface → « Vraie écriture de la modèle », 2e image passée à OpenAI) : demandé à Teva, pas reçu. Essais par script : selfieTest accepte model/quality/style/noReference.
 
+- Panel 3 : gpt-image-1 cursif 6,5/10, mini cursif 5,7/10 (écart faible pour 4× le prix) → on reste sur mini ; reproche restant « encre grise » corrigé (cœur du trait saturé, WELCOME_INK 0,88, pression 0,3).
+
 ## En cours
-- Panel 3 (choix du modèle : mini ≈ 0,01 $ vs gpt-image-1 ≈ 0,04 $ vs gpt-image-1.5) ; prod tourne déjà avec mini + nouveau rendu.
+- Prod : mini + style cursif + encre vrai feutre v2. Pour passer sur gpt-image-1 (≈ 0,04 $/selfie, un peu plus crédible) : `vercel env add WELCOME_OPENAI_MODEL production` = gpt-image-1.
 - Premiers vrais envois vocal + selfie : surveiller le journal (colonne « + selfie IA », remarques, erreurs).
 
 ## Prochaine étape

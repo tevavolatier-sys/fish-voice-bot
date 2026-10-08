@@ -359,13 +359,14 @@ export async function compositeZone(
   //   - pression variable : des nuages de bruit basse fréquence modulent la densité le long des traits ;
   //   - bords légèrement baveux (flou léger de l'alpha) pour coller au flou de la photo.
   // Réglables sans redéploiement : WELCOME_INK (densité max, 0,80), WELCOME_INK_BLUR (0,6 px), WELCOME_INK_PRESSURE (0,45).
-  const inkMax = Math.max(0.3, Math.min(1, Number(process.env.WELCOME_INK) || 0.84));
+  const inkMax = Math.max(0.3, Math.min(1, Number(process.env.WELCOME_INK) || 0.88));
   const blur = Math.max(0, Math.min(3, Number(process.env.WELCOME_INK_BLUR ?? 0.6)));
-  const pressure = Math.max(0, Math.min(1, Number(process.env.WELCOME_INK_PRESSURE ?? 0.45)));
+  const pressure = Math.max(0, Math.min(1, Number(process.env.WELCOME_INK_PRESSURE ?? 0.3)));
   const k = inkMax.toFixed(3);
   // Tout en YUV pleine échelle (yuvj444p) : l'encre ne touche que la luminance (Y), la couleur du papier reste
   const graph2 =
-    `[1:v]${blur > 0 ? `gblur=sigma=${blur.toFixed(2)},` : ""}format=gray[a1];` +
+    // cœur du trait saturé (panel 3 : « encre grise, calque à 70 % ») : le flou n'adoucit que les bords
+    `[1:v]${blur > 0 ? `gblur=sigma=${blur.toFixed(2)},` : ""}lutyuv=y='clip(val*1.6,0,255)',format=gray[a1];` +
     `color=c=0x808080:s=24x18:d=1,noise=alls=70:allf=u,scale=${w}:${h}:flags=bicubic,format=gray,` +
     `lutyuv=y='clip(255-${(pressure * 255).toFixed(0)}/2+(val-128)*${pressure.toFixed(2)},${(255 - pressure * 255).toFixed(0)},255)'[m];` +
     // encre plus chargée là où les traits se superposent ou s'épaississent (croisements, boucles)
