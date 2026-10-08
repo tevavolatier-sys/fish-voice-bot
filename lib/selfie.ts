@@ -282,17 +282,23 @@ export async function zoneMask(dir: string, s: SelfieSettings, w: number, h: num
 }
 
 /**
- * Ne garde de l'image IA que la zone d'écriture, posée sur la vraie photo : visage, corps
- * et fond restent pixel pour pixel ceux de l'original.
+ * Ne garde de l'image IA que L'ENCRE dans la zone d'écriture, posée sur la vraie photo :
+ * un pixel est de l'encre s'il est nettement plus sombre que le même pixel de l'original
+ * (le papier rendu par l'IA, même un peu beige, est ignoré ; visage, corps, fond et papier
+ * restent pixel pour pixel ceux de l'original).
  */
 export async function compositeZone(dir: string, original: string, aiImage: Buffer, mask: string, w: number, h: number, g: { W: number; H: number; ox: number; oy: number }): Promise<Buffer> {
   const ai = join(dir, "ai.img");
   const out = join(dir, "final.jpg");
   await writeFile(ai, aiImage);
   const graph =
-    `[1:v]scale=${g.W}:${g.H}:flags=lanczos,crop=${w}:${h}:${g.ox}:${g.oy}[r];` +
-    `[2:v]crop=${w}:${h}:${g.ox}:${g.oy},alphaextract,negate[a];` +
-    `[r][a]alphamerge[ra];[0:v][ra]overlay=format=auto`;
+    `[0:v]split[o1][o2];[o2]format=gray[og];` +
+    `[1:v]scale=${g.W}:${g.H}:flags=lanczos,crop=${w}:${h}:${g.ox}:${g.oy},split[r1][r2];[r2]format=gray[ag];` +
+    // encre = IA plus sombre que l'original d'au moins 40 (rampe douce jusqu'à 100)
+    `[ag][og]blend=all_expr='clip((B-A-40)*255/60,0,255)'[ink];` +
+    `[2:v]crop=${w}:${h}:${g.ox}:${g.oy},alphaextract,negate[z];` +
+    `[ink][z]blend=all_expr='A*B/255'[a];` +
+    `[r1][a]alphamerge[ra];[o1][ra]overlay=format=auto`;
   const r = await run(await ffmpegBinary(), ["-y", "-hide_banner", "-i", original, "-i", ai, "-i", mask, "-filter_complex", graph, "-frames:v", "1", "-q:v", "3", out]);
   if (r.code !== 0) throw new Error(`composition : ${r.stderr.slice(-300)}`);
   return readFile(out);
@@ -334,8 +340,10 @@ export async function selfieByOpenAi(photo: Buffer, name: string, s: SelfieSetti
     const prompt =
       `In the editable area (the blank white sheet of paper she is holding), write the name "${name}" ` +
       `as if she had written it herself with a black felt-tip marker: real handwriting, slightly irregular ` +
-      `strokes, large, centered in the area with margins, following the sheet's angle, perspective and lighting ` +
-      `(paper grain, soft shadow). Spell it exactly: "${name}". Nothing else changes.` +
+      `strokes, following the sheet's angle, perspective and lighting (paper grain, soft shadow). ` +
+      `Centered, with generous empty margins: the name takes about two thirds of the width of the editable area ` +
+      `and never touches its edges. Keep the paper white and untouched around the name. ` +
+      `Spell it exactly: "${name}". Nothing else changes.` +
       (s.prompt ? ` ${s.prompt}` : "");
     const form = new FormData();
     form.set("model", OPENAI_MODEL());
