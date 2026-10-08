@@ -359,6 +359,18 @@ export async function compositeZone(
   //   - pression variable : des nuages de bruit basse fréquence modulent la densité le long des traits ;
   //   - bords légèrement baveux (flou léger de l'alpha) pour coller au flou de la photo.
   // Réglables sans redéploiement : WELCOME_INK (densité max, 0,80), WELCOME_INK_BLUR (0,6 px), WELCOME_INK_PRESSURE (0,45).
+  await renderInk(dir, original, cleanRaw, w, h, out);
+  return { jpeg: await readFile(out), touch: cleaned.touch, dropped: cleaned.dropped };
+}
+
+/**
+ * Rendu « vrai feutre » : pose une carte d'encre (gris w×h, fichier raw) sur la photo.
+ * L'encre assombrit la luminance du papier (elle suit sa lumière et son grain), cœur du trait
+ * saturé, bords baveux, pression variable (bruit basse fréquence), plus chargée aux croisements.
+ */
+export async function renderInk(dir: string, original: string, alphaRaw: string, w: number, h: number, out: string): Promise<void> {
+  const bin = await ffmpegBinary();
+  const raw = ["-f", "rawvideo", "-pix_fmt", "gray"];
   const inkMax = Math.max(0.3, Math.min(1, Number(process.env.WELCOME_INK) || 0.88));
   const blur = Math.max(0, Math.min(3, Number(process.env.WELCOME_INK_BLUR ?? 0.6)));
   const pressure = Math.max(0, Math.min(1, Number(process.env.WELCOME_INK_PRESSURE ?? 0.3)));
@@ -375,11 +387,10 @@ export async function compositeZone(
     `[0:v]format=yuvj444p[o];` +
     `[o][a3]blend=c0_expr='A*(1-${k}*B/255)':c1_expr='A':c2_expr='A'`;
   const r2 = await run(bin, [
-    "-y", "-hide_banner", "-i", original, ...raw, "-s", `${w}x${h}`, "-i", cleanRaw,
+    "-y", "-hide_banner", "-i", original, ...raw, "-s", `${w}x${h}`, "-i", alphaRaw,
     "-filter_complex", graph2, "-frames:v", "1", "-q:v", "3", out,
   ]);
   if (r2.code !== 0) throw new Error(`composition : ${r2.stderr.slice(-300)}`);
-  return { jpeg: await readFile(out), touch: cleaned.touch, dropped: cleaned.dropped };
 }
 
 /**
@@ -495,7 +506,11 @@ export interface AiOverrides {
   style?: string;
   /** Ignorer l'échantillon d'écriture (comparaison) */
   noReference?: boolean;
+  /** « note » = note générée puis posée (défaut) · « edit » = retouche de la photo avec masque */
+  method?: "note" | "edit";
 }
+export const aiMethod = (ai: AiOverrides): "note" | "edit" =>
+  ai.method === "edit" || ai.method === "note" ? ai.method : process.env.WELCOME_AI_METHOD?.trim() === "edit" ? "edit" : "note";
 
 /** Description par défaut de l'écriture (ce qui rend « fait à la main ») */
 export const DEFAULT_STYLE =
@@ -612,6 +627,203 @@ export async function selfieByOpenAi(photo: Buffer, name: string, s: SelfieSetti
   });
 }
 
+/**
+ * Mode « note » (08/10, Teva : « il faut vraiment voir que c'est écrit à la main ») :
+ * l'IA ne retouche plus la photo ; elle GÉNÈRE une photo de note manuscrite au feutre sur une
+ * feuille à plat (ce qu'elle imite très bien), on en découpe l'encre, puis on la pose en
+ * perspective dans la zone d'écriture de la vraie photo avec le rendu « vrai feutre ».
+ * Avantages : écriture vivante, taille et position exactes, jamais coupée, pas de parasites.
+ */
+export async function selfieByNote(photo: Buffer, name: string, s: SelfieSettings, budgetMs: number, ai: AiOverrides = {}): Promise<{ jpeg: Buffer; note?: string }> {
+  const key = process.env.OPENAI_API_KEY;
+  if (!key) throw new Error("OPENAI_API_KEY manquante");
+  const timeout = Math.min(AI_TIMEOUT_MS, budgetMs);
+  const wide = name.length > 7;
+  const prompt =
+    `Photo taken with a phone, straight-on, of a plain white sheet of paper lying flat on a table under soft indoor light. ` +
+    `On the sheet, ONLY the first name "${name}" is handwritten in thick black felt-tip marker (wide, bold strokes) by a young woman, quickly and casually: ` +
+    `${ai.style?.trim() || process.env.WELCOME_NOTE_STYLE?.trim() || "her natural everyday handwriting, slightly cursive, uneven letter sizes, varying pressure (darker where she pressed, drier where the pen moved fast), slight rightward slant, tiny imperfections"}. ` +
+    `The word spans about ${wide ? 75 : 60}% of the width, centered. Spell it exactly: "${name}". ` +
+    `Nothing else on the paper: no ruled lines, no underline, no dots, no drawings, no other text, no hands, no objects.`;
+  let res: Response;
+  try {
+    res = await fetch("https://api.openai.com/v1/images/generations", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: ai.model?.trim() || OPENAI_MODEL(),
+        prompt,
+        size: wide ? "1536x1024" : "1024x1024",
+        quality: ai.quality?.trim() || OPENAI_QUALITY(),
+        n: 1,
+        output_format: "jpeg",
+      }),
+      signal: AbortSignal.timeout(timeout),
+    });
+  } catch (err) {
+    const e = err as Error;
+    throw new Error(e?.name === "TimeoutError" ? `OpenAI : pas de réponse en ${Math.round(timeout / 1000)} s` : `OpenAI : ${String(e?.message ?? err).slice(0, 120)}`);
+  }
+  const text = await res.text();
+  if (!res.ok) {
+    let msg = text.slice(0, 200);
+    try {
+      const j = JSON.parse(text) as { error?: { message?: string; code?: string } };
+      msg = j.error?.message ?? msg;
+      if (j.error?.code === "insufficient_quota" || /quota|billing/i.test(msg)) msg = "crédit OpenAI épuisé ou carte absente (platform.openai.com → Billing)";
+      else if (res.status === 401) msg = "clé OpenAI invalide (OPENAI_API_KEY sur Vercel)";
+    } catch {}
+    throw new Error(`OpenAI ${res.status} : ${msg}`);
+  }
+  const b64 = (JSON.parse(text) as { data?: { b64_json?: string }[] }).data?.[0]?.b64_json;
+  if (!b64) throw new Error("OpenAI : réponse sans image");
+  return placeNote(photo, Buffer.from(b64, "base64"), s);
+}
+
+/** Découpe l'encre d'une photo de note générée et la pose en perspective dans la zone d'écriture */
+export async function placeNote(photo: Buffer, noteImage: Buffer, s: SelfieSettings): Promise<{ jpeg: Buffer; note?: string }> {
+  return withTmp(async (dir) => {
+    const full = join(dir, "full.jpg");
+    const noteFile = join(dir, "note.jpg");
+    await writeFile(full, photo);
+    await writeFile(noteFile, noteImage);
+    const bin = await ffmpegBinary();
+    const raw = ["-f", "rawvideo", "-pix_fmt", "gray"];
+    const { w, h } = await imageSize(full);
+    const { w: nw, h: nh } = await imageSize(noteFile);
+    // 1) Carte d'encre de la note : pixel nettement plus sombre que le papier autour (fond = flou large)
+    const lumRaw = join(dir, "lum.raw"), bgRaw = join(dir, "bg.raw");
+    const r1 = await run(bin, [
+      "-y", "-hide_banner", "-i", noteFile, "-filter_complex", "[0:v]format=gray,split[l][b];[b]gblur=sigma=30[bg]",
+      "-map", "[l]", "-frames:v", "1", ...raw, lumRaw, "-map", "[bg]", "-frames:v", "1", ...raw, bgRaw,
+    ]);
+    if (r1.code !== 0) throw new Error(`lecture de la note : ${r1.stderr.slice(-200)}`);
+    const [lum, bg] = await Promise.all([readFile(lumRaw), readFile(bgRaw)]);
+    const n = nw * nh;
+    const ink = Buffer.alloc(n);
+    for (let i = 0; i < n; i++) ink[i] = Math.max(0, Math.min(255, Math.round(((bg[i] - lum[i] - 35) * 255) / 60)));
+    const picked = pickNoteInk(ink, nw, nh);
+    if (!picked) throw new Error("note générée illisible (pas d'encre nette)");
+    const { alpha, x0, y0, x1, y1 } = picked;
+    // 2) Vignette de l'encre avec marge (bords à 0 → rien ne déborde après déformation)
+    const mx = Math.round((x1 - x0) * 0.08) + 2, my = Math.round((y1 - y0) * 0.12) + 2;
+    const cx0 = Math.max(0, x0 - mx), cy0 = Math.max(0, y0 - my), cx1 = Math.min(nw, x1 + mx), cy1 = Math.min(nh, y1 + my);
+    const cw = cx1 - cx0, ch = cy1 - cy0;
+    const cropBuf = Buffer.alloc(cw * ch);
+    for (let y = 0; y < ch; y++) alpha.copy(cropBuf, y * cw, (cy0 + y) * nw + cx0, (cy0 + y) * nw + cx1);
+    // bords de la vignette forcés à 0 (la déformation étire les pixels de bord vers l'extérieur)
+    for (let x = 0; x < cw; x++) { cropBuf[x] = 0; cropBuf[(ch - 1) * cw + x] = 0; }
+    for (let y = 0; y < ch; y++) { cropBuf[y * cw] = 0; cropBuf[y * cw + cw - 1] = 0; }
+    const cropRaw = join(dir, "crop.raw");
+    await writeFile(cropRaw, cropBuf);
+    // 3) Destination : boîte centrée dans la zone (62 % de sa largeur, hauteur selon le prénom, ≤ 72 % de la zone)
+    const Z = s.zone.map(([zx, zy]) => [(zx * w) / 100, (zy * h) / 100] as [number, number]);
+    const [tl, tr, br, bl] = Z;
+    const zoneW = (dist(tl, tr) + dist(bl, br)) / 2, zoneH = (dist(tl, bl) + dist(tr, br)) / 2;
+    let tw = 0.7;
+    let th = (tw * zoneW * (ch / cw)) / zoneH;
+    if (th > 0.75) { tw *= 0.75 / th; th = 0.75; }
+    const bil = (u: number, v: number): [number, number] => [
+      (1 - v) * ((1 - u) * tl[0] + u * tr[0]) + v * ((1 - u) * bl[0] + u * br[0]),
+      (1 - v) * ((1 - u) * tl[1] + u * tr[1]) + v * ((1 - u) * bl[1] + u * br[1]),
+    ];
+    const cu = 0.5, cv = 0.48;
+    const P = [bil(cu - tw / 2, cv - th / 2), bil(cu + tw / 2, cv - th / 2), bil(cu - tw / 2, cv + th / 2), bil(cu + tw / 2, cv + th / 2)];
+    const px = (p: [number, number]) => `${Math.round(p[0])}:${Math.round(p[1])}`;
+    // 4) Déformation : la vignette (étirée à la taille de la photo) est envoyée sur ses 4 coins de destination
+    // La déformation réduit fortement la vignette étirée (≈ ×3-4) : flou préalable = anti-crénelage,
+    // sinon la texture du feutre devient un pointillé sec
+    const minify = w / Math.max(1, tw * zoneW);
+    const aa = Math.max(0.4, 0.55 * minify).toFixed(2);
+    const alphaRaw = join(dir, "alpha.raw");
+    const r2 = await run(bin, [
+      "-y", "-hide_banner", ...raw, "-s", `${cw}x${ch}`, "-i", cropRaw,
+      "-vf", `scale=${w}:${h}:flags=bicubic,gblur=sigma=${aa},perspective=${px(P[0])}:${px(P[1])}:${px(P[2])}:${px(P[3])}:sense=destination:interpolation=cubic,format=gray`,
+      "-frames:v", "1", ...raw, alphaRaw,
+    ]);
+    if (r2.code !== 0) throw new Error(`pose en perspective : ${r2.stderr.slice(-200)}`);
+    const out = join(dir, "final.jpg");
+    await renderInk(dir, full, alphaRaw, w, h, out);
+    return { jpeg: await readFile(out) };
+  });
+}
+
+const dist = (a: [number, number], b: [number, number]) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+
+/**
+ * Dans la carte d'encre d'une note générée : garde les taches franches (> 140) assez grosses,
+ * qui ne touchent pas le bord de l'image (ombres, bord de feuille) ; renvoie la carte nettoyée
+ * (bords doux conservés) et la boîte englobante. null si rien.
+ */
+export function pickNoteInk(ink: Buffer, w: number, h: number): { alpha: Buffer; x0: number; y0: number; x1: number; y1: number } | null {
+  const n = w * h;
+  const strong = new Uint8Array(n);
+  for (let i = 0; i < n; i++) strong[i] = ink[i] > 140 ? 1 : 0;
+  const seen = new Uint8Array(n), keep = new Uint8Array(n);
+  const minSize = Math.max(12, Math.round(n * 0.00005));
+  const stack: number[] = [];
+  const comps: number[][] = [];
+  for (let start = 0; start < n; start++) {
+    if (!strong[start] || seen[start]) continue;
+    const comp: number[] = [];
+    let border = false;
+    stack.push(start); seen[start] = 1;
+    while (stack.length) {
+      const i = stack.pop()!;
+      comp.push(i);
+      const x = i % w, y = (i - x) / w;
+      if (x <= 1 || y <= 1 || x >= w - 2 || y >= h - 2) border = true;
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+        const nx = x + dx, ny = y + dy;
+        if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+        const j = ny * w + nx;
+        if (strong[j] && !seen[j]) { seen[j] = 1; stack.push(j); }
+      }
+    }
+    if (!border && comp.length >= minSize) comps.push(comp);
+  }
+  if (!comps.length) return null;
+  // Bande du prénom = étendue verticale des grosses taches (≥ 25 % de la plus grosse) ; le reste
+  // (souligné, pointillés, ombres, taches isolées loin du mot) est écarté
+  // (critère de HAUTEUR : un tiret de souligné peut être aussi gros qu'une lettre, mais il est plat)
+  const yOf = (i: number) => (i - (i % w)) / w;
+  const heights = comps.map((c) => {
+    let ymin = h, ymax = 0;
+    for (const i of c) { const y = yOf(i); if (y < ymin) ymin = y; if (y > ymax) ymax = y; }
+    return ymax - ymin + 1;
+  });
+  const tallest = Math.max(...heights);
+  let bandTop = h, bandBottom = 0;
+  comps.forEach((c, k) => {
+    if (heights[k] < tallest * 0.35) return;
+    for (const i of c) { const y = yOf(i); if (y < bandTop) bandTop = y; if (y > bandBottom) bandBottom = y; }
+  });
+  const margin = Math.max(4, (bandBottom - bandTop) * 0.12);
+  comps.forEach((c) => {
+    let ymin = h, ymax = 0;
+    for (const i of c) { const y = yOf(i); if (y < ymin) ymin = y; if (y > ymax) ymax = y; }
+    const cy = (ymin + ymax) / 2;
+    // dedans si son centre est dans la bande (avec marge) : lettres, points sur les i, accents
+    if (cy >= bandTop - margin && cy <= bandBottom + margin) for (const i of c) keep[i] = 1;
+  });
+  let x0 = w, y0 = h, x1 = -1, y1 = -1, any = false;
+  const dil = new Uint8Array(n);
+  for (let i = 0; i < n; i++) {
+    if (!keep[i]) continue;
+    any = true;
+    const x = i % w, y = (i - x) / w;
+    if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+    for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) {
+      const nx = x + dx, ny = y + dy;
+      if (nx >= 0 && ny >= 0 && nx < w && ny < h) dil[ny * w + nx] = 1;
+    }
+  }
+  if (!any) return null;
+  const alpha = Buffer.alloc(n);
+  for (let i = 0; i < n; i++) alpha[i] = dil[i] ? ink[i] : 0;
+  return { alpha, x0: Math.max(0, x0 - 2), y0: Math.max(0, y0 - 2), x1: Math.min(w, x1 + 3), y1: Math.min(h, y1 + 3) };
+}
+
 /** Gemini retouche la photo (cadre rouge en guide), puis seule la zone est gardée sur l'original */
 export async function selfieByGemini(photo: Buffer, name: string, s: SelfieSettings): Promise<Buffer> {
   const key = process.env.GEMINI_API_KEY;
@@ -713,7 +925,7 @@ export async function selfieByAi(photo: Buffer, name: string, s: SelfieSettings,
     if (left < 8_000) break;
     try {
       if (p === "openai") {
-        const r = await selfieByOpenAi(photo, name, s, left, ai);
+        const r = aiMethod(ai) === "note" ? await selfieByNote(photo, name, s, left, ai) : await selfieByOpenAi(photo, name, s, left, ai);
         return { jpeg: r.jpeg, provider: p, note: r.note };
       }
       return { jpeg: await selfieByGemini(photo, name, s), provider: p };
