@@ -516,6 +516,8 @@ export interface AiOverrides {
   noReference?: boolean;
   /** « note » = note générée puis posée (défaut) · « edit » = retouche de la photo avec masque */
   method?: "note" | "edit";
+  /** Échantillon d'écriture fourni directement (essais locaux), à la place de celui de Redis */
+  reference?: Buffer;
 }
 export const aiMethod = (ai: AiOverrides): "note" | "edit" =>
   ai.method === "edit" || ai.method === "note" ? ai.method : process.env.WELCOME_AI_METHOD?.trim() === "edit" ? "edit" : "note";
@@ -550,7 +552,7 @@ export async function selfieByOpenAi(photo: Buffer, name: string, s: SelfieSetti
     const paddedBuf = await readFile(padded);
     const maskBuf = await readFile(mask);
     // Vraie écriture de la modèle (si installée) : passée en 2e image, l'IA l'imite
-    const handwriting = ai.noReference ? null : await getHandwriting();
+    const handwriting = ai.noReference ? null : ai.reference ?? (await getHandwriting());
     const basePrompt =
       `In the editable area (the blank white sheet of paper she is holding), write the name "${name}" ` +
       `${(ai.style?.trim() || process.env.WELCOME_STYLE?.trim() || DEFAULT_STYLE)}. ` +
@@ -747,6 +749,22 @@ export async function placeNote(photo: Buffer, noteImage: Buffer, s: SelfieSetti
     // bords de la vignette forcés à 0 (la déformation étire les pixels de bord vers l'extérieur)
     for (let x = 0; x < cw; x++) { cropBuf[x] = 0; cropBuf[(ch - 1) * cw + x] = 0; }
     for (let y = 0; y < ch; y++) { cropBuf[y * cw] = 0; cropBuf[y * cw + cw - 1] = 0; }
+    return placeInk(photo, cropBuf, cw, ch, s);
+  });
+}
+
+/**
+ * Pose une carte d'encre (vignette gris cw×ch, bords à 0) dans la zone d'écriture de la photo :
+ * geste de la main, mise à l'échelle, perspective, rendu feutre. Sert à la note générée (placeNote)
+ * et aux prénoms recomposés avec de vraies lettres (lib/glyphs.ts).
+ */
+export async function placeInk(photo: Buffer, cropBuf: Buffer, cw: number, ch: number, s: SelfieSettings): Promise<{ jpeg: Buffer; note?: string }> {
+  return withTmp(async (dir) => {
+    const full = join(dir, "full.jpg");
+    await writeFile(full, photo);
+    const bin = await ffmpegBinary();
+    const raw = ["-f", "rawvideo", "-pix_fmt", "gray"];
+    const { w, h } = await imageSize(full);
     const cropRaw0 = join(dir, "crop0.raw");
     await writeFile(cropRaw0, cropBuf);
     // Geste de la main : deux champs de déplacement aléatoires très lisses (8×3 points interpolés)
