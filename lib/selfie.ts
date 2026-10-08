@@ -645,6 +645,8 @@ export async function selfieByOpenAi(photo: Buffer, name: string, s: SelfieSetti
 export async function selfieByNote(photo: Buffer, name: string, s: SelfieSettings, budgetMs: number, ai: AiOverrides = {}): Promise<{ jpeg: Buffer; note?: string }> {
   const key = process.env.OPENAI_API_KEY;
   if (!key) throw new Error("OPENAI_API_KEY manquante");
+  const t0 = Date.now();
+  const deadlineLeft = () => budgetMs - (Date.now() - t0);
   const timeout = Math.min(AI_TIMEOUT_MS, budgetMs);
   const wide = name.length > 7;
   const prompt =
@@ -654,6 +656,8 @@ export async function selfieByNote(photo: Buffer, name: string, s: SelfieSetting
     `The word spans about ${wide ? 75 : 60}% of the width, centered. Spell it exactly: "${name}". ` +
     `Nothing else on the paper: no ruled lines, no underline, no dots, no drawings, no other text, no hands, no objects.`;
   let res: Response;
+  // Un 5xx OpenAI passager (« The server had an error ») : un 2e essai passe presque toujours
+  for (let attempt = 1; ; attempt++) {
   try {
     res = await fetch("https://api.openai.com/v1/images/generations", {
       method: "POST",
@@ -671,6 +675,9 @@ export async function selfieByNote(photo: Buffer, name: string, s: SelfieSetting
   } catch (err) {
     const e = err as Error;
     throw new Error(e?.name === "TimeoutError" ? `OpenAI : pas de réponse en ${Math.round(timeout / 1000)} s` : `OpenAI : ${String(e?.message ?? err).slice(0, 120)}`);
+  }
+  if (res.status >= 500 && attempt === 1 && deadlineLeft() > 15_000) continue;
+  break;
   }
   const text = await res.text();
   if (!res.ok) {
