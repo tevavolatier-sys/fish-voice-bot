@@ -704,9 +704,10 @@ export async function selfieByNote(photo: Buffer, name: string, s: SelfieSetting
 
 /** Écriture demandée pour la note : bâclée, vivante, jamais calligraphiée (Teva : « trop parfait ») */
 export const NOTE_STYLE =
-  "the quick, confident, fluid everyday handwriting of a young adult woman (natural and relaxed, NOT childish, NOT shaky, " +
-  "NOT calligraphy, NOT a font): smooth strokes written fast, letters slightly irregular in size and spacing, a gentle slant, " +
-  "some letters joined, thick marker ink a bit heavier where she pressed and slightly lighter on fast strokes";
+  "the real everyday handwriting of a young adult woman writing fast without caring (natural, a bit messy, NOT childish, " +
+  "NOT shaky, NOT calligraphy, NOT a font): letters clearly uneven in size and spacing, baseline not straight, slant that " +
+  "changes a little from letter to letter, some letters joined and others not, a letter or two slightly cramped, thick marker " +
+  "ink heavier where she pressed and lighter on fast strokes";
 
 /** Découpe l'encre d'une photo de note générée et la pose en perspective dans la zone d'écriture */
 export async function placeNote(photo: Buffer, noteImage: Buffer, s: SelfieSettings): Promise<{ jpeg: Buffer; note?: string }> {
@@ -786,7 +787,7 @@ export async function placeInk(photo: Buffer, cropBuf: Buffer, cw: number, ch: n
     // Geste de la main : deux champs de déplacement aléatoires très lisses (8×3 points interpolés)
     // décalent l'encre en x (espacement, pente) et en y (ligne de base qui ondule, hauteurs inégales).
     // WELCOME_WOBBLE : amplitude 0..1 (0,5 ≈ ±4 % de la hauteur de la vignette), 0 = désactivé.
-    const wobble = Math.max(0, Math.min(1, Number(process.env.WELCOME_WOBBLE ?? 0.25)));
+    const wobble = Math.max(0, Math.min(1, Number(process.env.WELCOME_WOBBLE ?? 0.4)));
     const cropRaw = join(dir, "crop.raw");
     if (wobble > 0) {
       const amp = Math.round(wobble * ch * 0.08 * 2); // force du bruit (±amp/2 px environ après lissage)
