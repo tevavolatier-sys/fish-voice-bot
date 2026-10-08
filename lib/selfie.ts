@@ -916,7 +916,7 @@ export function pickNoteInk(ink: Buffer, w: number, h: number): { alpha: Buffer;
     // Fil pâle et fin (trait de crayon, pli, poil) : encre moyenne faible → écarté
     let sum = 0;
     for (const i of comp) sum += ink[i];
-    if (sum / comp.length < 185 && fill < 0.25) continue;
+    if (sum / comp.length < 205 && fill < 0.3) continue; // bavure grise, tache : encre pas franche
     comps.push(comp);
   }
   if (!comps.length) return null;
