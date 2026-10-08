@@ -651,11 +651,13 @@ export async function selfieByNote(photo: Buffer, name: string, s: SelfieSetting
   const deadlineLeft = () => budgetMs - (Date.now() - t0);
   const timeout = Math.min(AI_TIMEOUT_MS, budgetMs);
   const wide = name.length > 7;
+  // 2e ligne sous le prénom (Teva, 08/10 : « bienvenue » + cœur) ; WELCOME_NOTE_LINE2 vide = prénom seul
+  const line2 = (process.env.WELCOME_NOTE_LINE2 ?? "bienvenue").trim();
   const prompt =
     `Photo taken with a phone, straight-on, of a plain white sheet of paper lying flat on a table under soft indoor light. ` +
-    `On the sheet, ONLY the first name "${name}" is handwritten in thick black felt-tip marker (wide, bold strokes) by a young woman, quickly and casually: ` +
+    `On the sheet, ONLY the first name "${name}"${line2 ? ` on the first line and, just below it, the word "${line2}" followed by a small hand-drawn heart, same handwriting,` : ""} is handwritten in thick black felt-tip marker (wide, bold strokes) by a young woman, quickly and casually: ` +
     `${ai.style?.trim() || process.env.WELCOME_NOTE_STYLE?.trim() || NOTE_STYLE}. ` +
-    `The word spans about ${wide ? 75 : 60}% of the width, centered. Spell it exactly: "${name}". ` +
+    `The ${line2 ? "two lines span" : "word spans"} about ${wide ? 75 : 60}% of the width, centered. Spell ${line2 ? `them exactly: "${name}" and "${line2}"` : `it exactly: "${name}"`}. ` +
     `Nothing else on the paper: no ruled lines, no underline, no dots, no drawings, no other text, no hands, no objects.`;
   let res: Response;
   // Un 5xx OpenAI passager (« The server had an error ») : un 2e essai passe presque toujours
@@ -803,9 +805,9 @@ export async function placeInk(photo: Buffer, cropBuf: Buffer, cw: number, ch: n
     const Z = s.zone.map(([zx, zy]) => [(zx * w) / 100, (zy * h) / 100] as [number, number]);
     const [tl, tr, br, bl] = Z;
     const zoneW = (dist(tl, tr) + dist(bl, br)) / 2, zoneH = (dist(tl, bl) + dist(tr, br)) / 2;
-    let tw = 0.7;
+    let tw = 0.75;
     let th = (tw * zoneW * (ch / cw)) / zoneH;
-    if (th > 0.75) { tw *= 0.75 / th; th = 0.75; }
+    if (th > 0.85) { tw *= 0.85 / th; th = 0.85; }
     const bil = (u: number, v: number): [number, number] => [
       (1 - v) * ((1 - u) * tl[0] + u * tr[0]) + v * ((1 - u) * bl[0] + u * br[0]),
       (1 - v) * ((1 - u) * tl[1] + u * tr[1]) + v * ((1 - u) * bl[1] + u * br[1]),
@@ -909,6 +911,8 @@ export function pickNoteInk(ink: Buffer, w: number, h: number): { alpha: Buffer;
     for (const i of comp) { const x = i % w, y = (i - x) / w; if (x < bx0) bx0 = x; if (x > bx1) bx1 = x; if (y < by0) by0 = y; if (y > by1) by1 = y; }
     const fill = comp.length / ((bx1 - bx0 + 1) * (by1 - by0 + 1));
     if (fill < 0.06 && Math.max(bx1 - bx0, by1 - by0) > 40) continue;
+    // Bavure horizontale (trace, rayure) : très large et plate
+    if ((bx1 - bx0 + 1) > 4 * (by1 - by0 + 1) && (by1 - by0 + 1) < 30) continue;
     // Fil pâle et fin (trait de crayon, pli, poil) : encre moyenne faible → écarté
     let sum = 0;
     for (const i of comp) sum += ink[i];
@@ -931,7 +935,7 @@ export function pickNoteInk(ink: Buffer, w: number, h: number): { alpha: Buffer;
     if (heights[k] < tallest * 0.35) return;
     for (const i of c) { const y = yOf(i); if (y < bandTop) bandTop = y; if (y > bandBottom) bandBottom = y; }
   });
-  const margin = Math.max(4, (bandBottom - bandTop) * 0.12);
+  const margin = Math.max(4, (bandBottom - bandTop) * 0.06);
   const bandH = Math.max(1, bandBottom - bandTop);
   const xOf = (i: number) => i % w;
   // Étendue horizontale du mot = celle des grosses lettres ; une tache isolée loin du mot (petit
