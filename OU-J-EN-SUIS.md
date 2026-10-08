@@ -9,7 +9,10 @@
 
 - SELFIE IA ACTIVÉ le 08/10 (OpenAI gpt-image-1-mini, qualité medium, ≈ 0,01 $/selfie ; clé OPENAI_API_KEY sur Vercel). Fonctionnement : seule une vignette autour de la feuille part chez OpenAI (pas de visage → modération OK, 15-25 s), masque = zone d'écriture, puis seule l'encre reliée au prénom est reportée sur la vraie photo (papier/visage/corps intacts, traits parasites effacés), contrôle « prénom coupé » → 2e essai, 2e essai aussi sur refus de modération. Testé en prod : Alex, Dark, Jean, Christopher, Maxou nickel. Pas de secours texte (Teva : fait faux) : si l'IA échoue, vocal seul + raison dans le journal. Gemini en secours seulement si sa facturation est activée (pas le cas).
 
+- 08/10 réalisme (Teva : « pas assez réaliste, il faut voir que c'est fait à la main ») : 3 panels de juges (workflows) → style cursif par défaut (DEFAULT_STYLE, surcharge WELCOME_STYLE), rendu « vrai feutre » déterministe dans compositeZone (encre qui assombrit le papier, pression variable par bruit, bords baveux, plus chargée aux croisements ; WELCOME_INK 0,84 / WELCOME_INK_BLUR 0,6 / WELCOME_INK_PRESSURE 0,45). Échantillon de la vraie écriture de Sienna possible (interface → « Vraie écriture de la modèle », 2e image passée à OpenAI) : demandé à Teva, pas reçu. Essais par script : selfieTest accepte model/quality/style/noReference.
+
 ## En cours
+- Panel 3 (choix du modèle : mini ≈ 0,01 $ vs gpt-image-1 ≈ 0,04 $ vs gpt-image-1.5) ; prod tourne déjà avec mini + nouveau rendu.
 - Premiers vrais envois vocal + selfie : surveiller le journal (colonne « + selfie IA », remarques, erreurs).
 
 ## Prochaine étape
