@@ -642,7 +642,7 @@ export async function selfieByNote(photo: Buffer, name: string, s: SelfieSetting
   const prompt =
     `Photo taken with a phone, straight-on, of a plain white sheet of paper lying flat on a table under soft indoor light. ` +
     `On the sheet, ONLY the first name "${name}" is handwritten in thick black felt-tip marker (wide, bold strokes) by a young woman, quickly and casually: ` +
-    `${ai.style?.trim() || process.env.WELCOME_NOTE_STYLE?.trim() || "her natural everyday handwriting, slightly cursive, uneven letter sizes, varying pressure (darker where she pressed, drier where the pen moved fast), slight rightward slant, tiny imperfections"}. ` +
+    `${ai.style?.trim() || process.env.WELCOME_NOTE_STYLE?.trim() || NOTE_STYLE}. ` +
     `The word spans about ${wide ? 75 : 60}% of the width, centered. Spell it exactly: "${name}". ` +
     `Nothing else on the paper: no ruled lines, no underline, no dots, no drawings, no other text, no hands, no objects.`;
   let res: Response;
@@ -679,6 +679,13 @@ export async function selfieByNote(photo: Buffer, name: string, s: SelfieSetting
   if (!b64) throw new Error("OpenAI : réponse sans image");
   return placeNote(photo, Buffer.from(b64, "base64"), s);
 }
+
+/** Écriture demandée pour la note : bâclée, vivante, jamais calligraphiée (Teva : « trop parfait ») */
+export const NOTE_STYLE =
+  "her real, sloppy, rushed everyday handwriting (NOT neat, NOT calligraphy, NOT a font): letters leaning at slightly " +
+  "different angles, some letters bigger than others, the baseline drifting up and down, a few letters joined and others " +
+  "not, thick uneven marker ink (heavier where she pressed and paused, thinner and a bit dry on fast strokes, a small blob " +
+  "where a stroke starts), a slight tremble, written quickly while holding the paper on her knee";
 
 /** Découpe l'encre d'une photo de note générée et la pose en perspective dans la zone d'écriture */
 export async function placeNote(photo: Buffer, noteImage: Buffer, s: SelfieSettings): Promise<{ jpeg: Buffer; note?: string }> {
@@ -722,8 +729,26 @@ export async function placeNote(photo: Buffer, noteImage: Buffer, s: SelfieSetti
     // bords de la vignette forcés à 0 (la déformation étire les pixels de bord vers l'extérieur)
     for (let x = 0; x < cw; x++) { cropBuf[x] = 0; cropBuf[(ch - 1) * cw + x] = 0; }
     for (let y = 0; y < ch; y++) { cropBuf[y * cw] = 0; cropBuf[y * cw + cw - 1] = 0; }
+    const cropRaw0 = join(dir, "crop0.raw");
+    await writeFile(cropRaw0, cropBuf);
+    // Geste de la main : deux champs de déplacement aléatoires très lisses (8×3 points interpolés)
+    // décalent l'encre en x (espacement, pente) et en y (ligne de base qui ondule, hauteurs inégales).
+    // WELCOME_WOBBLE : amplitude 0..1 (0,5 ≈ ±4 % de la hauteur de la vignette), 0 = désactivé.
+    const wobble = Math.max(0, Math.min(1, Number(process.env.WELCOME_WOBBLE ?? 0.6)));
     const cropRaw = join(dir, "crop.raw");
-    await writeFile(cropRaw, cropBuf);
+    if (wobble > 0) {
+      const amp = Math.round(wobble * ch * 0.08 * 2); // force du bruit (±amp/2 px environ après lissage)
+      // (cartes en gris dès la source : passer par du YUV donnait un fond à 16 au lieu de 0 → bandes grises)
+      const field = (seed: number) => `color=c=0x808080:s=8x4:d=1,format=gray,noise=alls=${amp}:allf=u:all_seed=${seed},scale=${cw}:${ch}:flags=bicubic`;
+      const rw = await run(bin, [
+        "-y", "-hide_banner", ...raw, "-s", `${cw}x${ch}`, "-i", cropRaw0,
+        "-filter_complex", `${field(Math.floor(Math.random() * 10_000))}[xm];${field(Math.floor(Math.random() * 10_000))}[ym];[0:v][xm][ym]displace=edge=smear`,
+        "-frames:v", "1", ...raw, cropRaw,
+      ]);
+      if (rw.code !== 0) throw new Error(`geste : ${rw.stderr.slice(-200)}`);
+    } else {
+      await writeFile(cropRaw, cropBuf);
+    }
     // 3) Destination : boîte centrée dans la zone (62 % de sa largeur, hauteur selon le prénom, ≤ 72 % de la zone)
     const Z = s.zone.map(([zx, zy]) => [(zx * w) / 100, (zy * h) / 100] as [number, number]);
     const [tl, tr, br, bl] = Z;
@@ -751,6 +776,13 @@ export async function placeNote(photo: Buffer, noteImage: Buffer, s: SelfieSetti
     ]);
     if (r2.code !== 0) throw new Error(`pose en perspective : ${r2.stderr.slice(-200)}`);
     const out = join(dir, "final.jpg");
+    if (process.env.WELCOME_DEBUG_DIR) {
+      // Dépannage : vignette d'encre (avant/après geste) et carte posée, en PNG
+      const dd = process.env.WELCOME_DEBUG_DIR;
+      await run(bin, ["-y", "-hide_banner", "-loglevel", "error", ...raw, "-s", `${cw}x${ch}`, "-i", cropRaw0, "-frames:v", "1", join(dd, "dbg-crop0.png")]);
+      await run(bin, ["-y", "-hide_banner", "-loglevel", "error", ...raw, "-s", `${cw}x${ch}`, "-i", cropRaw, "-frames:v", "1", join(dd, "dbg-crop.png")]);
+      await run(bin, ["-y", "-hide_banner", "-loglevel", "error", ...raw, "-s", `${w}x${h}`, "-i", alphaRaw, "-frames:v", "1", join(dd, "dbg-alpha.png")]);
+    }
     await renderInk(dir, full, alphaRaw, w, h, out);
     return { jpeg: await readFile(out) };
   });
@@ -840,12 +872,22 @@ export function pickNoteInk(ink: Buffer, w: number, h: number): { alpha: Buffer;
     for (const i of c) { const y = yOf(i); if (y < bandTop) bandTop = y; if (y > bandBottom) bandBottom = y; }
   });
   const margin = Math.max(4, (bandBottom - bandTop) * 0.12);
+  const bandH = Math.max(1, bandBottom - bandTop);
+  const xOf = (i: number) => i % w;
+  // Étendue horizontale du mot = celle des grosses lettres ; une tache isolée loin du mot (petit
+  // trait, point parasite à côté) est écartée même si elle est à la bonne hauteur
+  let wordL = w, wordR = 0;
+  comps.forEach((c, k) => {
+    if (heights[k] < tallest * 0.35) return;
+    for (const i of c) { const x = xOf(i); if (x < wordL) wordL = x; if (x > wordR) wordR = x; }
+  });
   comps.forEach((c) => {
-    let ymin = h, ymax = 0;
-    for (const i of c) { const y = yOf(i); if (y < ymin) ymin = y; if (y > ymax) ymax = y; }
+    let ymin = h, ymax = 0, xmin = w, xmax = 0;
+    for (const i of c) { const y = yOf(i), x = xOf(i); if (y < ymin) ymin = y; if (y > ymax) ymax = y; if (x < xmin) xmin = x; if (x > xmax) xmax = x; }
     const cy = (ymin + ymax) / 2;
-    // dedans si son centre est dans la bande (avec marge) : lettres, points sur les i, accents
-    if (cy >= bandTop - margin && cy <= bandBottom + margin) for (const i of c) keep[i] = 1;
+    const nearX = xmax >= wordL - bandH * 0.5 && xmin <= wordR + bandH * 0.5;
+    // dedans si son centre est dans la bande (avec marge) et près du mot : lettres, points sur les i, accents
+    if (cy >= bandTop - margin && cy <= bandBottom + margin && nearX) for (const i of c) keep[i] = 1;
   });
   let x0 = w, y0 = h, x1 = -1, y1 = -1, any = false;
   const dil = new Uint8Array(n);
