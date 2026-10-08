@@ -11,7 +11,7 @@ import { nameByRules } from "../lib/fan-name.js";
 import { ffmpegBinary, run } from "../lib/video.js";
 import { AB_WINDOW_MS, computeStats } from "../lib/ab.js";
 import { generateVoice } from "../lib/fish.js";
-import { DEFAULT_SELFIE, selfieByText, selfieGuide, type SelfieSettings } from "../lib/selfie.js";
+import { DEFAULT_SELFIE, selfieByText, selfieGuide, selfieMaskPreview, type SelfieSettings } from "../lib/selfie.js";
 import { DEFAULT_SETTINGS, MONTHLY_LIMIT, STOP_AT, voiceForName, voiceId, type ChosenTake, type WelcomeSettings } from "../lib/welcome.js";
 
 const FISH = Boolean(process.env.FISH_API_KEY);
@@ -56,7 +56,7 @@ async function handle(a: Record<string, unknown>): Promise<unknown> {
     case "abReset":
       return { ok: true };
     case "selfieLoad":
-      return { ok: true, settings: selfie, hasPhoto: Boolean(selfiePhoto) };
+      return { ok: true, settings: selfie, hasPhoto: Boolean(selfiePhoto), providers: [] };
     case "selfiePhoto":
       selfiePhoto = Buffer.from(String(a.image), "base64");
       return { ok: true, bytes: selfiePhoto.length };
@@ -67,7 +67,7 @@ async function handle(a: Record<string, unknown>): Promise<unknown> {
       const z = (a.settings as SelfieSettings).zone;
       if (z) selfie = { ...selfie, zone: z };
       if (!selfiePhoto) return { ok: false, error: "Charge d'abord la photo." };
-      return { ok: true, image: (await selfieGuide(selfiePhoto, selfie)).toString("base64") };
+      return { ok: true, image: (a.style === "outline" ? await selfieGuide(selfiePhoto, selfie) : await selfieMaskPreview(selfiePhoto, selfie)).toString("base64") };
     }
     case "selfieTest": {
       const name = nameByRules(String(a.pseudo ?? ""));

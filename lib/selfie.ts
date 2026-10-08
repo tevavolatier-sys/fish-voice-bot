@@ -1,7 +1,9 @@
 // Selfie de bienvenue : la modèle tient un papier blanc, on y écrit le prénom du fan.
-//   - mode « ai »   : Gemini retouche la vraie photo (écriture au feutre, bonne perspective)
-//   - mode « text » : ffmpeg pose le prénom en police manuscrite (secours automatique si l'IA
-//                     échoue, ou mode choisi dans l'interface)
+//   - mode « ai »   : vrai inpainting. OpenAI GPT Image (masque exact = zone d'écriture, ≈ 0,01 $)
+//                     en premier, sinon Gemini (cadre rouge en guide, ≈ 0,034 $, facturation requise).
+//                     Dans les deux cas, SEULE la zone d'écriture est reprise de l'image IA : le reste
+//                     (visage, corps, fond) est recopié pixel pour pixel depuis la vraie photo.
+//   - mode « text » : ffmpeg pose le prénom en police manuscrite (secours si Teva l'active)
 // La photo de base et les réglages sont dans Redis (interface /api/welcome).
 import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -65,6 +67,19 @@ const IMAGE_MODELS = () =>
 /** Délai max par modèle, et budget total de la cascade (la fonction Vercel de 60 s fait aussi la voix et les uploads) */
 const AI_TIMEOUT_MS = 25_000;
 const AI_BUDGET_MS = 35_000;
+
+/** Fournisseurs IA disponibles, dans l'ordre d'essai (WELCOME_IMAGE_PROVIDER=gemini pour forcer Gemini en premier) */
+export function aiProviders(): ("openai" | "gemini")[] {
+  const out: ("openai" | "gemini")[] = [];
+  if (process.env.OPENAI_API_KEY) out.push("openai");
+  if (process.env.GEMINI_API_KEY) out.push("gemini");
+  const first = process.env.WELCOME_IMAGE_PROVIDER?.trim();
+  if (first === "gemini" || first === "openai") out.sort((a, b) => (a === first ? -1 : b === first ? 1 : 0));
+  return out;
+}
+/** Modèle et qualité OpenAI (gpt-image-1-mini : low ≈ 0,003 $, medium ≈ 0,01 $, high ≈ 0,035 $ par image) */
+const OPENAI_MODEL = () => process.env.WELCOME_OPENAI_MODEL?.trim() || "gpt-image-1-mini";
+const OPENAI_QUALITY = () => process.env.WELCOME_IMAGE_QUALITY?.trim() || "medium";
 
 function parse<T>(raw: unknown): T | null {
   if (raw == null) return null;
@@ -234,8 +249,136 @@ export async function selfieByText(photo: Buffer, name: string, s: SelfieSetting
   });
 }
 
-/** Gemini retouche la photo : le prénom écrit au feutre sur le papier, rien d'autre ne change */
-export async function selfieByAi(photo: Buffer, name: string, s: SelfieSettings): Promise<Buffer> {
+/**
+ * Cadrage pour OpenAI : la photo est complétée (bandes noires) au format le plus proche
+ * parmi ceux du modèle (1:1, 2:3, 3:2), pour que l'image rendue se superpose exactement.
+ */
+export function padGeometry(w: number, h: number): { W: number; H: number; ox: number; oy: number } {
+  const ratios = [1, 2 / 3, 3 / 2];
+  const r = w / h;
+  const R = ratios.reduce((best, x) => (Math.abs(x - r) < Math.abs(best - r) ? x : best), ratios[0]);
+  let W = w, H = h;
+  if (r < R) W = Math.round(h * R);
+  else H = Math.round(w / R);
+  W += W % 2; H += H % 2;
+  return { W, H, ox: Math.floor((W - w) / 2), oy: Math.floor((H - h) / 2) };
+}
+
+/**
+ * Masque PNG (RGBA) de la taille de l'image complétée : transparent DANS la zone d'écriture
+ * (c'est là que l'IA peut peindre), opaque partout ailleurs. Même astuce que le guide :
+ * un rectangle vert déformé vers les 4 coins, puis rendu transparent.
+ */
+export async function zoneMask(dir: string, s: SelfieSettings, w: number, h: number, g: { W: number; H: number; ox: number; oy: number }): Promise<string> {
+  const out = join(dir, "mask.png");
+  const px = (p: [number, number]) => `${Math.round((p[0] * w) / 100) + g.ox}:${Math.round((p[1] * h) / 100) + g.oy}`;
+  const [tl, tr, br, bl] = s.zone;
+  const graph =
+    `color=c=black:s=${g.W}x${g.H}:d=1,drawbox=x=iw*0.02:y=ih*0.02:w=iw*0.96:h=ih*0.96:color=0x00ff00:t=fill,format=yuv444p,` +
+    `perspective=${px(tl)}:${px(tr)}:${px(bl)}:${px(br)}:sense=destination,format=rgba,colorkey=0x00ff00:0.3:0.1`;
+  const r = await run(await ffmpegBinary(), ["-y", "-hide_banner", "-f", "lavfi", "-i", graph, "-frames:v", "1", "-c:v", "png", "-pix_fmt", "rgba", out]);
+  if (r.code !== 0) throw new Error(`masque : ${r.stderr.slice(-300)}`);
+  return out;
+}
+
+/**
+ * Ne garde de l'image IA que la zone d'écriture, posée sur la vraie photo : visage, corps
+ * et fond restent pixel pour pixel ceux de l'original.
+ */
+export async function compositeZone(dir: string, original: string, aiImage: Buffer, mask: string, w: number, h: number, g: { W: number; H: number; ox: number; oy: number }): Promise<Buffer> {
+  const ai = join(dir, "ai.img");
+  const out = join(dir, "final.jpg");
+  await writeFile(ai, aiImage);
+  const graph =
+    `[1:v]scale=${g.W}:${g.H}:flags=lanczos,crop=${w}:${h}:${g.ox}:${g.oy}[r];` +
+    `[2:v]crop=${w}:${h}:${g.ox}:${g.oy},alphaextract,negate[a];` +
+    `[r][a]alphamerge[ra];[0:v][ra]overlay=format=auto`;
+  const r = await run(await ffmpegBinary(), ["-y", "-hide_banner", "-i", original, "-i", ai, "-i", mask, "-filter_complex", graph, "-frames:v", "1", "-q:v", "3", out]);
+  if (r.code !== 0) throw new Error(`composition : ${r.stderr.slice(-300)}`);
+  return readFile(out);
+}
+
+/** Masque et photo complétée, à usage de test (aperçu dans l'interface) */
+export async function selfieMaskPreview(photo: Buffer, s: SelfieSettings): Promise<Buffer> {
+  return withTmp(async (dir) => {
+    const inp = join(dir, "in.jpg");
+    await writeFile(inp, photo);
+    const { w, h } = await imageSize(inp);
+    const g = padGeometry(w, h);
+    const mask = await zoneMask(dir, s, w, h, g);
+    const out = join(dir, "preview.jpg");
+    // La zone modifiable apparaît en clair, le reste assombri
+    const graph = `[0:v]pad=${g.W}:${g.H}:${g.ox}:${g.oy}:black[p];[1:v]format=rgba,colorchannelmixer=aa=0.6[m];[p][m]overlay=format=auto`;
+    const r = await run(await ffmpegBinary(), ["-y", "-hide_banner", "-i", inp, "-i", mask, "-filter_complex", graph, "-frames:v", "1", "-q:v", "4", out]);
+    if (r.code !== 0) throw new Error(`aperçu masque : ${r.stderr.slice(-300)}`);
+    return readFile(out);
+  });
+}
+
+/**
+ * OpenAI GPT Image : vrai inpainting avec masque (seule la zone d'écriture est modifiable),
+ * puis composition sur la photo d'origine. Erreurs parlantes (clé, crédit, modération).
+ */
+export async function selfieByOpenAi(photo: Buffer, name: string, s: SelfieSettings, timeoutMs: number): Promise<Buffer> {
+  const key = process.env.OPENAI_API_KEY;
+  if (!key) throw new Error("OPENAI_API_KEY manquante");
+  return withTmp(async (dir) => {
+    const inp = join(dir, "in.jpg");
+    await writeFile(inp, photo);
+    const { w, h } = await imageSize(inp);
+    const g = padGeometry(w, h);
+    const padded = join(dir, "padded.png");
+    const pr = await run(await ffmpegBinary(), ["-y", "-hide_banner", "-i", inp, "-vf", `pad=${g.W}:${g.H}:${g.ox}:${g.oy}:black`, "-frames:v", "1", padded]);
+    if (pr.code !== 0) throw new Error(`cadrage : ${pr.stderr.slice(-200)}`);
+    const mask = await zoneMask(dir, s, w, h, g);
+    const prompt =
+      `In the editable area (the blank white sheet of paper she is holding), write the name "${name}" ` +
+      `as if she had written it herself with a black felt-tip marker: real handwriting, slightly irregular ` +
+      `strokes, large, centered in the area with margins, following the sheet's angle, perspective and lighting ` +
+      `(paper grain, soft shadow). Spell it exactly: "${name}". Nothing else changes.` +
+      (s.prompt ? ` ${s.prompt}` : "");
+    const form = new FormData();
+    form.set("model", OPENAI_MODEL());
+    form.set("prompt", prompt);
+    form.set("image", new Blob([new Uint8Array(await readFile(padded))], { type: "image/png" }), "photo.png");
+    form.set("mask", new Blob([new Uint8Array(await readFile(mask))], { type: "image/png" }), "mask.png");
+    form.set("size", g.W === g.H ? "1024x1024" : g.W < g.H ? "1024x1536" : "1536x1024");
+    form.set("quality", OPENAI_QUALITY());
+    form.set("output_format", "jpeg");
+    form.set("n", "1");
+    let res: Response;
+    try {
+      res = await fetch("https://api.openai.com/v1/images/edits", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${key}` },
+        body: form,
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+    } catch (err) {
+      const e = err as Error;
+      throw new Error(e?.name === "TimeoutError" ? `OpenAI : pas de réponse en ${Math.round(timeoutMs / 1000)} s` : `OpenAI : ${String(e?.message ?? err).slice(0, 120)}`);
+    }
+    const text = await res.text();
+    if (!res.ok) {
+      let msg = text.slice(0, 200);
+      try {
+        const j = JSON.parse(text) as { error?: { message?: string; code?: string; type?: string } };
+        msg = j.error?.message ?? msg;
+        if (j.error?.code === "insufficient_quota" || /quota|billing/i.test(msg)) msg = "crédit OpenAI épuisé ou carte absente (platform.openai.com → Billing)";
+        else if (res.status === 401) msg = "clé OpenAI invalide (OPENAI_API_KEY sur Vercel)";
+        else if (/safety|moderation|content policy/i.test(msg)) msg = `photo refusée par la modération OpenAI (${msg.slice(0, 100)})`;
+      } catch {}
+      throw new Error(`OpenAI ${res.status} : ${msg}`);
+    }
+    const d = JSON.parse(text) as { data?: { b64_json?: string }[] };
+    const b64 = d.data?.[0]?.b64_json;
+    if (!b64) throw new Error("OpenAI : réponse sans image");
+    return compositeZone(dir, inp, Buffer.from(b64, "base64"), mask, w, h, g);
+  });
+}
+
+/** Gemini retouche la photo (cadre rouge en guide), puis seule la zone est gardée sur l'original */
+export async function selfieByGemini(photo: Buffer, name: string, s: SelfieSettings): Promise<Buffer> {
   const key = process.env.GEMINI_API_KEY;
   if (!key) throw new Error("GEMINI_API_KEY manquante");
   const guide = await selfieGuide(photo, s);
@@ -307,21 +450,40 @@ export async function selfieByAi(photo: Buffer, name: string, s: SelfieSettings)
       lastErr = `${model} → pas d'image (${why}${said ? ` : ${said}` : ""})`;
       continue;
     }
-    return finishAi(Buffer.from(part.inlineData.data, "base64"));
+    return finishGemini(photo, s, Buffer.from(part.inlineData.data, "base64"));
   }
   throw new Error(`Gemini image : ${lastErr || "aucun modèle"}`);
 }
 
-async function finishAi(img: Buffer): Promise<Buffer> {
-  // Toujours un JPEG raisonnable pour OnlyFans
+/** Image Gemini (même cadrage que la photo) : seule la zone d'écriture est reportée sur l'original */
+async function finishGemini(photo: Buffer, s: SelfieSettings, img: Buffer): Promise<Buffer> {
   return withTmp(async (dir) => {
-    const inp = join(dir, "ai.img");
-    const out = join(dir, "ai.jpg");
-    await writeFile(inp, img);
-    const r = await run(await ffmpegBinary(), ["-y", "-hide_banner", "-i", inp, "-frames:v", "1", "-q:v", "3", out]);
-    if (r.code !== 0) throw new Error("image IA illisible");
-    return readFile(out);
+    const inp = join(dir, "in.jpg");
+    await writeFile(inp, photo);
+    const { w, h } = await imageSize(inp);
+    const g = { W: w + (w % 2), H: h + (h % 2), ox: 0, oy: 0 };
+    const mask = await zoneMask(dir, s, w, h, g);
+    return compositeZone(dir, inp, img, mask, w, h, g);
   });
+}
+
+/** Vrai inpainting : OpenAI (masque) puis Gemini, selon les clés présentes */
+export async function selfieByAi(photo: Buffer, name: string, s: SelfieSettings): Promise<{ jpeg: Buffer; provider: "openai" | "gemini" }> {
+  const providers = aiProviders();
+  if (!providers.length) throw new Error("aucune clé IA image (OPENAI_API_KEY ou GEMINI_API_KEY) sur Vercel");
+  const errors: string[] = [];
+  const t0 = Date.now();
+  for (const p of providers) {
+    const left = AI_BUDGET_MS - (Date.now() - t0);
+    if (left < 8_000) break;
+    try {
+      const jpeg = p === "openai" ? await selfieByOpenAi(photo, name, s, Math.min(AI_TIMEOUT_MS, left)) : await selfieByGemini(photo, name, s);
+      return { jpeg, provider: p };
+    } catch (err) {
+      errors.push(String((err as Error)?.message ?? err).slice(0, 160));
+    }
+  }
+  throw new Error(errors.join(" · ") || "IA image indisponible");
 }
 
 /**
@@ -331,16 +493,17 @@ async function finishAi(img: Buffer): Promise<Buffer> {
 export async function makeSelfie(
   name: string,
   opts: { force?: boolean; mode?: "ai" | "text" } = {}
-): Promise<{ jpeg: Buffer; how: "ai" | "text"; aiError?: string } | null> {
+): Promise<{ jpeg: Buffer; how: "ai" | "text"; provider?: "openai" | "gemini"; aiError?: string } | null> {
   const s = await getSelfieSettings();
   if (!name || (!s.enabled && !opts.force)) return null;
   const photo = await getSelfiePhoto();
   if (!photo) throw new Error("pas de photo de base installée (interface → carte Selfie)");
   const mode = opts.mode ?? s.mode;
-  if (mode === "ai" && !process.env.GEMINI_API_KEY) throw new Error("GEMINI_API_KEY manquante sur Vercel");
+  if (mode === "ai" && !aiProviders().length) throw new Error("aucune clé IA image (OPENAI_API_KEY ou GEMINI_API_KEY) sur Vercel");
   if (mode === "ai") {
     try {
-      return { jpeg: await selfieByAi(photo, name, s), how: "ai" };
+      const r = await selfieByAi(photo, name, s);
+      return { jpeg: r.jpeg, how: "ai", provider: r.provider };
     } catch (err) {
       const aiError = String((err as Error)?.message ?? err).slice(0, 200);
       if (!s.fallback && !opts.force) throw new Error(aiError); // pas de « faux » : on n'envoie pas de selfie

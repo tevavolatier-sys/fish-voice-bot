@@ -4,7 +4,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { abReset, abStats } from "../lib/ab.js";
 import { fanFirstName, llmProviders } from "../lib/fan-name.js";
-import { getSelfiePhoto, getSelfieSettings, hasSelfiePhoto, makeSelfie, saveSelfiePhoto, saveSelfieSettings, selfieGuide, type SelfieSettings } from "../lib/selfie.js";
+import { aiProviders, getSelfiePhoto, getSelfieSettings, hasSelfiePhoto, makeSelfie, saveSelfiePhoto, saveSelfieSettings, selfieGuide, selfieMaskPreview, type SelfieSettings } from "../lib/selfie.js";
 import { ensureWebhook, requestsThisMonth } from "../lib/onlyfans.js";
 import { getRedis } from "../lib/redis.js";
 import {
@@ -89,7 +89,7 @@ export async function POST(req: Request): Promise<Response> {
         return Response.json({ ok: true, name, audio: mp3.toString("base64") });
       }
       case "selfieLoad":
-        return Response.json({ ok: true, settings: await getSelfieSettings(), hasPhoto: await hasSelfiePhoto() });
+        return Response.json({ ok: true, settings: await getSelfieSettings(), hasPhoto: await hasSelfiePhoto(), providers: aiProviders() });
       case "selfiePhoto": {
         const b64 = String(a.image ?? "");
         if (b64.length < 1000 || b64.length > 5_500_000) throw new Error("Photo invalide (max 4 Mo après réduction).");
@@ -108,18 +108,20 @@ export async function POST(req: Request): Promise<Response> {
         return Response.json({ ok: true, url, ...r });
       }
       case "selfieZone": {
-        // Aperçu de la zone d'écriture (liseré rouge) sur la photo installée
+        // Aperçu de la zone d'écriture : masque (zone claire, reste assombri) ou liseré rouge
         await saveSelfieSettings(a.settings as Partial<SelfieSettings>);
         const photo = await getSelfiePhoto();
         if (!photo) throw new Error("Aucune photo de base : charge d'abord le selfie.");
-        return Response.json({ ok: true, image: (await selfieGuide(photo, await getSelfieSettings())).toString("base64") });
+        const cfg = await getSelfieSettings();
+        const img = a.style === "outline" ? await selfieGuide(photo, cfg) : await selfieMaskPreview(photo, cfg);
+        return Response.json({ ok: true, image: img.toString("base64") });
       }
       case "selfieTest": {
         const name = await fanFirstName(String(a.pseudo ?? ""));
         if (!name) return Response.json({ ok: true, name: "", image: null });
         const r = await makeSelfie(name, { force: true, mode: a.mode === "text" ? "text" : a.mode === "ai" ? "ai" : undefined });
         if (!r) throw new Error("Aucune photo de base : charge d'abord le selfie.");
-        return Response.json({ ok: true, name, how: r.how, aiError: r.aiError, image: r.jpeg.toString("base64") });
+        return Response.json({ ok: true, name, how: r.how, provider: r.provider, aiError: r.aiError, image: r.jpeg.toString("base64") });
       }
       case "retry": {
         const s = await getWelcomeSettings();
@@ -316,7 +318,8 @@ details{margin-top:10px}summary{cursor:pointer;color:var(--mute);font-size:13px}
         </div>
         <div>
           <label>Méthode</label>
-          <select id="sfMode"><option value="ai">IA Gemini (vrai inpainting, ~15 s)</option><option value="text">Texte posé (1 s, sans IA, fait faux)</option></select>
+          <select id="sfMode"><option value="ai">IA (vrai inpainting : OpenAI avec masque, sinon Gemini)</option><option value="text">Texte posé (1 s, sans IA, fait faux)</option></select>
+          <div class="hint" id="sfProviders"></div>
           <label class="switch" style="margin-top:8px"><input type="checkbox" id="sfFallback"> Si l'IA échoue : poser le texte quand même (sinon pas de selfie)</label>
           <label for="sfPrompt">Consigne IA en plus (facultatif)</label>
           <input id="sfPrompt" placeholder="ex. écris aussi « Bienvenue » au-dessus">
@@ -514,6 +517,7 @@ async function loadSelfie() {
   for (const k in sfFields) if (document.activeElement !== $(sfFields[k])) $(sfFields[k]).value = s[k];
   for (const i of zoneInputs()) { const [p, c] = i.dataset.z.split(",").map(Number); if (document.activeElement !== i) i.value = s.zone[p][c]; }
   $("#sfPhotoState").innerHTML = d.hasPhoto ? "✓ Photo installée" : '<span class="ko">Aucune photo : choisis le selfie et clique « Installer ».</span>';
+  $("#sfProviders").innerHTML = d.providers.length ? "Clés IA présentes : " + d.providers.map((p) => p === "openai" ? "OpenAI (≈ 0,01 $/selfie)" : "Gemini (≈ 0,034 $/selfie)").join(", ") + " — essayées dans cet ordre." : '<span class="ko">Aucune clé IA image sur Vercel (OPENAI_API_KEY ou GEMINI_API_KEY).</span>';
 }
 const zoneInputs = () => [...document.querySelectorAll("[data-z]")];
 const readSelfie = () => {
@@ -552,7 +556,7 @@ $("#sfTest").onclick = async (e) => {
     const r = await call("selfieTest", { pseudo, mode: $("#sfMode").value });
     if (!r.image) say($("#sfMsg"), "Pseudo illisible → pas de selfie.", true);
     else {
-      say($("#sfMsg"), "Prénom : " + r.name + " · méthode : " + (r.how === "ai" ? "IA" : "texte posé") + (r.aiError ? " (IA en échec : " + r.aiError + ")" : ""), r.aiError ? "warn" : true);
+      say($("#sfMsg"), "Prénom : " + r.name + " · méthode : " + (r.how === "ai" ? "IA " + (r.provider || "") : "texte posé") + (r.aiError ? " (IA en échec : " + r.aiError + ")" : ""), r.aiError ? "warn" : true);
       $("#sfOut").innerHTML = '<img src="data:image/jpeg;base64,' + r.image + '" style="max-width:100%;max-height:70vh;border-radius:10px">';
     }
   } catch (err) { say($("#sfMsg"), err.message, false); }
