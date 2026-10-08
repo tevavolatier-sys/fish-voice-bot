@@ -11,7 +11,7 @@ const check = (label: string, ok: boolean) => {
 const ids = Array.from({ length: 2000 }, (_, i) => String(1_000_000 + i * 7919));
 const voice = ids.filter((id) => groupFor(id) === "voice").length;
 check(`même fan → même groupe`, groupFor("42") === groupFor("42"));
-check(`50/50 sur 2000 fans (${voice} avec vocal)`, voice > 900 && voice < 1100);
+check(`≈ 1/3 sur 2000 fans (${voice} vocal seul)`, voice > 560 && voice < 780);
 
 // Statistiques
 const now = Date.now();

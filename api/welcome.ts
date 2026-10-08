@@ -251,7 +251,7 @@ details{margin-top:10px}summary{cursor:pointer;color:var(--mute);font-size:13px}
     <div class="card">
       <div class="head"><h2>Test A/B : vocal ou pas ?</h2>
         <label class="switch"><input type="checkbox" id="abEnabled"> <span id="abLabel">Test</span></label></div>
-      <p class="lead">Un nouvel abonné sur deux ne reçoit <b>pas</b> le vocal. On compare ensuite qui a écrit dans les 48 h. Les chatters ne voient rien.</p>
+      <p class="lead">Trois groupes au hasard (⅓ chacun) : vocal seul, rien, vocal + selfie. On compare ensuite qui a écrit dans les 48 h. Les chatters ne voient rien.</p>
       <div class="stats" id="abStats"></div>
       <div class="ab-wrap"><table id="abTable" class="ab"></table></div>
       <div class="hint" id="abHint" style="margin-top:10px"></div>
@@ -450,26 +450,27 @@ const pct = (r) => r == null ? "–" : Math.round(r * 100) + " %";
 function renderAb(ab, on) {
   $("#abLabel").textContent = on ? "Test A/B : EN COURS" : "Test A/B : arrêté (tout le monde reçoit le vocal)";
   if (!ab) { $("#abStats").innerHTML = ""; $("#abTable").innerHTML = ""; $("#abHint").textContent = "Renseigne le compte acct_… pour démarrer."; return; }
-  const v = ab.voice, n = ab.none;
+  const v = ab.voice, n = ab.none, sf = ab.selfie;
   const sign = (x) => (x > 0 ? "+" : "") + x;
   const mins = (m) => m == null ? "–" : m < 60 ? Math.round(m) + " min" : m < 1440 ? (m / 60).toFixed(1).replace(".0", "") + " h" : (m / 1440).toFixed(1).replace(".0", "") + " j";
   const conf = ab.confidence == null ? null : Math.round(ab.confidence * 100);
   $("#abStats").innerHTML =
     '<div class="stat ok"><b>' + pct(v.rate ?? v.soFar) + '</b><span>répondent AVEC vocal' + (v.rate == null && v.soFar != null ? ' <i>(provisoire)</i>' : '') + '</span></div>' +
-    '<div class="stat"><b>' + pct(n.rate ?? n.soFar) + '</b><span>répondent SANS vocal' + (n.rate == null && n.soFar != null ? ' <i>(provisoire)</i>' : '') + '</span></div>' +
+    '<div class="stat"><b>' + pct(n.rate ?? n.soFar) + '</b><span>répondent SANS rien' + (n.rate == null && n.soFar != null ? ' <i>(provisoire)</i>' : '') + '</span></div>' +
+    '<div class="stat ok"><b>' + pct(sf.rate ?? sf.soFar) + '</b><span>répondent vocal + SELFIE' + (sf.rate == null && sf.soFar != null ? ' <i>(provisoire)</i>' : '') + '</span></div>' +
     (() => { const d = ab.diffPts != null ? ab.diffPts : (v.soFar != null && n.soFar != null ? (v.soFar - n.soFar) * 100 : null); const prov = ab.diffPts == null && d != null;
       return '<div class="stat ' + (d > 0 ? "ok" : d < 0 ? "ko" : "") + '"><b>' + (d == null ? "–" : sign(Math.round(d)) + " pts") + '</b><span>écart' + (ab.ratio ? " (×" + ab.ratio.toFixed(1).replace(".0", "") + ")" : "") + (prov ? " <i>(provisoire)</i>" : "") + '</span></div>'; })() +
     '<div class="stat ' + (conf >= 95 ? "ok" : conf >= 80 ? "warn" : "") + '"><b>' + (conf == null ? "–" : conf + " %") + '</b><span>confiance que l’écart est réel<div class="bar"><div style="width:' + (conf || 0) + '%;background:' + (conf >= 95 ? "var(--ok)" : "var(--warn)") + '"></div></div></span></div>';
-  const row = (label, a, b) => "<tr><td>" + label + "</td><td>" + a + "</td><td>" + b + "</td></tr>";
+  const row = (label, a, b, c = "") => "<tr><td>" + label + "</td><td>" + a + "</td><td>" + b + "</td><td>" + c + "</td></tr>";
   const share = (k, g) => g.done ? "<b>" + g[k] + "</b> <span class=hint>(" + Math.round(g[k] / g.done * 100) + " %)</span>" : "–";
-  $("#abTable").innerHTML = "<thead><tr><th></th><th>🎙️ Avec vocal</th><th>🚫 Sans vocal</th></tr></thead><tbody>" +
-    row("Fans terminés (48 h passées)", "<b>" + v.done + "</b>", "<b>" + n.done + "</b>") +
-    row("Ont répondu", share("replied", v), share("replied", n)) +
-    row("… en moins d’1 h", share("within1h", v), share("within1h", n)) +
-    row("… en moins de 24 h", share("within24h", v), share("within24h", n)) +
-    row("Délai médian avant la réponse", mins(v.medianMin), mins(n.medianMin)) +
-    row("Encore dans les 48 h (dont déjà répondu)", v.pending + " (" + v.pendingReplied + ")", n.pending + " (" + n.pendingReplied + ")") +
-    row("Reply rate provisoire (tous les fans du groupe, 48 h finies ou non)", "<b>" + pct(v.soFar) + "</b> <span class=hint>(" + (v.replied + v.pendingReplied) + " / " + (v.done + v.pending) + ")</span>", "<b>" + pct(n.soFar) + "</b> <span class=hint>(" + (n.replied + n.pendingReplied) + " / " + (n.done + n.pending) + ")</span>") +
+  $("#abTable").innerHTML = "<thead><tr><th></th><th>🎙️ Vocal seul</th><th>🚫 Rien</th><th>🎙️🖼️ Vocal + selfie</th></tr></thead><tbody>" +
+    row("Fans terminés (48 h passées)", "<b>" + v.done + "</b>", "<b>" + n.done + "</b>", "<b>" + sf.done + "</b>") +
+    row("Ont répondu", share("replied", v), share("replied", n), share("replied", sf)) +
+    row("… en moins d’1 h", share("within1h", v), share("within1h", n), share("within1h", sf)) +
+    row("… en moins de 24 h", share("within24h", v), share("within24h", n), share("within24h", sf)) +
+    row("Délai médian avant la réponse", mins(v.medianMin), mins(n.medianMin), mins(sf.medianMin)) +
+    row("Encore dans les 48 h (dont déjà répondu)", v.pending + " (" + v.pendingReplied + ")", n.pending + " (" + n.pendingReplied + ")", sf.pending + " (" + sf.pendingReplied + ")") +
+    row("Reply rate provisoire (tous les fans du groupe, 48 h finies ou non)", "<b>" + pct(v.soFar) + "</b> <span class=hint>(" + (v.replied + v.pendingReplied) + " / " + (v.done + v.pending) + ")</span>", "<b>" + pct(n.soFar) + "</b> <span class=hint>(" + (n.replied + n.pendingReplied) + " / " + (n.done + n.pending) + ")</span>", "<b>" + pct(sf.soFar) + "</b> <span class=hint>(" + (sf.replied + sf.pendingReplied) + " / " + (sf.done + sf.pending) + ")</span>") +
     "</tbody><tfoot>" + row("Reply rate global, tous fans confondus", "<b>" + pct(ab.all.rate) + "</b> <span class=hint>(" + ab.all.replied + " / " + ab.all.done + " finis)</span> · provisoire <b>" + pct(ab.all.soFar) + "</b> <span class=hint>(" + ab.all.repliedSoFar + " / " + ab.all.total + ")</span>", "") + "</tfoot>";
   const since = ab.since ? "Depuis le " + new Date(ab.since).toLocaleDateString("fr-FR") + ". " : "";
   let verdict;

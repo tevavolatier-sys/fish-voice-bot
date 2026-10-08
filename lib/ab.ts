@@ -5,7 +5,8 @@
 import { createHash } from "node:crypto";
 import { getRedis } from "./redis.js";
 
-export type AbGroup = "voice" | "none";
+/** voice = vocal seul · none = rien · selfie = vocal + selfie « prénom au feutre » (Teva, 08/10 : 33/33/33) */
+export type AbGroup = "voice" | "none" | "selfie";
 /** Fenêtre pendant laquelle une réponse du fan compte */
 export const AB_WINDOW_MS = 48 * 3600 * 1000;
 
@@ -31,7 +32,7 @@ function parse(raw: unknown): AbEntry | null {
 /** 50/50, toujours le même groupe pour un même fan (webhook renvoyé, renvoi…) */
 export function groupFor(fanId: string): AbGroup {
   const h = createHash("sha1").update(`welcome-ab:${fanId}`).digest();
-  return h[0] % 2 === 0 ? "voice" : "none";
+  return (["voice", "none", "selfie"] as const)[h[0] % 3];
 }
 
 /** Inscrit le fan dans le test (s'il n'y est pas déjà) et renvoie son groupe */
@@ -50,7 +51,7 @@ export async function markSent(accountId: string, fanId: string): Promise<void> 
   const cur = parse(await r.hget(key(accountId), fanId));
   if (!cur) return;
   // Renvoi manuel à un fan « sans vocal » : il change de groupe (sinon le test serait faux)
-  await r.hset(key(accountId), { [fanId]: JSON.stringify({ ...cur, g: "voice", s: true }) });
+  await r.hset(key(accountId), { [fanId]: JSON.stringify({ ...cur, g: cur.g === "none" ? "voice" : cur.g, s: true }) });
 }
 
 /** Le fan a écrit : on note sa première réponse si elle est dans les 48 h */
@@ -84,6 +85,7 @@ export interface AbGroupStats {
 export interface AbStats {
   voice: AbGroupStats;
   none: AbGroupStats;
+  selfie: AbGroupStats;
   /** Groupe voice sans vocal parti (trop tard, échec) : hors test */
   excluded: number;
   /** Premier fan inscrit (ISO), null si aucun */
@@ -119,7 +121,8 @@ const median = (xs: number[]) => {
 export function computeStats(entries: AbEntry[], now = Date.now()): AbStats {
   const voice = empty();
   const none = empty();
-  const delays = { voice: [] as number[], none: [] as number[] };
+  const selfie = empty();
+  const delays = { voice: [] as number[], none: [] as number[], selfie: [] as number[] };
   const all = { done: 0, replied: 0, rate: null as number | null, total: 0, repliedSoFar: 0, soFar: null as number | null };
   let excluded = 0;
   let since: number | null = null;
@@ -132,11 +135,11 @@ export function computeStats(entries: AbEntry[], now = Date.now()): AbStats {
       all.done++;
       if (e.r) all.replied++;
     }
-    if (e.g === "voice" && !e.s) {
+    if (e.g !== "none" && !e.s) {
       excluded++;
       continue;
     }
-    const g = e.g === "voice" ? voice : none;
+    const g = e.g === "voice" ? voice : e.g === "selfie" ? selfie : none;
     if (!finished) {
       g.pending++;
       if (e.r) g.pendingReplied++;
@@ -151,7 +154,7 @@ export function computeStats(entries: AbEntry[], now = Date.now()): AbStats {
       delays[e.g].push(d / 60_000);
     }
   }
-  for (const g of [voice, none]) {
+  for (const g of [voice, none, selfie]) {
     g.rate = g.done ? g.replied / g.done : null;
     const total = g.done + g.pending;
     g.soFar = total ? (g.replied + g.pendingReplied) / total : null;
@@ -160,6 +163,7 @@ export function computeStats(entries: AbEntry[], now = Date.now()): AbStats {
   all.soFar = all.total ? all.repliedSoFar / all.total : null;
   voice.medianMin = median(delays.voice);
   none.medianMin = median(delays.none);
+  selfie.medianMin = median(delays.selfie);
   // Test z sur deux proportions, seuil 95 % ; verdict seulement avec au moins 30 fans finis par groupe
   let significant: boolean | null = null;
   let confidence: number | null = null;
@@ -182,7 +186,7 @@ export function computeStats(entries: AbEntry[], now = Date.now()): AbStats {
     needPerGroup = Math.max(30, n);
   }
   needPerGroup = Math.max(0, needPerGroup - Math.min(voice.done, none.done));
-  return { voice, none, excluded, since: since === null ? null : new Date(since).toISOString(), significant, confidence, diffPts, ratio, needPerGroup, all };
+  return { voice, none, selfie, excluded, since: since === null ? null : new Date(since).toISOString(), significant, confidence, diffPts, ratio, needPerGroup, all };
 }
 
 export async function abStats(accountId: string): Promise<AbStats> {

@@ -371,10 +371,10 @@ export async function compositeZone(
 export async function renderInk(dir: string, original: string, alphaRaw: string, w: number, h: number, out: string): Promise<void> {
   const bin = await ffmpegBinary();
   const raw = ["-f", "rawvideo", "-pix_fmt", "gray"];
-  const inkMax = Math.max(0.3, Math.min(1, Number(process.env.WELCOME_INK) || 0.72));
-  const blur = Math.max(0, Math.min(3, Number(process.env.WELCOME_INK_BLUR ?? 0.6)));
-  const pressure = Math.max(0, Math.min(1, Number(process.env.WELCOME_INK_PRESSURE ?? 0.45)));
-  const fiber = Math.max(0, Math.min(1, Number(process.env.WELCOME_INK_FIBER ?? 0.12)));
+  const inkMax = Math.max(0.3, Math.min(1, Number(process.env.WELCOME_INK) || 0.8));
+  const blur = Math.max(0, Math.min(3, Number(process.env.WELCOME_INK_BLUR ?? 0.85)));
+  const pressure = Math.max(0, Math.min(1, Number(process.env.WELCOME_INK_PRESSURE ?? 0.55)));
+  const fiber = Math.max(0, Math.min(1, Number(process.env.WELCOME_INK_FIBER ?? 0.22)));
   const k = inkMax.toFixed(3);
   const seed = () => Math.floor(Math.random() * 10_000);
   // Tout en YUV pleine échelle (yuvj444p) : l'encre ne touche que la luminance (Y), la couleur du papier reste

@@ -375,9 +375,11 @@ export async function handleNewSub(
     manual: opts.force || undefined,
   };
   const tooLate = () => !opts.force && elapsed() > s.maxDelaySec;
-  // Test A/B : le fan est tiré au sort ; groupe « sans vocal » → on n'envoie rien (sauf renvoi manuel)
+  // Test A/B/C : vocal seul / rien / vocal + selfie. Groupe « rien » → on n'envoie rien (sauf renvoi manuel)
+  let withSelfie = true;
   if (s.abEnabled || opts.force) {
     const group = await enroll(accountId, fanId, since, displayName || username);
+    withSelfie = group === "selfie" || opts.force === true;
     if (group === "none" && !opts.force) {
       log.status = "control";
       log.ok = true;
@@ -396,7 +398,7 @@ export async function handleNewSub(
     // Voix et selfie « papier avec le prénom » en parallèle ; le selfie n'est jamais bloquant
     const [mp3, selfieResult] = await Promise.all([
       voiceForName(name, await getChosenTake(name ? "fixed" : "fallback")),
-      makeSelfie(name).catch((err) => {
+      (withSelfie ? makeSelfie(name) : Promise.resolve(null)).catch((err) => {
         log.selfieError = String((err as Error)?.message ?? err).slice(0, 200);
         return null;
       }),
