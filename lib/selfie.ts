@@ -794,7 +794,9 @@ export async function placeNote(photo: Buffer, noteImage: Buffer, s: SelfieSetti
     const alphaRaw = join(dir, "alpha.raw");
     const r2 = await run(bin, [
       "-y", "-hide_banner", ...raw, "-s", `${cw}x${ch}`, "-i", cropRaw,
-      "-vf", `scale=${w}:${h}:flags=bicubic,gblur=sigma=${aa},perspective=${px(P[0])}:${px(P[1])}:${px(P[2])}:${px(P[3])}:sense=destination:interpolation=cubic,format=gray`,
+      // bordure forcée à 0 avant la projection : la perspective prolonge les pixels de bord hors de la
+      // zone, un reste d'encre au bord du canevas (geste, flou) dessinerait une ligne sur la feuille
+      "-vf", `scale=${w}:${h}:flags=bicubic,gblur=sigma=${aa},drawbox=x=0:y=0:w=iw:h=ih:color=black:t=6,perspective=${px(P[0])}:${px(P[1])}:${px(P[2])}:${px(P[3])}:sense=destination:interpolation=cubic,format=gray`,
       "-frames:v", "1", ...raw, alphaRaw,
     ]);
     if (r2.code !== 0) throw new Error(`pose en perspective : ${r2.stderr.slice(-200)}`);
