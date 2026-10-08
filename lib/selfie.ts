@@ -353,11 +353,26 @@ export async function compositeZone(
   const [ink, zone, inr] = await Promise.all([readFile(inkRaw), readFile(zoneRaw), readFile(innerRaw)]);
   const cleaned = cleanInk(ink, zone, inr, w, h);
   await writeFile(cleanRaw, cleaned.alpha);
+  // Rendu « vrai feutre » (verdict du panel du 08/10 : l'encre IA est plate, noire pure, trop nette) :
+  //   - l'encre ASSOMBRIT le papier au lieu de le recouvrir (elle suit sa lumière et son grain),
+  //     noir réaliste (jamais plus noir que ce que la photo permet), légèrement bleuté ;
+  //   - pression variable : des nuages de bruit basse fréquence modulent la densité le long des traits ;
+  //   - bords légèrement baveux (flou léger de l'alpha) pour coller au flou de la photo.
+  // Réglables sans redéploiement : WELCOME_INK (densité max, 0,80), WELCOME_INK_BLUR (0,6 px), WELCOME_INK_PRESSURE (0,45).
+  const inkMax = Math.max(0.3, Math.min(1, Number(process.env.WELCOME_INK) || 0.8));
+  const blur = Math.max(0, Math.min(3, Number(process.env.WELCOME_INK_BLUR ?? 0.6)));
+  const pressure = Math.max(0, Math.min(1, Number(process.env.WELCOME_INK_PRESSURE ?? 0.45)));
+  const k = inkMax.toFixed(3);
+  // Tout en YUV pleine échelle (yuvj444p) : l'encre ne touche que la luminance (Y), la couleur du papier reste
   const graph2 =
-    `[1:v]scale=${g.W}:${g.H}:flags=lanczos,${crop}[r];` +
-    `[r][2:v]alphamerge[ra];[0:v][ra]overlay=format=auto`;
+    `[1:v]${blur > 0 ? `gblur=sigma=${blur.toFixed(2)},` : ""}format=gray[a1];` +
+    `color=c=0x808080:s=24x18:d=1,noise=alls=70:allf=u,scale=${w}:${h}:flags=bicubic,format=gray,` +
+    `lutyuv=y='clip(255-${(pressure * 255).toFixed(0)}/2+(val-128)*${pressure.toFixed(2)},${(255 - pressure * 255).toFixed(0)},255)'[m];` +
+    `[a1][m]blend=all_expr='A*B/255',format=yuvj444p[a3];` +
+    `[0:v]format=yuvj444p[o];` +
+    `[o][a3]blend=c0_expr='A*(1-${k}*B/255)':c1_expr='A':c2_expr='A'`;
   const r2 = await run(bin, [
-    "-y", "-hide_banner", "-i", original, "-i", ai, ...raw, "-s", `${w}x${h}`, "-i", cleanRaw,
+    "-y", "-hide_banner", "-i", original, ...raw, "-s", `${w}x${h}`, "-i", cleanRaw,
     "-filter_complex", graph2, "-frames:v", "1", "-q:v", "3", out,
   ]);
   if (r2.code !== 0) throw new Error(`composition : ${r2.stderr.slice(-300)}`);
