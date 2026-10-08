@@ -48,7 +48,7 @@ export const DEFAULT_SELFIE: SelfieSettings = {
   prompt: "",
   fallback: false,
   // Photo de Sienna du 07/10/2026 : partie haute de la feuille, à l'écart des doigts
-  zone: [[61, 50], [96, 53], [91, 68], [57, 66]],
+  zone: [[61, 50], [96, 53], [89, 65], [57, 63]],
 };
 
 const CFG_KEY = "welcome:selfie:cfg";
@@ -343,7 +343,8 @@ export async function selfieByOpenAi(photo: Buffer, name: string, s: SelfieSetti
       `strokes, following the sheet's angle, perspective and lighting (paper grain, soft shadow). ` +
       `Centered, with generous empty margins: the name takes about two thirds of the width of the editable area ` +
       `and never touches its edges. Keep the paper white and untouched around the name. ` +
-      `Spell it exactly: "${name}". Nothing else changes.` +
+      `Spell it exactly: "${name}". Draw only the ink of the name: no fingers, no shadows, no objects, ` +
+      `no smudges. Nothing else changes.` +
       (s.prompt ? ` ${s.prompt}` : "");
     const form = new FormData();
     form.set("model", OPENAI_MODEL());
