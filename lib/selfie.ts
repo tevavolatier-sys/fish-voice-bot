@@ -882,6 +882,10 @@ export function pickNoteInk(ink: Buffer, w: number, h: number): { alpha: Buffer;
     for (const i of comp) { const x = i % w, y = (i - x) / w; if (x < bx0) bx0 = x; if (x > bx1) bx1 = x; if (y < by0) by0 = y; if (y > by1) by1 = y; }
     const fill = comp.length / ((bx1 - bx0 + 1) * (by1 - by0 + 1));
     if (fill < 0.06 && Math.max(bx1 - bx0, by1 - by0) > 40) continue;
+    // Fil pâle et fin (trait de crayon, pli, poil) : encre moyenne faible → écarté
+    let sum = 0;
+    for (const i of comp) sum += ink[i];
+    if (sum / comp.length < 185 && fill < 0.25) continue;
     comps.push(comp);
   }
   if (!comps.length) return null;
