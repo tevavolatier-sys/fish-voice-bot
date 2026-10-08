@@ -61,7 +61,7 @@ async function handle(a: Record<string, unknown>): Promise<unknown> {
       selfiePhoto = Buffer.from(String(a.image), "base64");
       return { ok: true, bytes: selfiePhoto.length };
     case "selfieSave":
-      selfie = { ...selfie, ...(a.settings as Partial<SelfieSettings>), x: Number((a.settings as SelfieSettings).x ?? selfie.x), y: Number((a.settings as SelfieSettings).y ?? selfie.y), angle: Number((a.settings as SelfieSettings).angle ?? selfie.angle), size: Number((a.settings as SelfieSettings).size ?? selfie.size) };
+      selfie = { ...selfie, ...(a.settings as Partial<SelfieSettings>), x: Number((a.settings as SelfieSettings).x ?? selfie.x), y: Number((a.settings as SelfieSettings).y ?? selfie.y), angle: Number((a.settings as SelfieSettings).angle ?? selfie.angle), size: Number((a.settings as SelfieSettings).size ?? selfie.size), maxWidth: Number((a.settings as SelfieSettings).maxWidth ?? selfie.maxWidth) };
       return { ok: true };
     case "selfieTest": {
       const name = nameByRules(String(a.pseudo ?? ""));

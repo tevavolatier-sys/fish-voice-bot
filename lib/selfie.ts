@@ -18,6 +18,8 @@ export interface SelfieSettings {
   /** Inclinaison (°, + = sens horaire) et taille (% de la largeur de la photo) */
   angle: number;
   size: number;
+  /** Largeur max du prénom (% de la largeur de la photo) : les longs prénoms sont réduits */
+  maxWidth: number;
   /** Couleur du feutre (hex sans #) */
   color: string;
   /** Consigne IA supplémentaire (facultatif) */
@@ -31,6 +33,7 @@ export const DEFAULT_SELFIE: SelfieSettings = {
   y: 66,
   angle: 6,
   size: 17,
+  maxWidth: 36,
   color: "14143a",
   prompt: "",
 };
@@ -60,6 +63,7 @@ export async function saveSelfieSettings(s: Partial<SelfieSettings>): Promise<vo
     y: num(s.y, cur.y, 0, 100),
     angle: num(s.angle, cur.angle, -45, 45),
     size: num(s.size, cur.size, 3, 60),
+    maxWidth: num(s.maxWidth, cur.maxWidth, 5, 100),
     color: /^[0-9a-f]{6}$/i.test(String(s.color ?? "")) ? String(s.color).toLowerCase() : cur.color,
     prompt: String(s.prompt ?? cur.prompt).trim().slice(0, 500),
   };
@@ -112,7 +116,9 @@ export async function selfieByText(photo: Buffer, name: string, s: SelfieSetting
     const out = join(dir, "out.jpg");
     await writeFile(inp, photo);
     const { w, h } = await imageSize(inp);
-    const fontSize = Math.round((w * s.size) / 100);
+    // Caveat : un caractère ≈ 0,42 × la taille de police ; on réduit pour tenir dans la largeur max
+    const maxPx = (w * s.maxWidth) / 100;
+    const fontSize = Math.round(Math.min((w * s.size) / 100, maxPx / (0.42 * Math.max(1, name.length))));
     const cw = Math.round(fontSize * Math.max(3, name.length * 0.75));
     const ch = Math.round(fontSize * 1.8);
     const ow = Math.round(cw * 1.15);

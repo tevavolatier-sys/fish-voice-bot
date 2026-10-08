@@ -309,6 +309,7 @@ details{margin-top:10px}summary{cursor:pointer;color:var(--mute);font-size:13px}
           <div><label>Centre vertical (% hauteur)</label><input id="sfY" type="number" min="0" max="100"></div>
           <div><label>Inclinaison (°)</label><input id="sfAngle" type="number" min="-45" max="45" step="0.5"></div>
           <div><label>Taille (% largeur)</label><input id="sfSize" type="number" min="3" max="60"></div>
+          <div><label>Largeur max du prénom (% largeur)</label><input id="sfMaxW" type="number" min="5" max="100"></div>
         </div>
       </details>
       <div class="row" style="margin-top:12px"><button class="main" id="sfSave">Enregistrer</button>
@@ -462,7 +463,7 @@ document.querySelectorAll("[data-kind]").forEach((card) => {
 });
 
 // ── Selfie avec le prénom ──
-const sfFields = { x: "#sfX", y: "#sfY", angle: "#sfAngle", size: "#sfSize", prompt: "#sfPrompt", mode: "#sfMode" };
+const sfFields = { x: "#sfX", y: "#sfY", angle: "#sfAngle", size: "#sfSize", maxWidth: "#sfMaxW", prompt: "#sfPrompt", mode: "#sfMode" };
 async function loadSelfie() {
   let d; try { d = await call("selfieLoad"); } catch { return; }
   const s = d.settings;
