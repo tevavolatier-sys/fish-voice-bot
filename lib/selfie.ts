@@ -769,6 +769,15 @@ export async function placeNote(photo: Buffer, noteImage: Buffer, s: SelfieSetti
         "-frames:v", "1", ...raw, cropRaw,
       ]);
       if (rw.code !== 0) throw new Error(`geste : ${rw.stderr.slice(-200)}`);
+      // Bordure remise à 0 après le geste (le déplacement peut amener de l'encre au bord ; la
+      // perspective prolongerait ce bord en ligne sur la feuille). Fait en JS : drawbox passait
+      // le canevas en plage limitée (fond à 16 = voile gris sur toute la photo).
+      const moved = Buffer.from(await readFile(cropRaw));
+      for (let b = 0; b < 4; b++) {
+        for (let x = 0; x < cw; x++) { moved[b * cw + x] = 0; moved[(ch - 1 - b) * cw + x] = 0; }
+        for (let y = 0; y < ch; y++) { moved[y * cw + b] = 0; moved[y * cw + cw - 1 - b] = 0; }
+      }
+      await writeFile(cropRaw, moved);
     } else {
       await writeFile(cropRaw, cropBuf);
     }
@@ -794,9 +803,7 @@ export async function placeNote(photo: Buffer, noteImage: Buffer, s: SelfieSetti
     const alphaRaw = join(dir, "alpha.raw");
     const r2 = await run(bin, [
       "-y", "-hide_banner", ...raw, "-s", `${cw}x${ch}`, "-i", cropRaw,
-      // bordure forcée à 0 avant la projection : la perspective prolonge les pixels de bord hors de la
-      // zone, un reste d'encre au bord du canevas (geste, flou) dessinerait une ligne sur la feuille
-      "-vf", `scale=${w}:${h}:flags=bicubic,gblur=sigma=${aa},drawbox=x=0:y=0:w=iw:h=ih:color=black:t=6,perspective=${px(P[0])}:${px(P[1])}:${px(P[2])}:${px(P[3])}:sense=destination:interpolation=cubic,format=gray`,
+      "-vf", `scale=${w}:${h}:flags=bicubic,gblur=sigma=${aa},perspective=${px(P[0])}:${px(P[1])}:${px(P[2])}:${px(P[3])}:sense=destination:interpolation=cubic,format=gray`,
       "-frames:v", "1", ...raw, alphaRaw,
     ]);
     if (r2.code !== 0) throw new Error(`pose en perspective : ${r2.stderr.slice(-200)}`);
