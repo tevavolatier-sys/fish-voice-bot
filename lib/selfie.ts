@@ -285,61 +285,113 @@ export async function zoneMask(dir: string, s: SelfieSettings, w: number, h: num
 }
 
 /**
- * Ne garde de l'image IA que L'ENCRE dans la zone d'écriture, posée sur la vraie photo :
- * un pixel est de l'encre s'il est nettement plus sombre que le même pixel de l'original
- * (le papier rendu par l'IA, même un peu beige, est ignoré ; visage, corps, fond et papier
- * restent pixel pour pixel ceux de l'original).
+ * Ne garde de l'image IA que L'ENCRE DU PRÉNOM dans la zone d'écriture, posée sur la vraie photo.
+ * 1. encre = pixel nettement plus sombre que le même pixel de l'original (le papier rendu par
+ *    l'IA, même un peu beige, est ignoré ; visage, corps, fond et papier restent ceux de l'original) ;
+ * 2. nettoyage : seules les taches d'encre reliées à de l'encre au CŒUR de la zone sont gardées
+ *    (l'IA ajoute parfois un trait ou un point parasite le long du bord du masque) ;
+ * 3. `touch` = part (×255) de la bande de bord couverte par l'encre gardée : > 0 franc = prénom coupé.
  */
-export async function compositeZone(dir: string, original: string, aiImage: Buffer, mask: string, w: number, h: number, g: { W: number; H: number; ox: number; oy: number }): Promise<Buffer> {
+export async function compositeZone(
+  dir: string, original: string, aiImage: Buffer, mask: string, w: number, h: number,
+  g: { W: number; H: number; ox: number; oy: number }, s: SelfieSettings
+): Promise<{ jpeg: Buffer; touch: number; dropped: number }> {
   const ai = join(dir, "ai.img");
   const out = join(dir, "final.jpg");
-  const ink = join(dir, "ink.png"); // carte de l'encre (gris), réutilisée par borderInk()
+  const inkRaw = join(dir, "ink.raw"), zoneRaw = join(dir, "zone.raw"), innerRaw = join(dir, "inner.raw"), cleanRaw = join(dir, "clean.raw");
   await writeFile(ai, aiImage);
-  const graph =
-    `[0:v]split[o1][o2];[o2]format=gray[og];` +
-    `[1:v]scale=${g.W}:${g.H}:flags=lanczos,crop=${w}:${h}:${g.ox}:${g.oy},split[r1][r2];[r2]format=gray[ag];` +
+  const inner = await zoneMask(dir, s, w, h, g, "inner.png", 0.82);
+  const crop = `crop=${w}:${h}:${g.ox}:${g.oy}`;
+  const bin = await ffmpegBinary();
+  const graph1 =
+    `[0:v]format=gray[og];` +
+    `[1:v]scale=${g.W}:${g.H}:flags=lanczos,${crop},format=gray[ag];` +
     // encre = IA plus sombre que l'original d'au moins 40 (rampe douce jusqu'à 100)
     `[ag][og]blend=all_expr='clip((B-A-40)*255/60,0,255)'[ink0];` +
-    `[2:v]crop=${w}:${h}:${g.ox}:${g.oy},alphaextract,negate[z];` +
-    `[ink0][z]blend=all_expr='A*B/255',split[a][inkout];` +
-    `[r1][a]alphamerge[ra];[o1][ra]overlay=format=auto[out]`;
-  const r = await run(await ffmpegBinary(), [
-    "-y", "-hide_banner", "-i", original, "-i", ai, "-i", mask, "-filter_complex", graph,
-    "-map", "[out]", "-frames:v", "1", "-q:v", "3", out,
-    "-map", "[inkout]", "-frames:v", "1", ink,
+    `[2:v]${crop},alphaextract,negate,split[z1][z2];` +
+    `[ink0][z1]blend=all_expr='A*B/255'[ink];` +
+    `[3:v]${crop},alphaextract,negate[in]`;
+  const raw = ["-f", "rawvideo", "-pix_fmt", "gray"];
+  const r1 = await run(bin, [
+    "-y", "-hide_banner", "-i", original, "-i", ai, "-i", mask, "-i", inner, "-filter_complex", graph1,
+    "-map", "[ink]", "-frames:v", "1", ...raw, inkRaw,
+    "-map", "[z2]", "-frames:v", "1", ...raw, zoneRaw,
+    "-map", "[in]", "-frames:v", "1", ...raw, innerRaw,
   ]);
-  if (r.code !== 0) throw new Error(`composition : ${r.stderr.slice(-300)}`);
-  return readFile(out);
+  if (r1.code !== 0) throw new Error(`carte d'encre : ${r1.stderr.slice(-300)}`);
+  const [ink, zone, inr] = await Promise.all([readFile(inkRaw), readFile(zoneRaw), readFile(innerRaw)]);
+  const cleaned = cleanInk(ink, zone, inr, w, h);
+  await writeFile(cleanRaw, cleaned.alpha);
+  const graph2 =
+    `[1:v]scale=${g.W}:${g.H}:flags=lanczos,${crop}[r];` +
+    `[r][2:v]alphamerge[ra];[0:v][ra]overlay=format=auto`;
+  const r2 = await run(bin, [
+    "-y", "-hide_banner", "-i", original, "-i", ai, ...raw, "-s", `${w}x${h}`, "-i", cleanRaw,
+    "-filter_complex", graph2, "-frames:v", "1", "-q:v", "3", out,
+  ]);
+  if (r2.code !== 0) throw new Error(`composition : ${r2.stderr.slice(-300)}`);
+  return { jpeg: await readFile(out), touch: cleaned.touch, dropped: cleaned.dropped };
 }
 
 /**
- * Encre qui touche le bord de la zone (prénom trop grand, coupé) : part (×255) de la bande
- * entre la zone et la zone rétrécie à 82 % couverte d'encre franche. ≈ 0 si tout est dedans
- * (les ombres et nuances du papier, encre « faible », ne comptent pas).
+ * Nettoyage de la carte d'encre (gris 0-255, w×h) : garde les taches d'encre franche (> 140)
+ * reliées (8 voisins) à au moins un pixel du cœur de la zone (`inner`), avec leurs bords doux
+ * (dilatation de 2 px) ; efface le reste (traits parasites le long du bord).
  */
-export async function borderInk(dir: string, s: SelfieSettings, w: number, h: number, g: { W: number; H: number; ox: number; oy: number }): Promise<number> {
-  const ink = join(dir, "ink.png");
-  const outer = join(dir, "mask.png");
-  const inner = await zoneMask(dir, s, w, h, g, "inner.png", 0.82);
-  // Moyennes sur toute l'image : (encre × bande) / (bande) = encre moyenne DANS la bande (0-255)
-  const ff = (p: string) => p.replace(/\\/g, "/").replace(/:/g, "\\:");
-  const stIn = join(dir, "stats-ink.txt");
-  const stBand = join(dir, "stats-band.txt");
-  const graph =
-    `[1:v]crop=${w}:${h}:${g.ox}:${g.oy},alphaextract,negate[z];` +
-    `[2:v]crop=${w}:${h}:${g.ox}:${g.oy},alphaextract,negate[i];` +
-    `[z][i]blend=all_expr='A*(255-B)/255',split[band][band2];` +
-    `[0:v]lutyuv=y='if(gt(val,140),255,0)'[strong];` +
-    `[strong][band]blend=all_expr='A*B/255',signalstats,metadata=print:key=lavfi.signalstats.YAVG:file='${ff(stIn)}'[o1];` +
-    `[band2]signalstats,metadata=print:key=lavfi.signalstats.YAVG:file='${ff(stBand)}'[o2]`;
-  const r = await run(await ffmpegBinary(), [
-    "-y", "-hide_banner", "-i", ink, "-i", outer, "-i", inner, "-filter_complex", graph,
-    "-map", "[o1]", "-f", "null", "-", "-map", "[o2]", "-f", "null", "-",
-  ]);
-  if (r.code !== 0) throw new Error(`contrôle du bord : ${r.stderr.slice(-300)}`);
-  const avg = async (f: string) => Number((await readFile(f, "utf8")).match(/YAVG=([\d.]+)/)?.[1] ?? 0);
-  const [inkAvg, bandAvg] = await Promise.all([avg(stIn), avg(stBand)]);
-  return bandAvg > 0 ? (inkAvg / bandAvg) * 255 : 0;
+export function cleanInk(ink: Buffer, zone: Buffer, inner: Buffer, w: number, h: number): { alpha: Buffer; touch: number; dropped: number } {
+  const n = w * h;
+  const strong = new Uint8Array(n);
+  for (let i = 0; i < n; i++) strong[i] = ink[i] > 140 ? 1 : 0;
+  const keep = new Uint8Array(n);
+  const seen = new Uint8Array(n);
+  const stack: number[] = [];
+  let dropped = 0;
+  for (let start = 0; start < n; start++) {
+    if (!strong[start] || seen[start]) continue;
+    // Composante connexe
+    const comp: number[] = [];
+    let core = false;
+    stack.push(start);
+    seen[start] = 1;
+    while (stack.length) {
+      const i = stack.pop()!;
+      comp.push(i);
+      if (inner[i] > 128) core = true;
+      const x = i % w, y = (i - x) / w;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const nx = x + dx, ny = y + dy;
+          if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+          const j = ny * w + nx;
+          if (strong[j] && !seen[j]) { seen[j] = 1; stack.push(j); }
+        }
+      }
+    }
+    if (core) for (const i of comp) keep[i] = 1;
+    else dropped += comp.length;
+  }
+  // Bords doux : on garde l'encre faible à 2 px d'une tache gardée
+  const dil = new Uint8Array(n);
+  for (let i = 0; i < n; i++) {
+    if (!keep[i]) continue;
+    const x = i % w, y = (i - x) / w;
+    for (let dy = -2; dy <= 2; dy++) {
+      for (let dx = -2; dx <= 2; dx++) {
+        const nx = x + dx, ny = y + dy;
+        if (nx >= 0 && ny >= 0 && nx < w && ny < h) dil[ny * w + nx] = 1;
+      }
+    }
+  }
+  const alpha = Buffer.alloc(n);
+  let band = 0, bandInk = 0;
+  for (let i = 0; i < n; i++) {
+    alpha[i] = dil[i] ? ink[i] : 0;
+    if (zone[i] > 128 && inner[i] <= 128) {
+      band++;
+      if (keep[i]) bandInk++;
+    }
+  }
+  return { alpha, touch: band ? (bandInk / band) * 255 : 0, dropped };
 }
 
 /** Ce qu'OpenAI reçoit : la vignette recadrée, zone modifiable en clair, reste assombri (aperçu dans l'interface) */
@@ -467,10 +519,10 @@ export async function selfieByOpenAi(photo: Buffer, name: string, s: SelfieSetti
       const d = JSON.parse(text) as { data?: { b64_json?: string }[] };
       const b64 = d.data?.[0]?.b64_json;
       if (!b64) throw new Error("OpenAI : réponse sans image");
-      const jpeg = await compositeZone(dir, inp, Buffer.from(b64, "base64"), mask, w, h, g);
-      const touch = await borderInk(dir, sc, w, h, g);
+      const { jpeg, touch, dropped } = await compositeZone(dir, inp, Buffer.from(b64, "base64"), mask, w, h, g, sc);
+      if (dropped > 0) note = `${note ? note + " · " : ""}trait parasite effacé (${dropped} px)`;
       if (!best || touch < best.touch) best = { jpeg, touch };
-      if (touch < 3) break; // rien ne touche le bord : bon (bande vide = 0, prénom coupé ≈ 10-25)
+      if (touch < 8) break; // bon : bande vide = 0, prénom long qui frôle le bord ≈ 5, prénom coupé ≈ 15-25
       note = attempt === 1 ? `prénom coupé au bord (${touch.toFixed(1)}), 2e essai` : `encore coupé au 2e essai (${touch.toFixed(1)})`;
     }
     if (!best) throw new Error(lastRefusal ? `OpenAI 400 : ${lastRefusal}` : "OpenAI : pas le temps de générer le selfie");
@@ -570,7 +622,7 @@ async function finishGemini(photo: Buffer, s: SelfieSettings, img: Buffer): Prom
     const { w, h } = await imageSize(inp);
     const g = { W: w + (w % 2), H: h + (h % 2), ox: 0, oy: 0 };
     const mask = await zoneMask(dir, s, w, h, g);
-    return compositeZone(dir, inp, img, mask, w, h, g);
+    return (await compositeZone(dir, inp, img, mask, w, h, g, s)).jpeg;
   });
 }
 
