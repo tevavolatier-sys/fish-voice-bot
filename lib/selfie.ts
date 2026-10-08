@@ -930,9 +930,13 @@ export function pickNoteInk(ink: Buffer, w: number, h: number): { alpha: Buffer;
     return ymax - ymin + 1;
   });
   const tallest = Math.max(...heights);
+  // Seules les vraies lettres (hautes ET pleines ET pas minuscules) définissent la bande : une
+  // grappe de taches au-dessus du prénom ne doit pas l'étendre
+  const sizesSorted = comps.map((c) => c.length).sort((a, b) => a - b);
+  const medSize = sizesSorted[Math.floor(sizesSorted.length / 2)] || 1;
   let bandTop = h, bandBottom = 0;
   comps.forEach((c, k) => {
-    if (heights[k] < tallest * 0.35) return;
+    if (heights[k] < tallest * 0.35 || c.length < medSize * 0.5) return;
     for (const i of c) { const y = yOf(i); if (y < bandTop) bandTop = y; if (y > bandBottom) bandBottom = y; }
   });
   const margin = Math.max(4, (bandBottom - bandTop) * 0.06);
