@@ -251,7 +251,7 @@ details{margin-top:10px}summary{cursor:pointer;color:var(--mute);font-size:13px}
     <div class="card">
       <div class="head"><h2>Test A/B : vocal ou pas ?</h2>
         <label class="switch"><input type="checkbox" id="abEnabled"> <span id="abLabel">Test</span></label></div>
-      <p class="lead">Trois groupes au hasard (⅓ chacun) : vocal seul, rien, vocal + selfie. On compare ensuite qui a écrit dans les 48 h. Les chatters ne voient rien.</p>
+      <p class="lead">Trois groupes au hasard (⅓ chacun) : vocal seul, rien, selfie seul (+ son texte). On compare ensuite qui a écrit dans les 48 h. Les chatters ne voient rien.</p>
       <div class="stats" id="abStats"></div>
       <div class="ab-wrap"><table id="abTable" class="ab"></table></div>
       <div class="hint" id="abHint" style="margin-top:10px"></div>
@@ -317,7 +317,7 @@ details{margin-top:10px}summary{cursor:pointer;color:var(--mute);font-size:13px}
     <div class="card" id="selfieCard">
       <div class="head"><h2>Selfie « papier avec le prénom »</h2>
         <label class="switch"><input type="checkbox" id="sfEnabled"> <span id="sfLabel">Selfie</span></label></div>
-      <p class="lead">Envoyé avec le vocal : la photo d'elle avec le papier, le prénom du fan écrit dessus. Pseudo illisible → pas de selfie.</p>
+      <p class="lead">Groupe « selfie » du test : la photo d'elle avec le papier, le prénom du fan écrit dessus, envoyée SEULE avec le texte ci-dessous (pas de vocal). Pseudo illisible ou IA en panne → le vocal part à la place.</p>
       <div class="grid2">
         <div>
           <label>Photo de base (elle + papier blanc vide)</label>
@@ -336,6 +336,8 @@ details{margin-top:10px}summary{cursor:pointer;color:var(--mute);font-size:13px}
           <label class="switch" style="margin-top:8px"><input type="checkbox" id="sfFallback"> Si l'IA échoue : poser le texte quand même (sinon pas de selfie)</label>
           <label for="sfPrompt">Consigne IA en plus (facultatif)</label>
           <input id="sfPrompt" placeholder="ex. écris aussi « Bienvenue » au-dessus">
+          <label for="sfCaption">Texte envoyé sous le selfie ({prenom} = prénom du fan)</label>
+          <textarea id="sfCaption" style="min-height:70px"></textarea>
         </div>
       </div>
       <label>Zone d'écriture sur la feuille (liseré rouge montré à l'IA : le prénom reste dedans, loin de la main)</label>
@@ -457,13 +459,13 @@ function renderAb(ab, on) {
   $("#abStats").innerHTML =
     '<div class="stat ok"><b>' + pct(v.rate ?? v.soFar) + '</b><span>répondent AVEC vocal' + (v.rate == null && v.soFar != null ? ' <i>(provisoire)</i>' : '') + '</span></div>' +
     '<div class="stat"><b>' + pct(n.rate ?? n.soFar) + '</b><span>répondent SANS rien' + (n.rate == null && n.soFar != null ? ' <i>(provisoire)</i>' : '') + '</span></div>' +
-    '<div class="stat ok"><b>' + pct(sf.rate ?? sf.soFar) + '</b><span>répondent vocal + SELFIE' + (sf.rate == null && sf.soFar != null ? ' <i>(provisoire)</i>' : '') + '</span></div>' +
+    '<div class="stat ok"><b>' + pct(sf.rate ?? sf.soFar) + '</b><span>répondent avec SELFIE seul' + (sf.rate == null && sf.soFar != null ? ' <i>(provisoire)</i>' : '') + '</span></div>' +
     (() => { const d = ab.diffPts != null ? ab.diffPts : (v.soFar != null && n.soFar != null ? (v.soFar - n.soFar) * 100 : null); const prov = ab.diffPts == null && d != null;
       return '<div class="stat ' + (d > 0 ? "ok" : d < 0 ? "ko" : "") + '"><b>' + (d == null ? "–" : sign(Math.round(d)) + " pts") + '</b><span>écart' + (ab.ratio ? " (×" + ab.ratio.toFixed(1).replace(".0", "") + ")" : "") + (prov ? " <i>(provisoire)</i>" : "") + '</span></div>'; })() +
     '<div class="stat ' + (conf >= 95 ? "ok" : conf >= 80 ? "warn" : "") + '"><b>' + (conf == null ? "–" : conf + " %") + '</b><span>confiance que l’écart est réel<div class="bar"><div style="width:' + (conf || 0) + '%;background:' + (conf >= 95 ? "var(--ok)" : "var(--warn)") + '"></div></div></span></div>';
   const row = (label, a, b, c = "") => "<tr><td>" + label + "</td><td>" + a + "</td><td>" + b + "</td><td>" + c + "</td></tr>";
   const share = (k, g) => g.done ? "<b>" + g[k] + "</b> <span class=hint>(" + Math.round(g[k] / g.done * 100) + " %)</span>" : "–";
-  $("#abTable").innerHTML = "<thead><tr><th></th><th>🎙️ Vocal seul</th><th>🚫 Rien</th><th>🎙️🖼️ Vocal + selfie</th></tr></thead><tbody>" +
+  $("#abTable").innerHTML = "<thead><tr><th></th><th>🎙️ Vocal seul</th><th>🚫 Rien</th><th>🖼️ Selfie seul</th></tr></thead><tbody>" +
     row("Fans terminés (48 h passées)", "<b>" + v.done + "</b>", "<b>" + n.done + "</b>", "<b>" + sf.done + "</b>") +
     row("Ont répondu", share("replied", v), share("replied", n), share("replied", sf)) +
     row("… en moins d’1 h", share("within1h", v), share("within1h", n), share("within1h", sf)) +
@@ -524,7 +526,7 @@ document.querySelectorAll("[data-kind]").forEach((card) => {
 });
 
 // ── Selfie avec le prénom ──
-const sfFields = { x: "#sfX", y: "#sfY", angle: "#sfAngle", size: "#sfSize", maxWidth: "#sfMaxW", prompt: "#sfPrompt", mode: "#sfMode" };
+const sfFields = { x: "#sfX", y: "#sfY", angle: "#sfAngle", size: "#sfSize", maxWidth: "#sfMaxW", prompt: "#sfPrompt", caption: "#sfCaption", mode: "#sfMode" };
 async function loadSelfie() {
   let d; try { d = await call("selfieLoad"); } catch { return; }
   const s = d.settings;

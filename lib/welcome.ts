@@ -9,7 +9,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { enroll, markSent } from "./ab.js";
-import { makeSelfie } from "./selfie.js";
+import { getSelfieSettings, makeSelfie } from "./selfie.js";
 import { ADMIN_ID, modelByKey } from "./config.js";
 import { fanFirstName } from "./fan-name.js";
 import { generateVoice } from "./fish.js";
@@ -395,15 +395,16 @@ export async function handleNewSub(
     }
     const name = await fanFirstName(displayName, username);
     log.name = name;
-    // Voix et selfie « papier avec le prénom » en parallèle ; le selfie n'est jamais bloquant
-    const [mp3, selfieResult] = await Promise.all([
-      voiceForName(name, await getChosenTake(name ? "fixed" : "fallback")),
-      (withSelfie ? makeSelfie(name) : Promise.resolve(null)).catch((err) => {
-        log.selfieError = String((err as Error)?.message ?? err).slice(0, 200);
-        return null;
-      }),
-    ]);
-    let selfie = selfieResult;
+    // Groupe « selfie » (Teva, 08/10) : le selfie SEUL avec son texte, pas de vocal ; si le selfie
+    // échoue (pseudo illisible, IA en panne), le vocal part à la place pour que le fan ait quelque chose
+    let selfie = withSelfie
+      ? await makeSelfie(name).catch((err) => {
+          log.selfieError = String((err as Error)?.message ?? err).slice(0, 200);
+          return null;
+        })
+      : null;
+    if (withSelfie && !selfie && !log.selfieError) log.selfieError = name ? "selfie désactivé ou sans photo" : "pseudo illisible → vocal de repli";
+    const mp3 = selfie ? null : await voiceForName(name, await getChosenTake(name ? "fixed" : "fallback"));
     if (selfie) {
       log.selfie = selfie.how;
       if (selfie.aiError) log.selfieError = selfie.aiError;
@@ -414,22 +415,14 @@ export async function handleNewSub(
     const wait = Math.min(s.delayMax, opts.force ? 0 : room, Math.max(0, left() - 15));
     if (wait > 0) await new Promise((r) => setTimeout(r, Math.random() * wait * 1000));
     if (tooLate()) throw new Error(`Trop tard : ${Math.round(elapsed())} s après l'abonnement (max ${s.maxDelaySec} s)`);
-    if (selfie && left() < 12) {
-      selfie = null;
-      delete log.selfie;
-      log.selfieError = "abandonné : plus assez de temps dans la fonction";
-    }
-    const mediaIds: string[] = [];
-    if (selfie) mediaIds.push(await uploadMedia(accountId, selfie.jpeg, "selfie.jpg"));
-    mediaIds.push(await uploadMedia(accountId, mp3, "voice.mp3"));
-    try {
-      await sendChatMessage(accountId, fanId, s.caption, mediaIds);
-    } catch (err) {
-      // Photo + audio refusés ensemble ? Le vocal (l'essentiel) part seul.
-      if (mediaIds.length < 2) throw err;
-      log.selfieError = `message avec selfie refusé : ${String((err as Error)?.message ?? err).slice(0, 120)}`;
-      delete log.selfie;
-      await sendChatMessage(accountId, fanId, s.caption, [mediaIds[mediaIds.length - 1]]);
+    if (selfie) {
+      const sc = await getSelfieSettings();
+      const text = sc.caption.replace(/\{pr[ée]nom\}/gi, name);
+      const mediaId = await uploadMedia(accountId, selfie.jpeg, "selfie.jpg");
+      await sendChatMessage(accountId, fanId, text, [mediaId]);
+    } else {
+      const mediaId = await uploadMedia(accountId, mp3!, "voice.mp3");
+      await sendChatMessage(accountId, fanId, s.caption, [mediaId]);
     }
     log.ok = true;
     log.status = "sent";

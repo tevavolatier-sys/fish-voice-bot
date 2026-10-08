@@ -26,6 +26,8 @@ export interface SelfieSettings {
   color: string;
   /** Consigne IA supplémentaire (facultatif) */
   prompt: string;
+  /** Texte envoyé sous le selfie ({prenom} = prénom du fan) */
+  caption: string;
   /** Si l'IA échoue : poser le texte (true) ou ne pas envoyer de selfie (false, Teva : « je veux du vrai ») */
   fallback: boolean;
   /**
@@ -46,6 +48,7 @@ export const DEFAULT_SELFIE: SelfieSettings = {
   maxWidth: 32,
   color: "14143a",
   prompt: "",
+  caption: "bcp de gens pensent que je suis un faux profil, donc tiens un ptit selfie de bienvenue perso pour te prouver que je suis pas fake 😘",
   fallback: false,
   // Photo de Sienna du 07/10/2026 : partie haute de la feuille, à l'écart des doigts
   zone: [[61, 50], [96, 53], [89, 65], [57, 63]],
@@ -109,6 +112,7 @@ export async function saveSelfieSettings(s: Partial<SelfieSettings>): Promise<vo
     maxWidth: num(s.maxWidth, cur.maxWidth, 5, 100),
     color: /^[0-9a-f]{6}$/i.test(String(s.color ?? "")) ? String(s.color).toLowerCase() : cur.color,
     prompt: String(s.prompt ?? cur.prompt).trim().slice(0, 500),
+    caption: String(s.caption ?? cur.caption).trim().slice(0, 1000),
     fallback: Boolean(s.fallback ?? cur.fallback),
     zone: cleanZone(s.zone) ?? cur.zone,
   };
