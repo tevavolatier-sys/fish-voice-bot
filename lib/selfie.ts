@@ -700,8 +700,16 @@ export async function placeNote(photo: Buffer, noteImage: Buffer, s: SelfieSetti
     if (r1.code !== 0) throw new Error(`lecture de la note : ${r1.stderr.slice(-200)}`);
     const [lum, bg] = await Promise.all([readFile(lumRaw), readFile(bgRaw)]);
     const n = nw * nh;
+    // Niveau du papier : le flou s'assombrit dans les zones d'encre dense (croisements) et y creusait des
+    // trous blancs (panel 4) → on ne descend jamais sous le papier médian (mesuré sur toute la note)
+    const sorted = Uint8Array.prototype.slice.call(lum, 0, n).sort();
+    const paper = sorted[Math.floor(n * 0.6)];
     const ink = Buffer.alloc(n);
-    for (let i = 0; i < n; i++) ink[i] = Math.max(0, Math.min(255, Math.round(((bg[i] - lum[i] - 35) * 255) / 60)));
+    for (let i = 0; i < n; i++) {
+      const base = Math.max(bg[i], paper - 12);
+      ink[i] = Math.max(0, Math.min(255, Math.round(((base - lum[i] - 35) * 255) / 60)));
+    }
+    closeHoles(ink, nw, nh);
     const picked = pickNoteInk(ink, nw, nh);
     if (!picked) throw new Error("note générée illisible (pas d'encre nette)");
     const { alpha, x0, y0, x1, y1 } = picked;
@@ -749,6 +757,39 @@ export async function placeNote(photo: Buffer, noteImage: Buffer, s: SelfieSetti
 }
 
 const dist = (a: [number, number], b: [number, number]) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+
+/**
+ * Fermeture morphologique de la carte d'encre (dilatation puis érosion, rayon 2) : bouche les
+ * petits trous clairs à l'intérieur des traits (croisements, texture du feutre) sans épaissir.
+ */
+export function closeHoles(ink: Buffer, w: number, h: number, r = 2): void {
+  const n = w * h;
+  const dil = new Uint8Array(n), ero = new Uint8Array(n);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    let m = 0;
+    for (let dy = -r; dy <= r; dy++) {
+      const yy = y + dy; if (yy < 0 || yy >= h) continue;
+      for (let dx = -r; dx <= r; dx++) {
+        const xx = x + dx; if (xx < 0 || xx >= w) continue;
+        const v = ink[yy * w + xx]; if (v > m) m = v;
+      }
+    }
+    dil[y * w + x] = m;
+  }
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    let m = 255;
+    for (let dy = -r; dy <= r; dy++) {
+      const yy = y + dy; if (yy < 0 || yy >= h) { m = 0; continue; }
+      for (let dx = -r; dx <= r; dx++) {
+        const xx = x + dx; if (xx < 0 || xx >= w) { m = 0; continue; }
+        const v = dil[yy * w + xx]; if (v < m) m = v;
+      }
+    }
+    ero[y * w + x] = m;
+  }
+  // on ne fait que REMPLIR : jamais moins d'encre qu'avant
+  for (let i = 0; i < n; i++) if (ero[i] > ink[i]) ink[i] = ero[i];
+}
 
 /**
  * Dans la carte d'encre d'une note générée : garde les taches franches (> 140) assez grosses,
