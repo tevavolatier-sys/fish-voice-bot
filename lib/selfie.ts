@@ -373,17 +373,25 @@ export async function renderInk(dir: string, original: string, alphaRaw: string,
   const raw = ["-f", "rawvideo", "-pix_fmt", "gray"];
   const inkMax = Math.max(0.3, Math.min(1, Number(process.env.WELCOME_INK) || 0.88));
   const blur = Math.max(0, Math.min(3, Number(process.env.WELCOME_INK_BLUR ?? 0.6)));
-  const pressure = Math.max(0, Math.min(1, Number(process.env.WELCOME_INK_PRESSURE ?? 0.3)));
+  const pressure = Math.max(0, Math.min(1, Number(process.env.WELCOME_INK_PRESSURE ?? 0.45)));
+  const fiber = Math.max(0, Math.min(1, Number(process.env.WELCOME_INK_FIBER ?? 0.12)));
   const k = inkMax.toFixed(3);
+  const seed = () => Math.floor(Math.random() * 10_000);
   // Tout en YUV pleine échelle (yuvj444p) : l'encre ne touche que la luminance (Y), la couleur du papier reste
   const graph2 =
-    // cœur du trait saturé (panel 3 : « encre grise, calque à 70 % ») : le flou n'adoucit que les bords
-    `[1:v]${blur > 0 ? `gblur=sigma=${blur.toFixed(2)},` : ""}lutyuv=y='clip(val*1.6,0,255)',format=gray[a1];` +
-    `color=c=0x808080:s=24x18:d=1,noise=alls=70:allf=u,scale=${w}:${h}:flags=bicubic,format=gray,` +
+    // 1) pression (bruit lisse, grille 40×30) appliquée AVANT la saturation : là où la main appuie moins,
+    //    le trait devient aussi plus fin, pas seulement plus clair
+    `color=c=0x808080:s=40x30:d=1,format=gray,noise=alls=70:allf=u:all_seed=${seed()},scale=${w}:${h}:flags=bicubic,` +
     `lutyuv=y='clip(255-${(pressure * 255).toFixed(0)}/2+(val-128)*${pressure.toFixed(2)},${(255 - pressure * 255).toFixed(0)},255)'[m];` +
-    // encre plus chargée là où les traits se superposent ou s'épaississent (croisements, boucles)
-    `[a1]split[a1a][a1b];[a1b]gblur=sigma=5[dense];[a1a][dense]blend=all_expr='min(255,A*(1+0.35*B/255))'[a2];` +
-    `[a2][m]blend=all_expr='A*B/255',format=yuvj444p[a3];` +
+    // 2) bords fibreux : bruit fin ajouté au contour avant un léger lissage (bavure dans les fibres, pas d'aérographe)
+    `color=c=0x808080:s=${w}x${h}:d=1,format=gray,noise=alls=${Math.round(fiber * 60)}:allf=u:all_seed=${seed()},gblur=sigma=0.7[f];` +
+    `[1:v]format=gray[a0];[a0][f]blend=all_expr='if(gt(A,8),clip(A+(B-128)*0.6,0,255),A)'[ar];` +
+    `[ar][m]blend=all_expr='A*B/255',${blur > 0 ? `gblur=sigma=${blur.toFixed(2)},` : ""}lutyuv=y='clip(val*1.7,0,255)'[a1];` +
+    // 3) encre nettement plus chargée aux croisements, boucles et reprises (double couche de feutre)
+    `[a1]split[a1a][a1b];[a1b]gblur=sigma=3[dense];[a1a][dense]blend=all_expr='min(255,A*(0.82+0.6*B/255))'[a2];` +
+    // 4) stries d'encre : 6 % de variation fine à l'intérieur du trait
+    `color=c=0x808080:s=${w}x${h}:d=1,format=gray,noise=alls=40:allf=u:all_seed=${seed()}[st];` +
+    `[a2][st]blend=all_expr='clip(A*(0.94+0.12*(B-128)/255+0.06),0,255)',format=yuvj444p[a3];` +
     `[0:v]format=yuvj444p[o];` +
     `[o][a3]blend=c0_expr='A*(1-${k}*B/255)':c1_expr='A':c2_expr='A'`;
   const r2 = await run(bin, [
@@ -677,7 +685,10 @@ export async function selfieByNote(photo: Buffer, name: string, s: SelfieSetting
   }
   const b64 = (JSON.parse(text) as { data?: { b64_json?: string }[] }).data?.[0]?.b64_json;
   if (!b64) throw new Error("OpenAI : réponse sans image");
-  return placeNote(photo, Buffer.from(b64, "base64"), s);
+  const noteImage = Buffer.from(b64, "base64");
+  // Dépannage / réglage du rendu sans regénérer : la note brute est gardée
+  if (process.env.WELCOME_DEBUG_DIR) await writeFile(join(process.env.WELCOME_DEBUG_DIR, `note-${name}-${Date.now()}.jpg`), noteImage);
+  return placeNote(photo, noteImage, s);
 }
 
 /** Écriture demandée pour la note : bâclée, vivante, jamais calligraphiée (Teva : « trop parfait ») */
@@ -739,10 +750,15 @@ export async function placeNote(photo: Buffer, noteImage: Buffer, s: SelfieSetti
     if (wobble > 0) {
       const amp = Math.round(wobble * ch * 0.08 * 2); // force du bruit (±amp/2 px environ après lissage)
       // (cartes en gris dès la source : passer par du YUV donnait un fond à 16 au lieu de 0 → bandes grises)
-      const field = (seed: number) => `color=c=0x808080:s=8x4:d=1,format=gray,noise=alls=${amp}:allf=u:all_seed=${seed},scale=${cw}:${ch}:flags=bicubic`;
+      // champ lisse (ligne, tailles, pente) + champ fin de petits à-coups (une main, pas une vague)
+      const field = (seed: number, grid: string, a: number) => `color=c=0x808080:s=${grid}:d=1,format=gray,noise=alls=${a}:allf=u:all_seed=${seed},scale=${cw}:${ch}:flags=bicubic`;
+      const seed = () => Math.floor(Math.random() * 10_000);
       const rw = await run(bin, [
         "-y", "-hide_banner", ...raw, "-s", `${cw}x${ch}`, "-i", cropRaw0,
-        "-filter_complex", `${field(Math.floor(Math.random() * 10_000))}[xm];${field(Math.floor(Math.random() * 10_000))}[ym];[0:v][xm][ym]displace=edge=smear`,
+        "-filter_complex",
+        `${field(seed(), "8x4", amp)}[xs];${field(seed(), "32x12", Math.max(2, Math.round(amp * 0.2)))}[xf];[xs][xf]blend=all_expr='clip(A+B-128,0,255)'[xm];` +
+        `${field(seed(), "8x4", amp)}[ys];${field(seed(), "32x12", Math.max(2, Math.round(amp * 0.2)))}[yf];[ys][yf]blend=all_expr='clip(A+B-128,0,255)'[ym];` +
+        `[0:v][xm][ym]displace=edge=smear`,
         "-frames:v", "1", ...raw, cropRaw,
       ]);
       if (rw.code !== 0) throw new Error(`geste : ${rw.stderr.slice(-200)}`);
@@ -853,7 +869,13 @@ export function pickNoteInk(ink: Buffer, w: number, h: number): { alpha: Buffer;
         if (strong[j] && !seen[j]) { seen[j] = 1; stack.push(j); }
       }
     }
-    if (!border && comp.length >= minSize) comps.push(comp);
+    if (border || comp.length < minSize) continue;
+    // Trait fin et long (cadre, souligné, ligne dessinée par l'IA) : grosse boîte presque vide → écarté
+    let bx0 = w, bx1 = 0, by0 = h, by1 = 0;
+    for (const i of comp) { const x = i % w, y = (i - x) / w; if (x < bx0) bx0 = x; if (x > bx1) bx1 = x; if (y < by0) by0 = y; if (y > by1) by1 = y; }
+    const fill = comp.length / ((bx1 - bx0 + 1) * (by1 - by0 + 1));
+    if (fill < 0.06 && Math.max(bx1 - bx0, by1 - by0) > 40) continue;
+    comps.push(comp);
   }
   if (!comps.length) return null;
   // Bande du prénom = étendue verticale des grosses taches (≥ 25 % de la plus grosse) ; le reste
