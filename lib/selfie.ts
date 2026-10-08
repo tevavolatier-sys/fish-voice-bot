@@ -24,6 +24,8 @@ export interface SelfieSettings {
   color: string;
   /** Consigne IA supplémentaire (facultatif) */
   prompt: string;
+  /** Si l'IA échoue : poser le texte (true) ou ne pas envoyer de selfie (false, Teva : « je veux du vrai ») */
+  fallback: boolean;
 }
 
 export const DEFAULT_SELFIE: SelfieSettings = {
@@ -36,12 +38,17 @@ export const DEFAULT_SELFIE: SelfieSettings = {
   maxWidth: 36,
   color: "14143a",
   prompt: "",
+  fallback: false,
 };
 
 const CFG_KEY = "welcome:selfie:cfg";
 const PHOTO_KEY = "welcome:selfie:photo";
 const FONT = join(process.cwd(), "assets", "Caveat-Bold.ttf");
-const IMAGE_MODEL = () => process.env.WELCOME_IMAGE_MODEL?.trim() || "gemini-2.5-flash-image";
+/** Modèles d'image Gemini essayés dans l'ordre (le 1er qui répond gagne) ; WELCOME_IMAGE_MODEL passe devant */
+const IMAGE_MODELS = () =>
+  [process.env.WELCOME_IMAGE_MODEL?.trim(), "gemini-3.1-flash-image", "gemini-2.5-flash-image"].filter(
+    (m, i, a): m is string => Boolean(m) && a.indexOf(m) === i
+  );
 const AI_TIMEOUT_MS = 45_000;
 
 function parse<T>(raw: unknown): T | null {
@@ -66,6 +73,7 @@ export async function saveSelfieSettings(s: Partial<SelfieSettings>): Promise<vo
     maxWidth: num(s.maxWidth, cur.maxWidth, 5, 100),
     color: /^[0-9a-f]{6}$/i.test(String(s.color ?? "")) ? String(s.color).toLowerCase() : cur.color,
     prompt: String(s.prompt ?? cur.prompt).trim().slice(0, 500),
+    fallback: Boolean(s.fallback ?? cur.fallback),
   };
   await getRedis().set(CFG_KEY, JSON.stringify(clean));
 }
@@ -145,30 +153,43 @@ export async function selfieByAi(photo: Buffer, name: string, s: SelfieSettings)
   const key = process.env.GEMINI_API_KEY;
   if (!key) throw new Error("GEMINI_API_KEY manquante");
   const prompt =
-    `Edit this photo. On the blank white sheet of paper she is holding, write exactly the name "${name}" ` +
-    `in handwritten black marker, large, centered on the visible part of the sheet, following the sheet's ` +
-    `perspective and lighting, as if she wrote it herself. Keep EVERYTHING else identical: her face, body, ` +
-    `hair, clothes, hands, background, framing, colors. Output the edited photo only.` +
+    `Photo editing task (inpainting). This is a real selfie of a woman holding a blank white sheet of paper. ` +
+    `Write the name "${name}" on the sheet as if she had written it herself with a black felt-tip marker: ` +
+    `real handwriting, slightly irregular strokes, ink slightly uneven, large and centered on the visible part ` +
+    `of the sheet, following the sheet's angle, perspective, folds and lighting (shadows, paper grain). ` +
+    `Spell the name EXACTLY: "${name}". Change nothing else: same face, skin, hair, body, clothes, hands, ` +
+    `background, framing, colors and image quality. Return only the edited photo.` +
     (s.prompt ? ` ${s.prompt}` : "");
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${IMAGE_MODEL()}:generateContent`,
-    {
+  let lastErr = "";
+  for (const model of IMAGE_MODELS()) {
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
       method: "POST",
       headers: { "x-goog-api-key": key, "Content-Type": "application/json" },
       body: JSON.stringify({
         contents: [{ role: "user", parts: [{ text: prompt }, { inline_data: { mime_type: "image/jpeg", data: photo.toString("base64") } }] }],
-        generationConfig: { responseModalities: ["IMAGE"], temperature: 0.4 },
+        generationConfig: { responseModalities: ["IMAGE"], temperature: 0.3 },
       }),
       signal: AbortSignal.timeout(AI_TIMEOUT_MS),
+    });
+    if (!res.ok) {
+      lastErr = `${model} → ${res.status} ${(await res.text().catch(() => "")).slice(0, 160)}`;
+      if (res.status === 404 || res.status === 400) continue; // modèle inconnu / non supporté : suivant
+      throw new Error(`Gemini image : ${lastErr}`);
     }
-  );
-  if (!res.ok) throw new Error(`Gemini image ${res.status} : ${(await res.text().catch(() => "")).slice(0, 200)}`);
-  const d = (await res.json()) as {
-    candidates?: { content?: { parts?: { inlineData?: { mimeType?: string; data?: string } }[] }; finishReason?: string }[];
-  };
-  const part = d.candidates?.[0]?.content?.parts?.find((p) => p.inlineData?.data);
-  if (!part?.inlineData?.data) throw new Error(`Gemini image : pas d'image (${d.candidates?.[0]?.finishReason ?? "réponse vide"})`);
-  const img = Buffer.from(part.inlineData.data, "base64");
+    const d = (await res.json()) as {
+      candidates?: { content?: { parts?: { inlineData?: { mimeType?: string; data?: string } }[] }; finishReason?: string }[];
+    };
+    const part = d.candidates?.[0]?.content?.parts?.find((p) => p.inlineData?.data);
+    if (!part?.inlineData?.data) {
+      lastErr = `${model} → pas d'image (${d.candidates?.[0]?.finishReason ?? "réponse vide"})`;
+      continue;
+    }
+    return finishAi(Buffer.from(part.inlineData.data, "base64"));
+  }
+  throw new Error(`Gemini image : ${lastErr || "aucun modèle"}`);
+}
+
+async function finishAi(img: Buffer): Promise<Buffer> {
   // Toujours un JPEG raisonnable pour OnlyFans
   return withTmp(async (dir) => {
     const inp = join(dir, "ai.img");
@@ -198,6 +219,7 @@ export async function makeSelfie(
       return { jpeg: await selfieByAi(photo, name, s), how: "ai" };
     } catch (err) {
       const aiError = String((err as Error)?.message ?? err).slice(0, 200);
+      if (!s.fallback && !opts.force) throw new Error(aiError); // pas de « faux » : on n'envoie pas de selfie
       return { jpeg: await selfieByText(photo, name, s), how: "text", aiError };
     }
   }

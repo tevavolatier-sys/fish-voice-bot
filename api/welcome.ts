@@ -298,7 +298,8 @@ details{margin-top:10px}summary{cursor:pointer;color:var(--mute);font-size:13px}
         </div>
         <div>
           <label>Méthode</label>
-          <select id="sfMode"><option value="ai">IA Gemini (réaliste, ~15 s, secours texte si échec)</option><option value="text">Texte posé (1 s, sans IA)</option></select>
+          <select id="sfMode"><option value="ai">IA Gemini (vrai inpainting, ~15 s)</option><option value="text">Texte posé (1 s, sans IA, fait faux)</option></select>
+          <label class="switch" style="margin-top:8px"><input type="checkbox" id="sfFallback"> Si l'IA échoue : poser le texte quand même (sinon pas de selfie)</label>
           <label for="sfPrompt">Consigne IA en plus (facultatif)</label>
           <input id="sfPrompt" placeholder="ex. écris aussi « Bienvenue » au-dessus">
         </div>
@@ -467,12 +468,12 @@ const sfFields = { x: "#sfX", y: "#sfY", angle: "#sfAngle", size: "#sfSize", max
 async function loadSelfie() {
   let d; try { d = await call("selfieLoad"); } catch { return; }
   const s = d.settings;
-  $("#sfEnabled").checked = s.enabled;
+  $("#sfEnabled").checked = s.enabled; $("#sfFallback").checked = s.fallback;
   $("#sfLabel").textContent = s.enabled ? "Selfie : ACTIF" : "Selfie : arrêté";
   for (const k in sfFields) if (document.activeElement !== $(sfFields[k])) $(sfFields[k]).value = s[k];
   $("#sfPhotoState").innerHTML = d.hasPhoto ? "✓ Photo installée" : '<span class="ko">Aucune photo : choisis le selfie et clique « Installer ».</span>';
 }
-const readSelfie = () => { const o = { enabled: $("#sfEnabled").checked }; for (const k in sfFields) o[k] = $(sfFields[k]).value; return o; };
+const readSelfie = () => { const o = { enabled: $("#sfEnabled").checked, fallback: $("#sfFallback").checked }; for (const k in sfFields) o[k] = $(sfFields[k]).value; return o; };
 $("#sfEnabled").onchange = async (e) => { e.target.disabled = true; try { await call("selfieSave", { settings: { enabled: e.target.checked } }); } catch (err) { alert(err.message); } await loadSelfie(); e.target.disabled = false; };
 $("#sfSave").onclick = async (e) => {
   e.target.disabled = true;
