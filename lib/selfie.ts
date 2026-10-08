@@ -53,6 +53,8 @@ export const DEFAULT_SELFIE: SelfieSettings = {
 
 const CFG_KEY = "welcome:selfie:cfg";
 const PHOTO_KEY = "welcome:selfie:photo";
+/** Photo d'un mot écrit par la modèle elle-même : l'IA copie SON écriture (facultatif) */
+const HANDWRITING_KEY = "welcome:selfie:handwriting";
 const FONT = join(process.cwd(), "assets", "Caveat-Bold.ttf");
 /**
  * Modèles d'image Gemini essayés dans l'ordre (IDs stables au 07/10/2026 ; les « -preview » sont
@@ -173,6 +175,35 @@ export async function getSelfiePhoto(): Promise<Buffer | null> {
 /** Une photo de base est-elle installée ? (sans la télécharger) */
 export async function hasSelfiePhoto(): Promise<boolean> {
   return (await getRedis().exists(PHOTO_KEY)) === 1;
+}
+
+export async function getHandwriting(): Promise<Buffer | null> {
+  const b64 = await getRedis().get<string>(HANDWRITING_KEY);
+  return b64 ? Buffer.from(b64, "base64") : null;
+}
+export async function hasHandwriting(): Promise<boolean> {
+  return (await getRedis().exists(HANDWRITING_KEY)) === 1;
+}
+export async function clearHandwriting(): Promise<void> {
+  await getRedis().del(HANDWRITING_KEY);
+}
+/** Échantillon d'écriture : ramené à 1024 px max, JPEG compressé jusqu'à tenir dans Redis */
+export async function saveHandwriting(image: Buffer): Promise<{ bytes: number }> {
+  const b64 = await withTmp(async (dir) => {
+    const inp = join(dir, "in.img");
+    await writeFile(inp, image);
+    const bin = await ffmpegBinary();
+    for (const q of [4, 6, 8, 11, 15]) {
+      const out = join(dir, `out-${q}.jpg`);
+      const r = await run(bin, ["-y", "-hide_banner", "-i", inp, "-frames:v", "1", "-vf", "scale='min(1024,iw)':-2", "-q:v", String(q), out]);
+      if (r.code !== 0) throw new Error(`Échantillon illisible : ${r.stderr.slice(-200)}`);
+      const b = (await readFile(out)).toString("base64");
+      if (b.length <= 700_000) return b;
+    }
+    throw new Error("Échantillon trop lourd : envoie une photo plus simple.");
+  });
+  await getRedis().set(HANDWRITING_KEY, b64);
+  return { bytes: Math.round((b64.length * 3) / 4) };
 }
 
 async function withTmp<T>(fn: (dir: string) => Promise<T>): Promise<T> {
@@ -444,6 +475,8 @@ export interface AiOverrides {
   model?: string;
   quality?: string;
   style?: string;
+  /** Ignorer l'échantillon d'écriture (comparaison) */
+  noReference?: boolean;
 }
 
 /** Description par défaut de l'écriture (ce qui rend « fait à la main ») */
@@ -472,9 +505,15 @@ export async function selfieByOpenAi(photo: Buffer, name: string, s: SelfieSetti
     const mask = await zoneMask(dir, sc, w, h, g);
     const paddedBuf = await readFile(padded);
     const maskBuf = await readFile(mask);
+    // Vraie écriture de la modèle (si installée) : passée en 2e image, l'IA l'imite
+    const handwriting = ai.noReference ? null : await getHandwriting();
     const basePrompt =
       `In the editable area (the blank white sheet of paper she is holding), write the name "${name}" ` +
       `${(ai.style?.trim() || process.env.WELCOME_STYLE?.trim() || DEFAULT_STYLE)}. ` +
+      (handwriting
+        ? `The second image shows HER real handwriting: reproduce that exact handwriting style (letter shapes, slant, ` +
+          `stroke thickness, spacing, the way the marker bleeds), as if the same hand wrote the name. `
+        : "") +
       `SMALL handwriting: the name spans about half of the editable area's width and its letters are at most ` +
       `one third of the area's height, centered, with large empty margins all around; it must never touch the ` +
       `edges of the area. Keep the paper white and untouched around the name. ` +
@@ -491,7 +530,12 @@ export async function selfieByOpenAi(photo: Buffer, name: string, s: SelfieSetti
       const form = new FormData();
       form.set("model", ai.model?.trim() || OPENAI_MODEL());
       form.set("prompt", prompt);
-      form.set("image", new Blob([new Uint8Array(paddedBuf)], { type: "image/png" }), "photo.png");
+      if (handwriting) {
+        form.append("image[]", new Blob([new Uint8Array(paddedBuf)], { type: "image/png" }), "photo.png");
+        form.append("image[]", new Blob([new Uint8Array(handwriting)], { type: "image/jpeg" }), "handwriting.jpg");
+      } else {
+        form.set("image", new Blob([new Uint8Array(paddedBuf)], { type: "image/png" }), "photo.png");
+      }
       form.set("mask", new Blob([new Uint8Array(maskBuf)], { type: "image/png" }), "mask.png");
       form.set("size", g.W === g.H ? "1024x1024" : g.W < g.H ? "1024x1536" : "1536x1024");
       form.set("quality", ai.quality?.trim() || OPENAI_QUALITY());

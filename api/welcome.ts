@@ -4,7 +4,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { abReset, abStats } from "../lib/ab.js";
 import { fanFirstName, llmProviders } from "../lib/fan-name.js";
-import { aiProviders, getSelfiePhoto, getSelfieSettings, hasSelfiePhoto, makeSelfie, saveSelfiePhoto, saveSelfieSettings, selfieGuide, selfieMaskPreview, type SelfieSettings } from "../lib/selfie.js";
+import { aiProviders, clearHandwriting, getSelfiePhoto, getSelfieSettings, hasHandwriting, hasSelfiePhoto, makeSelfie, saveHandwriting, saveSelfiePhoto, saveSelfieSettings, selfieGuide, selfieMaskPreview, type SelfieSettings } from "../lib/selfie.js";
 import { ensureWebhook, requestsThisMonth } from "../lib/onlyfans.js";
 import { getRedis } from "../lib/redis.js";
 import {
@@ -89,7 +89,7 @@ export async function POST(req: Request): Promise<Response> {
         return Response.json({ ok: true, name, audio: mp3.toString("base64") });
       }
       case "selfieLoad":
-        return Response.json({ ok: true, settings: await getSelfieSettings(), hasPhoto: await hasSelfiePhoto(), providers: aiProviders() });
+        return Response.json({ ok: true, settings: await getSelfieSettings(), hasPhoto: await hasSelfiePhoto(), hasHandwriting: await hasHandwriting(), providers: aiProviders() });
       case "selfiePhoto": {
         const b64 = String(a.image ?? "");
         if (b64.length < 1000 || b64.length > 5_500_000) throw new Error("Photo invalide (max 4 Mo après réduction).");
@@ -116,10 +116,17 @@ export async function POST(req: Request): Promise<Response> {
         const img = a.style === "outline" ? await selfieGuide(photo, cfg) : await selfieMaskPreview(photo, cfg);
         return Response.json({ ok: true, image: img.toString("base64") });
       }
+      case "selfieHandwriting": {
+        // Échantillon de la vraie écriture de la modèle (base64) ; vide = retirer
+        const b64 = String(a.image ?? "");
+        if (!b64) { await clearHandwriting(); return Response.json({ ok: true, removed: true }); }
+        if (b64.length < 1000 || b64.length > 5_500_000) throw new Error("Image invalide (max 4 Mo après réduction).");
+        return Response.json({ ok: true, ...(await saveHandwriting(Buffer.from(b64, "base64"))) });
+      }
       case "selfieTest": {
         const name = await fanFirstName(String(a.pseudo ?? ""));
         if (!name) return Response.json({ ok: true, name: "", image: null });
-        const ai = { model: String(a.model ?? ""), quality: String(a.quality ?? ""), style: String(a.style ?? "") };
+        const ai = { model: String(a.model ?? ""), quality: String(a.quality ?? ""), style: String(a.style ?? ""), noReference: Boolean(a.noReference) };
         const r = await makeSelfie(name, { force: true, mode: a.mode === "text" ? "text" : a.mode === "ai" ? "ai" : undefined, ai });
         if (!r) throw new Error("Aucune photo de base : charge d'abord le selfie.");
         return Response.json({ ok: true, name, how: r.how, provider: r.provider, note: r.note, aiError: r.aiError, image: r.jpeg.toString("base64") });
@@ -316,6 +323,11 @@ details{margin-top:10px}summary{cursor:pointer;color:var(--mute);font-size:13px}
           <label>Photo de base (elle + papier blanc vide)</label>
           <div class="row"><input type="file" id="sfFile" accept="image/*" style="flex:1"><button class="sm" id="sfUpload">Installer</button></div>
           <div class="hint" id="sfPhotoState"></div>
+        </div>
+        <div>
+          <label>Vraie écriture de la modèle (facultatif : un mot écrit par elle au feutre, l'IA copie son écriture)</label>
+          <div class="row"><input type="file" id="sfHwFile" accept="image/*" style="flex:1"><button class="sm" id="sfHwUpload">Installer</button><button class="sm" id="sfHwClear">Retirer</button></div>
+          <div class="hint" id="sfHwState"></div>
         </div>
         <div>
           <label>Méthode</label>
@@ -518,6 +530,7 @@ async function loadSelfie() {
   for (const k in sfFields) if (document.activeElement !== $(sfFields[k])) $(sfFields[k]).value = s[k];
   for (const i of zoneInputs()) { const [p, c] = i.dataset.z.split(",").map(Number); if (document.activeElement !== i) i.value = s.zone[p][c]; }
   $("#sfPhotoState").innerHTML = d.hasPhoto ? "✓ Photo installée" : '<span class="ko">Aucune photo : choisis le selfie et clique « Installer ».</span>';
+  $("#sfHwState").innerHTML = d.hasHandwriting ? "✓ Échantillon d'écriture installé : l'IA imite son écriture" : "Aucun échantillon : écriture générique « feutre à la main ».";
   $("#sfProviders").innerHTML = d.providers.length ? "Clés IA présentes : " + d.providers.map((p) => p === "openai" ? "OpenAI (≈ 0,01 $/selfie)" : "Gemini (≈ 0,034 $/selfie)").join(", ") + " — essayées dans cet ordre." : '<span class="ko">Aucune clé IA image sur Vercel (OPENAI_API_KEY ou GEMINI_API_KEY).</span>';
 }
 const zoneInputs = () => [...document.querySelectorAll("[data-z]")];
@@ -548,6 +561,15 @@ $("#sfUpload").onclick = async (e) => {
   catch (err) { say($("#sfMsg"), err.message, false); }
   e.target.disabled = false;
 };
+$("#sfHwUpload").onclick = async (e) => {
+  const f = $("#sfHwFile").files[0];
+  if (!f) return say($("#sfMsg"), "Choisis d'abord la photo de son écriture.", false);
+  e.target.disabled = true; say($("#sfMsg"), "Envoi de l'échantillon…", true);
+  try { const r = await call("selfieHandwriting", { image: await imageB64(f) }); say($("#sfMsg"), "Échantillon installé ✓ (" + Math.round(r.bytes / 1024) + " Ko). Essaie avec un pseudo.", true); loadSelfie(); }
+  catch (err) { say($("#sfMsg"), err.message, false); }
+  e.target.disabled = false;
+};
+$("#sfHwClear").onclick = async () => { try { await call("selfieHandwriting", { image: "" }); say($("#sfMsg"), "Échantillon retiré.", true); loadSelfie(); } catch (err) { say($("#sfMsg"), err.message, false); } };
 $("#sfTest").onclick = async (e) => {
   const pseudo = $("#sfPseudo").value.trim();
   if (!pseudo) return say($("#sfMsg"), "Écris un pseudo.", false);

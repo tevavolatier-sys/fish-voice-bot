@@ -56,7 +56,7 @@ async function handle(a: Record<string, unknown>): Promise<unknown> {
     case "abReset":
       return { ok: true };
     case "selfieLoad":
-      return { ok: true, settings: selfie, hasPhoto: Boolean(selfiePhoto), providers: [] };
+      return { ok: true, settings: selfie, hasPhoto: Boolean(selfiePhoto), hasHandwriting: false, providers: [] };
     case "selfiePhoto":
       selfiePhoto = Buffer.from(String(a.image), "base64");
       return { ok: true, bytes: selfiePhoto.length };
