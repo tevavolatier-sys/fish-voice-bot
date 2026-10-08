@@ -45,7 +45,7 @@ export const DEFAULT_SELFIE: SelfieSettings = {
   prompt: "",
   fallback: false,
   // Photo de Sienna du 07/10/2026 : partie haute de la feuille, à l'écart des doigts
-  zone: [[61, 50], [97, 53], [93, 70], [57, 67]],
+  zone: [[61, 50], [96, 53], [91, 68], [57, 66]],
 };
 
 const CFG_KEY = "welcome:selfie:cfg";
@@ -100,7 +100,7 @@ function cleanZone(z: unknown): [number, number][] | null {
 
 /**
  * Image guide : la photo avec la zone d'écriture en liseré rouge (pour l'IA et pour l'aperçu).
- * Un cadre rouge plein écran est déformé (perspective) vers les 4 coins, puis posé sur la photo.
+ * Un cadre rouge sur fond vert est déformé (perspective) vers les 4 coins (le vert, étiré hors zone, est rendu transparent), puis posé sur la photo.
  */
 export async function selfieGuide(photo: Buffer, s: SelfieSettings): Promise<Buffer> {
   return withTmp(async (dir) => {
@@ -112,7 +112,7 @@ export async function selfieGuide(photo: Buffer, s: SelfieSettings): Promise<Buf
     const [tl, tr, br, bl] = s.zone;
     const t = Math.max(3, Math.round(w / 150));
     const graph =
-      `color=c=0x00ff00:s=${w}x${h}:d=1,drawbox=x=0:y=0:w=iw:h=ih:color=red:t=${t},format=yuv444p,` +
+      `color=c=0x00ff00:s=${w}x${h}:d=1,drawbox=x=iw*0.03:y=ih*0.03:w=iw*0.94:h=ih*0.94:color=red:t=${t},format=yuv444p,` +
       `perspective=${px(tl)}:${px(tr)}:${px(bl)}:${px(br)}:sense=destination,format=rgba,colorkey=0x00ff00:0.3:0.1[g];` +
       `[0:v][g]overlay=format=auto`;
     const r = await run(await ffmpegBinary(), ["-y", "-hide_banner", "-i", inp, "-filter_complex", graph, "-frames:v", "1", "-q:v", "3", out]);
