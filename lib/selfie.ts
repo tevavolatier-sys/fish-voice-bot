@@ -359,7 +359,7 @@ export async function compositeZone(
   //   - pression variable : des nuages de bruit basse fréquence modulent la densité le long des traits ;
   //   - bords légèrement baveux (flou léger de l'alpha) pour coller au flou de la photo.
   // Réglables sans redéploiement : WELCOME_INK (densité max, 0,80), WELCOME_INK_BLUR (0,6 px), WELCOME_INK_PRESSURE (0,45).
-  const inkMax = Math.max(0.3, Math.min(1, Number(process.env.WELCOME_INK) || 0.8));
+  const inkMax = Math.max(0.3, Math.min(1, Number(process.env.WELCOME_INK) || 0.84));
   const blur = Math.max(0, Math.min(3, Number(process.env.WELCOME_INK_BLUR ?? 0.6)));
   const pressure = Math.max(0, Math.min(1, Number(process.env.WELCOME_INK_PRESSURE ?? 0.45)));
   const k = inkMax.toFixed(3);
@@ -368,7 +368,9 @@ export async function compositeZone(
     `[1:v]${blur > 0 ? `gblur=sigma=${blur.toFixed(2)},` : ""}format=gray[a1];` +
     `color=c=0x808080:s=24x18:d=1,noise=alls=70:allf=u,scale=${w}:${h}:flags=bicubic,format=gray,` +
     `lutyuv=y='clip(255-${(pressure * 255).toFixed(0)}/2+(val-128)*${pressure.toFixed(2)},${(255 - pressure * 255).toFixed(0)},255)'[m];` +
-    `[a1][m]blend=all_expr='A*B/255',format=yuvj444p[a3];` +
+    // encre plus chargée là où les traits se superposent ou s'épaississent (croisements, boucles)
+    `[a1]split[a1a][a1b];[a1b]gblur=sigma=5[dense];[a1a][dense]blend=all_expr='min(255,A*(1+0.35*B/255))'[a2];` +
+    `[a2][m]blend=all_expr='A*B/255',format=yuvj444p[a3];` +
     `[0:v]format=yuvj444p[o];` +
     `[o][a3]blend=c0_expr='A*(1-${k}*B/255)':c1_expr='A':c2_expr='A'`;
   const r2 = await run(bin, [
@@ -496,8 +498,11 @@ export interface AiOverrides {
 
 /** Description par défaut de l'écriture (ce qui rend « fait à la main ») */
 export const DEFAULT_STYLE =
-  "as if she had written it herself with a black felt-tip marker: real handwriting, slightly irregular " +
-  "strokes, following the sheet's angle, perspective and lighting (paper grain, soft shadow)";
+  "in flowing cursive handwriting (joined letters) with a thick black felt-tip marker (wide strokes), the quick " +
+  "everyday handwriting of a 22-year-old woman: natural rightward slant, letters of uneven size, wobbly baseline, " +
+  "pressure that varies along each stroke (darker where she pressed, lighter and slightly dry where the pen moved " +
+  "fast), ink bleeding a little into the paper fibers, one or two tiny imperfections; it must look like a real " +
+  "person wrote it in two seconds, never like a font";
 
 export async function selfieByOpenAi(photo: Buffer, name: string, s: SelfieSettings, budgetMs: number, ai: AiOverrides = {}): Promise<{ jpeg: Buffer; note?: string }> {
   const key = process.env.OPENAI_API_KEY;
