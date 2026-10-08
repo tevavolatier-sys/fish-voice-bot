@@ -14,8 +14,9 @@ export interface Glyph {
   h: number;
   /** Décalage du bas de la lettre sous la ligne de base de sa rangée (px, ≥ 0 : jambage) */
   below: number;
-  /** Hauteur de référence de la rangée (médiane des lettres sans jambage), pour l'échelle */
+  /** Hauteur de référence de la rangée : hauteur de capitale (majuscules) ou hauteur d'x (minuscules) */
   rowHeight: number;
+  upper: boolean;
 }
 
 export interface GlyphSheet {
@@ -177,7 +178,9 @@ export async function sheetToGlyphs(sheet: Buffer, order = SHEET_ORDER): Promise
     const bottoms = row.map((c) => c.y1).sort((a, b) => a - b);
     const baseline = bottoms[Math.floor(bottoms.length / 2)];
     const hs = row.map((c) => c.y1 - c.y0 + 1).sort((a, b) => a - b);
-    const rowHeight = hs[Math.floor(hs.length / 2)];
+    // majuscules : médiane ; minuscules : 30e percentile ≈ hauteur d'x (les lettres courtes dominent)
+    const upper = /[A-Z]/.test(order[k] ?? "");
+    const rowHeight = upper ? hs[Math.floor(hs.length / 2)] : hs[Math.floor(hs.length * 0.3)];
     for (const c of row) {
       const ch = order[k++];
       if (!ch) break;
@@ -185,7 +188,7 @@ export async function sheetToGlyphs(sheet: Buffer, order = SHEET_ORDER): Promise
       const alpha = Buffer.alloc(gw * gh);
       // on garde aussi l'encre douce (bords) autour de la composante : copie de la boîte entière
       for (let y = 0; y < gh; y++) ink.copy(alpha, y * gw, (c.y0 + y) * w + c.x0, (c.y0 + y) * w + c.x0 + gw);
-      (glyphs[ch] ??= []).push({ alpha, w: gw, h: gh, below: Math.max(0, c.y1 - baseline), rowHeight });
+      (glyphs[ch] ??= []).push({ alpha, w: gw, h: gh, below: Math.max(0, c.y1 - baseline), rowHeight, upper });
     }
   }
   return { glyphs, rows: counts };
@@ -214,19 +217,20 @@ function resample(src: Buffer, sw: number, sh: number, dw: number, dh: number): 
  * Renvoie une carte d'encre (gris) avec une marge, prête pour lib/selfie.ts placeInk().
  */
 export function assembleName(sheet: GlyphSheet, name: string, opts: { height?: number; jitter?: number } = {}): { alpha: Buffer; w: number; h: number } | null {
-  const H = opts.height ?? 140; // hauteur cible d'une lettre « normale » (px)
+  const H = opts.height ?? 100; // hauteur d'x cible (px)
   const jitter = opts.jitter ?? 0.06;
   const rnd = (a: number) => (Math.random() * 2 - 1) * a;
   const parts: { g: Glyph; scale: number; dy: number }[] = [];
   for (const chRaw of name) {
     const ch = sheet.glyphs[chRaw] ? chRaw : sheet.glyphs[chRaw.toLowerCase()] ? chRaw.toLowerCase() : sheet.glyphs[chRaw.toUpperCase()] ? chRaw.toUpperCase() : null;
     if (!ch) {
-      if (chRaw === " " || chRaw === "-") { parts.push({ g: { alpha: Buffer.alloc(1), w: 1, h: 1, below: 0, rowHeight: 1 }, scale: 0, dy: 0 }); continue; }
+      if (chRaw === " " || chRaw === "-") { parts.push({ g: { alpha: Buffer.alloc(1), w: 1, h: 1, below: 0, rowHeight: 1, upper: false }, scale: 0, dy: 0 }); continue; }
       return null; // lettre absente de la feuille
     }
     const variants = sheet.glyphs[ch];
     const g = variants[Math.floor(Math.random() * variants.length)];
-    parts.push({ g, scale: (H / g.rowHeight) * (1 + rnd(jitter)), dy: rnd(jitter * H) });
+    // hauteur d'x = H ; une capitale fait ≈ 1,45 × la hauteur d'x
+    parts.push({ g, scale: ((g.upper ? H * 1.45 : H) / g.rowHeight) * (1 + rnd(jitter)), dy: rnd(jitter * H) });
   }
   // Boîte : largeur = somme des lettres + espaces ; hauteur = plus haute lettre + jambages + marges
   const gap = H * 0.14;
