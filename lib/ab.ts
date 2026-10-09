@@ -76,6 +76,29 @@ export async function recordRevenue(accountId: string, fanId: string, amount: nu
   return true;
 }
 
+/**
+ * Rattrapage du CA (rétroactif) : pour une tranche de fans du test, lit leur dépense sur OF et
+ * la stocke comme CA (remplace la somme des webhooks : le total OF les inclut déjà).
+ */
+export async function backfillRevenue(accountId: string, offset: number, limit: number, spend: (fanId: string) => Promise<number | null>): Promise<{ done: number; total: number; next: number | null; errors: number }> {
+  const r = getRedis();
+  const all = (await r.hgetall<Record<string, string | AbEntry>>(key(accountId))) ?? {};
+  const ids = Object.keys(all).sort();
+  const slice = ids.slice(offset, offset + limit);
+  let errors = 0;
+  for (const id of slice) {
+    try {
+      const v = await spend(id);
+      if (v == null) { errors++; continue; }
+      const cur = parse(await r.hget(key(accountId), id));
+      if (!cur) continue;
+      await r.hset(key(accountId), { [id]: JSON.stringify({ ...cur, rev: v, buys: v > 0 ? Math.max(1, cur.buys ?? 0) : 0, bf: 1 }) });
+    } catch { errors++; }
+  }
+  const next = offset + slice.length < ids.length ? offset + slice.length : null;
+  return { done: offset + slice.length, total: ids.length, next, errors };
+}
+
 export interface AbGroupStats {
   /** Fans dont la fenêtre de 72 h est terminée (seuls eux comptent) */
   done: number;

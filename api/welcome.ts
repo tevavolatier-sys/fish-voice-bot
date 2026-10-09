@@ -2,10 +2,10 @@
 // GET  → la page (aucune donnée dedans)
 // POST → actions, protégées par le mot de passe WELCOME_ADMIN_PASSWORD (Vercel)
 import { timingSafeEqual } from "node:crypto";
-import { abReset, abStats } from "../lib/ab.js";
+import { abReset, abStats, backfillRevenue } from "../lib/ab.js";
 import { fanFirstName, llmProviders } from "../lib/fan-name.js";
 import { aiProviders, clearHandwriting, getSelfiePhoto, getSelfieSettings, hasHandwriting, hasSelfiePhoto, makeSelfie, saveHandwriting, saveSelfiePhoto, saveSelfieSettings, selfieGuide, selfieMaskPreview, type SelfieSettings } from "../lib/selfie.js";
-import { ensureWebhook, requestsThisMonth } from "../lib/onlyfans.js";
+import { ensureWebhook, getFanSpend, requestsThisMonth } from "../lib/onlyfans.js";
 import { getRedis } from "../lib/redis.js";
 import {
   MONTHLY_LIMIT,
@@ -52,6 +52,13 @@ export async function POST(req: Request): Promise<Response> {
         ]);
         const ab = settings.accountId ? await abStats(settings.accountId) : null;
         return Response.json({ ok: true, settings, takes: { fixed, fallback }, used, limit: MONTHLY_LIMIT, stopAt: STOP_AT, log, ab });
+      }
+      case "abBackfill": {
+        // CA rétroactif des fans du test, par tranches (une fonction Vercel = 60 s max)
+        const s = await getWelcomeSettings();
+        if (!s.accountId) throw new Error("compte acct_ manquant");
+        const r = await backfillRevenue(s.accountId, Number(a.offset) || 0, Math.min(40, Number(a.limit) || 30), (id) => getFanSpend(s.accountId, id));
+        return Response.json({ ok: true, ...r });
       }
       case "abReset": {
         const s = await getWelcomeSettings();

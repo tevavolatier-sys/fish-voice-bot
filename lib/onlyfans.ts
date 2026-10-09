@@ -89,6 +89,16 @@ export async function sendChatMessage(
   }
 }
 
+/** Dépense d'un fan chez la créatrice (hors prix de l'abonnement), d'après son profil OF */
+export async function getFanSpend(accountId: string, fanId: string): Promise<number | null> {
+  const r = await api<{ data?: { subscribedOnData?: Record<string, unknown> } }>(accountId, `/users/${fanId}`, { method: "GET" });
+  const d = r.data?.subscribedOnData;
+  if (!d) return null;
+  const total = Number(d.totalSumm ?? 0) || 0;
+  const subs = Number(d.subscribesSumm ?? 0) || 0;
+  return Math.max(0, Math.round((total - subs) * 100) / 100);
+}
+
 // ── Webhooks OnlyFansAPI (API globale, pas par compte) ──────────────────────
 export interface OfWebhook {
   id: string;
