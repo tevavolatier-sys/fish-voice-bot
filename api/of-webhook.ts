@@ -1,10 +1,10 @@
-// Webhooks OnlyFansAPI : subscriptions.new (vocal de bienvenue) et messages.received (test A/B).
+// Webhooks OnlyFansAPI : subscriptions.new (vocal de bienvenue), messages.received et transactions.new (test A/B).
 // Déclaré/mis à jour automatiquement par l'action « webhookSetup » de api/welcome.ts
 // (API OnlyFansAPI /webhooks), avec le secret ONLYFANS_WEBHOOK_SECRET.
 // Une 401 répétée (mauvais secret) met le webhook en pause après 20 échecs (événements perdus).
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { waitUntil } from "@vercel/functions";
-import { recordReply } from "../lib/ab.js";
+import { recordReply, recordRevenue } from "../lib/ab.js";
 import { getRedis } from "../lib/redis.js";
 import { getWelcomeSettings, handleNewSub } from "../lib/welcome.js";
 
@@ -74,8 +74,17 @@ export async function POST(req: Request): Promise<Response> {
     const age = Date.now() - parsed;
     const subscribedAt = Number.isFinite(parsed) && age > -60_000 && age < 10 * 60_000 ? parsed : Date.now();
     if (fan.id) waitUntil(handleNewSub(str(body?.account_id), fan.id, fan.name, fan.username, { subscribedAt }));
+  } else if (body?.event === "transactions.new") {
+    // Test A/B : CA du fan (tip, PPV, extension…) dans sa fenêtre
+    const p = body?.payload ?? {};
+    const fan = fanOf(p);
+    const accountId = str(body?.account_id);
+    const amount = Number(p?.amount?.gross ?? p?.amount_gross ?? p?.gross ?? p?.amount ?? p?.price ?? 0) || 0;
+    if (fan.id && accountId && amount > 0) {
+      waitUntil(getWelcomeSettings().then((s) => (s.accountId === accountId ? recordRevenue(accountId, fan.id, amount) : false)));
+    }
   } else if (body?.event === "messages.received") {
-    // Test A/B : un fan du test a écrit → on note sa première réponse (si dans les 48 h)
+    // Test A/B : un fan du test a écrit → on note sa première réponse (si dans les 72 h)
     const fan = fanOf(body?.payload ?? {});
     const accountId = str(body?.account_id);
     if (fan.id && accountId) {

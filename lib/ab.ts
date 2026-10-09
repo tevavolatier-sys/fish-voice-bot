@@ -1,6 +1,6 @@
 // Test A/B du vocal de bienvenue (Sienna) : un nouvel abonné sur deux reçoit
 // le vocal, l'autre rien (les chatters font leur accueil habituel pour tous).
-// On compte ensuite qui a ÉCRIT dans les 48 h (webhook « messages.received »).
+// On compte ensuite qui a ÉCRIT dans les 72 h (webhook « messages.received »).
 // Tout est dans un hash Redis par compte : fanId → { g, at, s, r }.
 import { createHash } from "node:crypto";
 import { getRedis } from "./redis.js";
@@ -8,7 +8,7 @@ import { getRedis } from "./redis.js";
 /** voice = vocal seul · none = rien · selfie = vocal + selfie « prénom au feutre » (Teva, 08/10 : 33/33/33) */
 export type AbGroup = "voice" | "none" | "selfie";
 /** Fenêtre pendant laquelle une réponse du fan compte */
-export const AB_WINDOW_MS = 48 * 3600 * 1000;
+export const AB_WINDOW_MS = 72 * 3600 * 1000; // 72 h → 72 h le 09/10 (Teva)
 
 interface AbEntry {
   g: AbGroup;
@@ -20,6 +20,9 @@ interface AbEntry {
   r?: number;
   /** Pseudo, pour le journal */
   n?: string;
+  /** Chiffre d'affaires du fan dans la fenêtre (tips + achats, montant brut) et nombre d'achats */
+  rev?: number;
+  buys?: number;
 }
 
 const key = (accountId: string) => `welcome:ab:${accountId}`;
@@ -54,7 +57,7 @@ export async function markSent(accountId: string, fanId: string): Promise<void> 
   await r.hset(key(accountId), { [fanId]: JSON.stringify({ ...cur, g: cur.g === "none" ? "voice" : cur.g, s: true }) });
 }
 
-/** Le fan a écrit : on note sa première réponse si elle est dans les 48 h */
+/** Le fan a écrit : on note sa première réponse si elle est dans les 72 h */
 export async function recordReply(accountId: string, fanId: string, at = Date.now()): Promise<boolean> {
   const r = getRedis();
   const cur = parse(await r.hget(key(accountId), fanId));
@@ -63,15 +66,25 @@ export async function recordReply(accountId: string, fanId: string, at = Date.no
   return true;
 }
 
+/** Le fan a payé (tip, PPV…) : ajouté à son CA si dans la fenêtre */
+export async function recordRevenue(accountId: string, fanId: string, amount: number, at = Date.now()): Promise<boolean> {
+  if (!(amount > 0)) return false;
+  const r = getRedis();
+  const cur = parse(await r.hget(key(accountId), fanId));
+  if (!cur || at < cur.at || at - cur.at > AB_WINDOW_MS) return false;
+  await r.hset(key(accountId), { [fanId]: JSON.stringify({ ...cur, rev: Math.round(((cur.rev ?? 0) + amount) * 100) / 100, buys: (cur.buys ?? 0) + 1 }) });
+  return true;
+}
+
 export interface AbGroupStats {
-  /** Fans dont la fenêtre de 48 h est terminée (seuls eux comptent) */
+  /** Fans dont la fenêtre de 72 h est terminée (seuls eux comptent) */
   done: number;
   replied: number;
-  /** Encore dans les 48 h */
+  /** Encore dans les 72 h */
   pending: number;
   /** … dont déjà une réponse */
   pendingReplied: number;
-  /** Taux provisoire : réponses à ce jour / tous les fans du groupe (48 h finies ou non), null si aucun */
+  /** Taux provisoire : réponses à ce jour / tous les fans du groupe (72 h finies ou non), null si aucun */
   soFar: number | null;
   /** Taux de réponse sur les fans « done » (0–1), null si aucun */
   rate: number | null;
@@ -80,6 +93,10 @@ export interface AbGroupStats {
   within24h: number;
   /** Délai médian avant la 1re réponse (minutes), null si aucune */
   medianMin: number | null;
+  /** CA dans la fenêtre : total, nombre de fans ayant payé, CA moyen par fan du groupe (tous fans) */
+  revenue: number;
+  buyers: number;
+  revPerFan: number | null;
 }
 
 export interface AbStats {
@@ -103,7 +120,7 @@ export interface AbStats {
   all: { done: number; replied: number; rate: number | null; total: number; repliedSoFar: number; soFar: number | null };
 }
 
-const empty = (): AbGroupStats => ({ done: 0, replied: 0, pending: 0, pendingReplied: 0, soFar: null, rate: null, within1h: 0, within24h: 0, medianMin: null });
+const empty = (): AbGroupStats => ({ done: 0, replied: 0, pending: 0, pendingReplied: 0, soFar: null, rate: null, within1h: 0, within24h: 0, medianMin: null, revenue: 0, buyers: 0, revPerFan: null });
 
 /** Fonction d'erreur (approximation d'Abramowitz-Stegun), pour la p-value du test z */
 function erf(x: number): number {
@@ -140,6 +157,7 @@ export function computeStats(entries: AbEntry[], now = Date.now()): AbStats {
       continue;
     }
     const g = e.g === "voice" ? voice : e.g === "selfie" ? selfie : none;
+    if (e.rev) { g.revenue = Math.round((g.revenue + e.rev) * 100) / 100; g.buyers++; }
     if (!finished) {
       g.pending++;
       if (e.r) g.pendingReplied++;
@@ -158,6 +176,7 @@ export function computeStats(entries: AbEntry[], now = Date.now()): AbStats {
     g.rate = g.done ? g.replied / g.done : null;
     const total = g.done + g.pending;
     g.soFar = total ? (g.replied + g.pendingReplied) / total : null;
+    g.revPerFan = total ? Math.round((g.revenue / total) * 100) / 100 : null;
   }
   all.rate = all.done ? all.replied / all.done : null;
   all.soFar = all.total ? all.repliedSoFar / all.total : null;

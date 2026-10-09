@@ -104,7 +104,7 @@ export async function POST(req: Request): Promise<Response> {
       case "webhookSetup": {
         // Déclare / complète le webhook OnlyFansAPI de ce déploiement (API, pas de console)
         const url = `${new URL(req.url).origin}/api/of-webhook`;
-        const r = await ensureWebhook(url, ["subscriptions.new", "messages.received"]);
+        const r = await ensureWebhook(url, ["subscriptions.new", "messages.received", "transactions.new"]);
         return Response.json({ ok: true, url, ...r });
       }
       case "selfieZone": {
@@ -251,7 +251,7 @@ details{margin-top:10px}summary{cursor:pointer;color:var(--mute);font-size:13px}
     <div class="card">
       <div class="head"><h2>Test A/B : vocal ou pas ?</h2>
         <label class="switch"><input type="checkbox" id="abEnabled"> <span id="abLabel">Test</span></label></div>
-      <p class="lead">Trois groupes au hasard (⅓ chacun) : vocal seul, rien, selfie seul (+ son texte). On compare ensuite qui a écrit dans les 48 h. Les chatters ne voient rien.</p>
+      <p class="lead">Trois groupes au hasard (⅓ chacun) : vocal seul, rien, selfie seul (+ son texte). On compare ensuite qui a écrit dans les 72 h. Les chatters ne voient rien.</p>
       <div class="stats" id="abStats"></div>
       <div class="ab-wrap"><table id="abTable" class="ab"></table></div>
       <div class="hint" id="abHint" style="margin-top:10px"></div>
@@ -449,6 +449,7 @@ $("#abReset").onclick = async () => {
   load();
 };
 const pct = (r) => r == null ? "–" : Math.round(r * 100) + " %";
+const eur = (x) => x == null ? "–" : (Math.round(x * 100) / 100).toLocaleString("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " $";
 function renderAb(ab, on) {
   $("#abLabel").textContent = on ? "Test A/B : EN COURS" : "Test A/B : arrêté (tout le monde reçoit le vocal)";
   if (!ab) { $("#abStats").innerHTML = ""; $("#abTable").innerHTML = ""; $("#abHint").textContent = "Renseigne le compte acct_… pour démarrer."; return; }
@@ -466,17 +467,19 @@ function renderAb(ab, on) {
   const row = (label, a, b, c = "") => "<tr><td>" + label + "</td><td>" + a + "</td><td>" + b + "</td><td>" + c + "</td></tr>";
   const share = (k, g) => g.done ? "<b>" + g[k] + "</b> <span class=hint>(" + Math.round(g[k] / g.done * 100) + " %)</span>" : "–";
   $("#abTable").innerHTML = "<thead><tr><th></th><th>🎙️ Vocal seul</th><th>🚫 Rien</th><th>🖼️ Selfie seul</th></tr></thead><tbody>" +
-    row("Fans terminés (48 h passées)", "<b>" + v.done + "</b>", "<b>" + n.done + "</b>", "<b>" + sf.done + "</b>") +
+    row("Fans terminés (72 h passées)", "<b>" + v.done + "</b>", "<b>" + n.done + "</b>", "<b>" + sf.done + "</b>") +
     row("Ont répondu", share("replied", v), share("replied", n), share("replied", sf)) +
     row("… en moins d’1 h", share("within1h", v), share("within1h", n), share("within1h", sf)) +
     row("… en moins de 24 h", share("within24h", v), share("within24h", n), share("within24h", sf)) +
     row("Délai médian avant la réponse", mins(v.medianMin), mins(n.medianMin), mins(sf.medianMin)) +
-    row("Encore dans les 48 h (dont déjà répondu)", v.pending + " (" + v.pendingReplied + ")", n.pending + " (" + n.pendingReplied + ")", sf.pending + " (" + sf.pendingReplied + ")") +
-    row("Reply rate provisoire (tous les fans du groupe, 48 h finies ou non)", "<b>" + pct(v.soFar) + "</b> <span class=hint>(" + (v.replied + v.pendingReplied) + " / " + (v.done + v.pending) + ")</span>", "<b>" + pct(n.soFar) + "</b> <span class=hint>(" + (n.replied + n.pendingReplied) + " / " + (n.done + n.pending) + ")</span>", "<b>" + pct(sf.soFar) + "</b> <span class=hint>(" + (sf.replied + sf.pendingReplied) + " / " + (sf.done + sf.pending) + ")</span>") +
+    row("Encore dans les 72 h (dont déjà répondu)", v.pending + " (" + v.pendingReplied + ")", n.pending + " (" + n.pendingReplied + ")", sf.pending + " (" + sf.pendingReplied + ")") +
+    row("CA total dans les 72 h (tips + achats)", "<b>" + eur(v.revenue) + "</b> <span class=hint>" + v.buyers + " acheteur(s)</span>", "<b>" + eur(n.revenue) + "</b> <span class=hint>" + n.buyers + " acheteur(s)</span>", "<b>" + eur(sf.revenue) + "</b> <span class=hint>" + sf.buyers + " acheteur(s)</span>") +
+    row("CA moyen par fan du groupe", "<b>" + eur(v.revPerFan) + "</b>", "<b>" + eur(n.revPerFan) + "</b>", "<b>" + eur(sf.revPerFan) + "</b>") +
+    row("Reply rate provisoire (tous les fans du groupe, 72 h finies ou non)", "<b>" + pct(v.soFar) + "</b> <span class=hint>(" + (v.replied + v.pendingReplied) + " / " + (v.done + v.pending) + ")</span>", "<b>" + pct(n.soFar) + "</b> <span class=hint>(" + (n.replied + n.pendingReplied) + " / " + (n.done + n.pending) + ")</span>", "<b>" + pct(sf.soFar) + "</b> <span class=hint>(" + (sf.replied + sf.pendingReplied) + " / " + (sf.done + sf.pending) + ")</span>") +
     "</tbody><tfoot>" + row("Reply rate global, tous fans confondus", "<b>" + pct(ab.all.rate) + "</b> <span class=hint>(" + ab.all.replied + " / " + ab.all.done + " finis)</span> · provisoire <b>" + pct(ab.all.soFar) + "</b> <span class=hint>(" + ab.all.repliedSoFar + " / " + ab.all.total + ")</span>", "") + "</tfoot>";
   const since = ab.since ? "Depuis le " + new Date(ab.since).toLocaleDateString("fr-FR") + ". " : "";
   let verdict;
-  if (!v.done && !n.done) verdict = "Aucun fan n’a encore fini ses 48 h : les taux affichés sont provisoires (réponses reçues jusqu’ici).";
+  if (!v.done && !n.done) verdict = "Aucun fan n’a encore fini ses 72 h : les taux affichés sont provisoires (réponses reçues jusqu’ici).";
   else if (ab.significant === true) verdict = v.rate > n.rate ? "✅ Le vocal fait répondre plus de fans : écart fiable." : "❌ Le vocal ne fait pas mieux (voire moins bien) : écart fiable.";
   else if (ab.significant === false) verdict = "Pas d’écart fiable entre les deux groupes avec " + Math.min(v.done, n.done) + " fans par groupe" + (ab.needPerGroup ? " : encore ~" + ab.needPerGroup + " fans par groupe pour trancher." : ".");
   else verdict = "Trop tôt pour conclure : encore ~" + ab.needPerGroup + " fans terminés par groupe (minimum 30).";

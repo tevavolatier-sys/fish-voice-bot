@@ -22,7 +22,7 @@ const s = computeStats(
     { g: "voice", at: old, s: true },
     { g: "voice", at: old }, // vocal pas parti : hors test
     { g: "voice", at: now - 1000, s: true }, // encore dans la fenêtre
-    { g: "none", at: old, r: old + 5000 },
+    { g: "none", at: old, r: old + 5000, rev: 25, buys: 2 },
     { g: "none", at: old },
     { g: "none", at: old },
   ],
@@ -30,6 +30,7 @@ const s = computeStats(
 );
 check("avec vocal : 1 réponse sur 2 finis", s.voice.done === 2 && s.voice.replied === 1 && s.voice.rate === 0.5);
 check("sans vocal : 1 réponse sur 3 finis", s.none.done === 3 && s.none.replied === 1);
+check("CA : 25 $ sur 3 fans sans vocal", s.none.revenue === 25 && s.none.buyers === 1 && s.none.revPerFan === 8.33);
 check("1 en attente, 1 hors test", s.voice.pending === 1 && s.excluded === 1);
 check("pas de verdict avant 30 par groupe", s.significant === null);
 
