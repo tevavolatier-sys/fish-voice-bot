@@ -22,6 +22,8 @@ interface AbEntry {
   n?: string;
   /** Chiffre d'affaires du fan dans la fenêtre (tips + achats, montant brut) et nombre d'achats */
   rev?: number;
+  /** LTV : tout ce que le fan a dépensé depuis son abonnement (sans limite de temps, hors abonnement) */
+  ltv?: number;
   buys?: number;
 }
 
@@ -71,8 +73,11 @@ export async function recordRevenue(accountId: string, fanId: string, amount: nu
   if (!(amount > 0)) return false;
   const r = getRedis();
   const cur = parse(await r.hget(key(accountId), fanId));
-  if (!cur || at < cur.at || at - cur.at > AB_WINDOW_MS) return false;
-  await r.hset(key(accountId), { [fanId]: JSON.stringify({ ...cur, rev: Math.round(((cur.rev ?? 0) + amount) * 100) / 100, buys: (cur.buys ?? 0) + 1 }) });
+  if (!cur || at < cur.at) return false;
+  const ltv = Math.round(((cur.ltv ?? cur.rev ?? 0) + amount) * 100) / 100;
+  const inWindow = at - cur.at <= AB_WINDOW_MS;
+  const next = inWindow ? { ...cur, ltv, rev: Math.round(((cur.rev ?? 0) + amount) * 100) / 100, buys: (cur.buys ?? 0) + 1 } : { ...cur, ltv };
+  await r.hset(key(accountId), { [fanId]: JSON.stringify(next) });
   return true;
 }
 
@@ -92,7 +97,10 @@ export async function backfillRevenue(accountId: string, offset: number, limit: 
       if (v == null) { errors++; continue; }
       const cur = parse(await r.hget(key(accountId), id));
       if (!cur) continue;
-      await r.hset(key(accountId), { [id]: JSON.stringify({ ...cur, rev: v, buys: v > 0 ? Math.max(1, cur.buys ?? 0) : 0, bf: 1 }) });
+      // le total OF = LTV ; c'est aussi le CA 72 h tant que le fan est dans sa fenêtre
+      const inWindow = Date.now() - cur.at <= AB_WINDOW_MS;
+      const upd = inWindow ? { ...cur, ltv: v, rev: v, buys: v > 0 ? Math.max(1, cur.buys ?? 0) : 0, bf: 1 } : { ...cur, ltv: v, bf: 1 };
+      await r.hset(key(accountId), { [id]: JSON.stringify(upd) });
     } catch { errors++; }
   }
   const next = offset + slice.length < ids.length ? offset + slice.length : null;
@@ -120,6 +128,9 @@ export interface AbGroupStats {
   revenue: number;
   buyers: number;
   revPerFan: number | null;
+  /** LTV : somme et moyenne par fan du groupe (depuis l'abonnement, sans limite de temps) */
+  ltv: number;
+  ltvPerFan: number | null;
 }
 
 export interface AbStats {
@@ -141,9 +152,11 @@ export interface AbStats {
   needPerGroup: number;
   /** Tous fans confondus (test ou pas) : terminés / ont répondu */
   all: { done: number; replied: number; rate: number | null; total: number; repliedSoFar: number; soFar: number | null };
+  /** Reply rate par jour d'abonnement et par groupe : { "2026-10-08": { voice: {n, r}, … } } */
+  daily: Record<string, Record<AbGroup, { n: number; r: number }>>;
 }
 
-const empty = (): AbGroupStats => ({ done: 0, replied: 0, pending: 0, pendingReplied: 0, soFar: null, rate: null, within1h: 0, within24h: 0, medianMin: null, revenue: 0, buyers: 0, revPerFan: null });
+const empty = (): AbGroupStats => ({ done: 0, replied: 0, pending: 0, pendingReplied: 0, soFar: null, rate: null, within1h: 0, within24h: 0, medianMin: null, revenue: 0, buyers: 0, revPerFan: null, ltv: 0, ltvPerFan: null });
 
 /** Fonction d'erreur (approximation d'Abramowitz-Stegun), pour la p-value du test z */
 function erf(x: number): number {
@@ -163,6 +176,7 @@ export function computeStats(entries: AbEntry[], now = Date.now()): AbStats {
   const none = empty();
   const selfie = empty();
   const delays = { voice: [] as number[], none: [] as number[], selfie: [] as number[] };
+  const daily: Record<string, Record<AbGroup, { n: number; r: number }>> = {};
   const all = { done: 0, replied: 0, rate: null as number | null, total: 0, repliedSoFar: 0, soFar: null as number | null };
   let excluded = 0;
   let since: number | null = null;
@@ -181,6 +195,13 @@ export function computeStats(entries: AbEntry[], now = Date.now()): AbStats {
     }
     const g = e.g === "voice" ? voice : e.g === "selfie" ? selfie : none;
     if (e.rev) { g.revenue = Math.round((g.revenue + e.rev) * 100) / 100; g.buyers++; }
+    const lv = e.ltv ?? e.rev ?? 0;
+    if (lv) g.ltv = Math.round((g.ltv + lv) * 100) / 100;
+    // Courbe : reply rate par jour d'abonnement (cohortes)
+    const day = new Date(e.at).toISOString().slice(0, 10);
+    const dd = (daily[day] ??= { voice: { n: 0, r: 0 }, none: { n: 0, r: 0 }, selfie: { n: 0, r: 0 } });
+    dd[e.g].n++;
+    if (e.r) dd[e.g].r++;
     if (!finished) {
       g.pending++;
       if (e.r) g.pendingReplied++;
@@ -200,6 +221,7 @@ export function computeStats(entries: AbEntry[], now = Date.now()): AbStats {
     const total = g.done + g.pending;
     g.soFar = total ? (g.replied + g.pendingReplied) / total : null;
     g.revPerFan = total ? Math.round((g.revenue / total) * 100) / 100 : null;
+    g.ltvPerFan = total ? Math.round((g.ltv / total) * 100) / 100 : null;
   }
   all.rate = all.done ? all.replied / all.done : null;
   all.soFar = all.total ? all.repliedSoFar / all.total : null;
@@ -228,7 +250,7 @@ export function computeStats(entries: AbEntry[], now = Date.now()): AbStats {
     needPerGroup = Math.max(30, n);
   }
   needPerGroup = Math.max(0, needPerGroup - Math.min(voice.done, none.done));
-  return { voice, none, selfie, excluded, since: since === null ? null : new Date(since).toISOString(), significant, confidence, diffPts, ratio, needPerGroup, all };
+  return { daily, voice, none, selfie, excluded, since: since === null ? null : new Date(since).toISOString(), significant, confidence, diffPts, ratio, needPerGroup, all };
 }
 
 export async function abStats(accountId: string): Promise<AbStats> {

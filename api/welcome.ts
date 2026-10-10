@@ -214,6 +214,8 @@ th{font-size:12px;color:var(--mute);font-weight:600}
 .ab-wrap{overflow-x:auto;margin-top:14px}
 table.ab{width:100%;border-collapse:collapse;font-size:14px}
 table.ab th,table.ab td{padding:7px 8px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap}
+table.ab td:first-child{white-space:normal;min-width:150px}
+.chart{margin-top:16px}.chart svg{width:100%;height:auto;display:block}.chart .lg{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--mute);margin-top:6px}.chart .lg i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px}
 table.ab th:first-child,table.ab td:first-child{text-align:left;color:var(--mute);font-weight:400}
 table.ab thead th{color:var(--ink);font-weight:600}
 table.ab td b{font-size:16px}
@@ -256,11 +258,12 @@ details{margin-top:10px}summary{cursor:pointer;color:var(--mute);font-size:13px}
     </div>
 
     <div class="card">
-      <div class="head"><h2>Test A/B : vocal ou pas ?</h2>
+      <div class="head"><h2>Test A/B/C : quel message de bienvenue ?</h2>
         <label class="switch"><input type="checkbox" id="abEnabled"> <span id="abLabel">Test</span></label></div>
       <p class="lead">Trois groupes au hasard (⅓ chacun) : vocal seul, rien, selfie seul (+ son texte). On compare ensuite qui a écrit dans les 72 h. Les chatters ne voient rien.</p>
       <div class="stats" id="abStats"></div>
       <div class="ab-wrap"><table id="abTable" class="ab"></table></div>
+      <div class="chart" id="abChart"></div>
       <div class="hint" id="abHint" style="margin-top:10px"></div>
       <div class="row" style="margin-top:10px"><button class="sm" id="abReset">Remettre le test à zéro</button></div>
     </div>
@@ -457,10 +460,36 @@ $("#abReset").onclick = async () => {
 };
 const pct = (r) => r == null ? "–" : Math.round(r * 100) + " %";
 const eur = (x) => x == null ? "–" : (Math.round(x * 100) / 100).toLocaleString("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " $";
+// Courbe du reply rate par jour d'abonnement (une ligne par groupe), en SVG
+function renderAbChart(daily) {
+  const box = $("#abChart");
+  const days = Object.keys(daily || {}).sort();
+  if (!days.length) { box.innerHTML = ""; return; }
+  const G = [["voice", "Vocal seul", "#3b82f6"], ["none", "Rien", "#9ca3af"], ["selfie", "Selfie seul", "#e0457b"]];
+  const W = 640, H = 220, L = 38, R = 10, T = 10, B = 28;
+  const x = (i) => L + (days.length === 1 ? (W - L - R) / 2 : (i * (W - L - R)) / (days.length - 1));
+  const vals = days.flatMap((d) => G.map(([k]) => (daily[d][k].n >= 5 ? daily[d][k].r / daily[d][k].n : null))).filter((v) => v != null);
+  const max = Math.max(0.1, Math.ceil((Math.max(...vals, 0) + 0.05) * 10) / 10);
+  const y = (v) => T + (H - T - B) * (1 - v / max);
+  let svg = '<svg viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="Reply rate par jour d’abonnement">';
+  for (let k = 0; k <= 4; k++) { const v = (max * k) / 4, yy = y(v); svg += '<line x1="' + L + '" x2="' + (W - R) + '" y1="' + yy + '" y2="' + yy + '" stroke="currentColor" stroke-opacity=".12"/><text x="' + (L - 6) + '" y="' + (yy + 4) + '" font-size="11" text-anchor="end" fill="currentColor" fill-opacity=".6">' + Math.round(v * 100) + ' %</text>'; }
+  days.forEach((d, i) => { if (days.length <= 10 || i % Math.ceil(days.length / 10) === 0) svg += '<text x="' + x(i) + '" y="' + (H - 8) + '" font-size="11" text-anchor="middle" fill="currentColor" fill-opacity=".6">' + d.slice(8, 10) + "/" + d.slice(5, 7) + "</text>"; });
+  for (const [k, , c] of G) {
+    const pts = days.map((d, i) => [i, daily[d][k]]).filter(([, g]) => g.n >= 5);
+    if (!pts.length) continue;
+    svg += '<polyline fill="none" stroke="' + c + '" stroke-width="2.5" points="' + pts.map(([i, g]) => x(i) + "," + y(g.r / g.n)).join(" ") + '"/>';
+    for (const [i, g] of pts) svg += '<circle cx="' + x(i) + '" cy="' + y(g.r / g.n) + '" r="3.5" fill="' + c + '"><title>' + days[i] + " · " + Math.round((g.r / g.n) * 100) + " % (" + g.r + "/" + g.n + ")</title></circle>";
+  }
+  svg += "</svg>";
+  box.innerHTML = '<div class="hint" style="margin-bottom:6px"><b>Reply rate par jour d’abonnement</b> (fans du jour qui ont répondu, à ce jour ; jours avec au moins 5 fans)</div>' + svg +
+    '<div class="lg">' + G.map(([, l, c]) => '<span><i style="background:' + c + '"></i>' + l + "</span>").join("") + "</div>";
+}
+
 function renderAb(ab, on) {
   $("#abLabel").textContent = on ? "Test A/B : EN COURS" : "Test A/B : arrêté (tout le monde reçoit le vocal)";
   if (!ab) { $("#abStats").innerHTML = ""; $("#abTable").innerHTML = ""; $("#abHint").textContent = "Renseigne le compte acct_… pour démarrer."; return; }
   const v = ab.voice, n = ab.none, sf = ab.selfie;
+  renderAbChart(ab.daily);
   const sign = (x) => (x > 0 ? "+" : "") + x;
   const mins = (m) => m == null ? "–" : m < 60 ? Math.round(m) + " min" : m < 1440 ? (m / 60).toFixed(1).replace(".0", "") + " h" : (m / 1440).toFixed(1).replace(".0", "") + " j";
   const conf = ab.confidence == null ? null : Math.round(ab.confidence * 100);
@@ -482,6 +511,8 @@ function renderAb(ab, on) {
     row("Encore dans les 72 h (dont déjà répondu)", v.pending + " (" + v.pendingReplied + ")", n.pending + " (" + n.pendingReplied + ")", sf.pending + " (" + sf.pendingReplied + ")") +
     row("CA total dans les 72 h (tips + achats)", "<b>" + eur(v.revenue) + "</b> <span class=hint>" + v.buyers + " acheteur(s)</span>", "<b>" + eur(n.revenue) + "</b> <span class=hint>" + n.buyers + " acheteur(s)</span>", "<b>" + eur(sf.revenue) + "</b> <span class=hint>" + sf.buyers + " acheteur(s)</span>") +
     row("CA moyen par fan du groupe", "<b>" + eur(v.revPerFan) + "</b>", "<b>" + eur(n.revPerFan) + "</b>", "<b>" + eur(sf.revPerFan) + "</b>") +
+    row("LTV totale (depuis l’abonnement, sans limite)", "<b>" + eur(v.ltv) + "</b>", "<b>" + eur(n.ltv) + "</b>", "<b>" + eur(sf.ltv) + "</b>") +
+    row("LTV moyenne par fan", "<b>" + eur(v.ltvPerFan) + "</b>", "<b>" + eur(n.ltvPerFan) + "</b>", "<b>" + eur(sf.ltvPerFan) + "</b>") +
     row("Reply rate provisoire (tous les fans du groupe, 72 h finies ou non)", "<b>" + pct(v.soFar) + "</b> <span class=hint>(" + (v.replied + v.pendingReplied) + " / " + (v.done + v.pending) + ")</span>", "<b>" + pct(n.soFar) + "</b> <span class=hint>(" + (n.replied + n.pendingReplied) + " / " + (n.done + n.pending) + ")</span>", "<b>" + pct(sf.soFar) + "</b> <span class=hint>(" + (sf.replied + sf.pendingReplied) + " / " + (sf.done + sf.pending) + ")</span>") +
     "</tbody><tfoot>" + row("Reply rate global, tous fans confondus", "<b>" + pct(ab.all.rate) + "</b> <span class=hint>(" + ab.all.replied + " / " + ab.all.done + " finis)</span> · provisoire <b>" + pct(ab.all.soFar) + "</b> <span class=hint>(" + ab.all.repliedSoFar + " / " + ab.all.total + ")</span>", "") + "</tfoot>";
   const since = ab.since ? "Depuis le " + new Date(ab.since).toLocaleDateString("fr-FR") + ". " : "";
