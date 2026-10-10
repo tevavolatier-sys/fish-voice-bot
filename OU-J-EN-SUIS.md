@@ -1,4 +1,4 @@
-# Où j'en suis — fish-voice-bot (08/10/2026)
+# Où j'en suis — fish-voice-bot (10/10/2026)
 
 ## Fait
 - Vocal de bienvenue OnlyFans (Sienna) EN PRODUCTION : webhook OnlyFansAPI wh_3dadc47b… (subscriptions.new + messages.received, géré par l'API via l'action `webhookSetup`), interface https://fish-voice-bot.vercel.app/api/welcome. Prénom par LLM Gemini (vérifié).
@@ -20,6 +20,8 @@
 - 08/10 : Teva reste sur la méthode note (pas de feuille Sienna). Ajout d'une 2e ligne « bienvenue » + cœur (WELCOME_NOTE_LINE2, vide = prénom seul), encre limitée à l'intérieur de la feuille générée, filtres taches grises / bavures. 10 tests random + 4 tests 2 lignes envoyés, déployé.
 
 - 08/10 : écriture « adulte sans faire attention » (geste 0,4), effet feutre renforcé. TEST A/B/C en prod : ⅓ vocal seul, ⅓ rien, ⅓ vocal + selfie (groupe « selfie » nouveau : les anciens fans restent dans leurs groupes). Interface : 3 colonnes.
+
+- 09-10/10 : groupe selfie = selfie SEUL + texte modifiable (« bcp de gens pensent que je suis un faux profil… »), vocal de repli si échec → hors test. A/B : fenêtre 72 h, CA par groupe (webhook transactions.new + rattrapage rétroactif abBackfill via /users/{id} subscribedOnData, 492/507 fans). 10/10 : crédit OpenAI épuisé à 17 h 38 → Teva doit recharger (platform.openai.com billing, recharge auto conseillée). 8 erreurs OF 400 « Bad Request » sur 100 envois (cause inconnue).
 
 ## En cours
 - Prod : test A/B/C ; selfie = note bâclée + bienvenue ♥ + feutre + geste + rendu feutre v3 + 2e essai sur 5xx + filtres (cadres, fils pâles). Teva aime « Alex » et « Thomas » (08/10) ; 10 tests envoyés (Kevin, Maxime, Nicolas, Mathieu, Lucas, Antoine, Sébastien, Mohamed, Hugo, Romain), retour Teva 08/10 : « trop noir » → WELCOME_INK 0,72 + saturation 1,45 (déployé). A/B : tuiles et tableau affichent désormais le reply rate PROVISOIRE avec/sans vocal (48 h pas finies incluses) ; au 08/10 : 26,6 % avec vocal (34/128) vs 24,8 % sans (30/121). Bug corrigé 08/10 : ligne en L au bord de la zone (bord du canevas projeté) → bordure remise à 0 en JS (pas drawbox : plage limitée → voile gris). Teva : « toujours trop fake, propose des améliorations » → 5 propositions montrées en photos le 08/10 : (1) VRAIES lettres : lib/glyphs.ts (feuille d'alphabet photographiée → lettres découpées → prénom assemblé → placeInk), démo avec une feuille d'essai IA, marche (13/13/13/13) ; il faut la feuille écrite par Sienna (4 rangées A-M, N-Z, a-m, n-z, feutre, lettres espacées). (2) référence de style IA (ai.reference). (3) gpt-image-1 (≈ 0,04 $). (4) cadrage serré. (5) post-traitement. Teva s'inquiète des crédits (workflow d'experts arrêté) : rester léger. Pour passer sur gpt-image-1 (≈ 0,04 $/selfie, un peu plus crédible) : `vercel env add WELCOME_OPENAI_MODEL production` = gpt-image-1.
