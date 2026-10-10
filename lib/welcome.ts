@@ -428,7 +428,9 @@ export async function handleNewSub(
     log.status = "sent";
     log.elapsedSec = elapsed();
     await getRedis().set(sentKey, "1"); // permanent : ce fan a eu son vocal
-    await markSent(accountId, fanId);
+    // Groupe « selfie » qui a reçu le vocal de repli (IA en panne, pseudo illisible) : hors test,
+    // sinon il fausserait la comparaison
+    if (!(withSelfie && !selfie && !opts.force)) await markSent(accountId, fanId);
   } catch (err) {
     log.error = String((err as Error)?.message ?? err).slice(0, 300);
     log.elapsedSec = elapsed();
