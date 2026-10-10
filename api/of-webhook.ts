@@ -80,7 +80,9 @@ export async function POST(req: Request): Promise<Response> {
     const fan = fanOf(p);
     const accountId = str(body?.account_id);
     const amount = Number(p?.amount?.gross ?? p?.amount_gross ?? p?.gross ?? p?.amount ?? p?.price ?? 0) || 0;
-    if (fan.id && accountId && amount > 0) {
+    // Les abonnements (nouveaux, renouvellements) ne comptent pas dans le CA du test : même base que le rattrapage OF
+    const kind = String(p?.type ?? p?.transactionType ?? p?.description ?? "").toLowerCase();
+    if (fan.id && accountId && amount > 0 && !/subscri|abonn/.test(kind)) {
       waitUntil(getWelcomeSettings().then((s) => (s.accountId === accountId ? recordRevenue(accountId, fan.id, amount) : false)));
     }
   } else if (body?.event === "messages.received") {
