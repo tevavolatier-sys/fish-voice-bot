@@ -199,6 +199,17 @@ export interface PpvPurchase {
   at: number; // ms
 }
 
+/** Étiquettes que les chatters mettent parfois à la place du nom : pas des prénoms */
+const NOT_FIRST_NAMES = /^(whale|vip|fan|client|spender|timewaster|tw|big|lead|new|hot|warm|cold|sub|user|none|test|inconnu|unknown|cash|rich|poor|broke)$/i;
+
+/** Le nom mis par le chatter, seulement si c'est clairement UN prénom */
+export function customFirstName(display: string): string | null {
+  const first = (display || "").trim().split(/\s+/)[0] ?? "";
+  if (!/^[\p{L}][\p{L}'’-]{1,19}$/u.test(first)) return null;
+  if (/\d/.test(display) || NOT_FIRST_NAMES.test(first.replace(/[^\p{L}]/gu, ""))) return null;
+  return cleanFanName(first);
+}
+
 const chatLink = (fanId: string) => `https://onlyfans.com/my/chats/chat/${fanId}`;
 
 /**
@@ -265,9 +276,9 @@ export async function handlePpvUnlocked(p: PpvPurchase): Promise<void> {
   }
   if (!isTriggerText(text, s.triggerText)) return;
 
-  // Prénom : nom mis par le chatter sur OF, sinon détection sur le pseudo
-  const custom = cleanFanName(p.display || "");
-  const name = custom ?? (await fanFirstName(p.name, p.username));
+  // Prénom : nom mis par le chatter sur OF s'il ressemble à un prénom (un seul mot,
+  // lettres, pas une étiquette comme « Whale » ou « VIP »), sinon détection IA sur le pseudo
+  const name = customFirstName(p.display) ?? (await fanFirstName(p.display || p.name, p.username));
   if (!name) {
     await addLog({
       at: new Date().toISOString(), fan: p.fanId, display: p.display, username: p.username,
