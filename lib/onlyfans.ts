@@ -176,11 +176,25 @@ const idOf = (r: unknown): string => {
   return String(id);
 };
 
-/** Dépose une vidéo dans le vault et renvoie son id (traitement synchrone) */
+/**
+ * Dépose une vidéo dans le vault et renvoie son id OF (numérique, en texte).
+ * Testé le 11/10/2026 : la réponse donne media.id ; on attend que le média soit
+ * prêt (isReady) avant de le ranger dans un dossier, sinon OF répond 400.
+ */
 export async function uploadToVault(accountId: string, file: Buffer, filename: string): Promise<string> {
   const form = new FormData();
   form.set("file", new Blob([new Uint8Array(file)], { type: "video/mp4" }), filename);
-  return idOf(await api(accountId, "/media/vault", { method: "POST", body: form }));
+  const r = await api<{ media?: { id?: unknown }; data?: { media?: { id?: unknown }; id?: unknown } }>(accountId, "/media/vault", { method: "POST", body: form });
+  const id = r.media?.id ?? r.data?.media?.id ?? r.data?.id;
+  if (id === undefined || id === null) throw new Error("OnlyFansAPI : upload vault sans id de média");
+  const mediaId = String(id);
+  for (let i = 0; i < 12; i++) {
+    const m = await api<{ data?: { isReady?: boolean; hasError?: boolean } }>(accountId, `/media/vault/${mediaId}`, { method: "GET" }).catch(() => null);
+    if (m?.data?.hasError) throw new Error("OnlyFansAPI : le média a été rejeté par OnlyFans");
+    if (m?.data?.isReady) break;
+    await new Promise((res) => setTimeout(res, 2500));
+  }
+  return mediaId;
 }
 
 export async function createVaultList(accountId: string, name: string): Promise<string> {
@@ -188,7 +202,8 @@ export async function createVaultList(accountId: string, name: string): Promise<
 }
 
 export async function addToVaultList(accountId: string, listId: string, mediaIds: string[]): Promise<void> {
-  await api(accountId, `/media/vault/lists/${listId}/media`, { method: "POST", body: JSON.stringify({ mediaIds }) });
+  // Ids numériques (testé : les chaînes passent aussi, les nombres sont la forme de la doc)
+  await api(accountId, `/media/vault/lists/${listId}/media`, { method: "POST", body: JSON.stringify({ mediaIds: mediaIds.map(Number) }) });
 }
 
 export async function deleteVaultList(accountId: string, listId: string): Promise<void> {
@@ -196,5 +211,5 @@ export async function deleteVaultList(accountId: string, listId: string): Promis
 }
 
 export async function deleteVaultMedia(accountId: string, mediaIds: string[]): Promise<void> {
-  await api(accountId, "/media/vault/delete-media", { method: "DELETE", body: JSON.stringify({ mediaIds }) });
+  await api(accountId, "/media/vault/delete-media", { method: "DELETE", body: JSON.stringify({ mediaIds: mediaIds.map(Number) }) });
 }
