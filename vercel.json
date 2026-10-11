@@ -17,7 +17,8 @@
       "maxDuration": 60
     },
     "api/daily-report.ts": {
-      "maxDuration": 60
+      "maxDuration": 60,
+      "includeFiles": "assets/**"
     }
   },
   "crons": [

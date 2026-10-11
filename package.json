@@ -9,9 +9,11 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.112.4",
     "@ffmpeg-installer/ffmpeg": "^1.1.0",
+    "@resvg/resvg-js": "^2.6.2",
     "@upstash/redis": "^1.34.3",
     "@vercel/functions": "^2.0.0",
-    "grammy": "^1.36.1"
+    "grammy": "^1.36.1",
+    "satori": "^0.47.1"
   },
   "devDependencies": {
     "@types/node": "^20.17.0",

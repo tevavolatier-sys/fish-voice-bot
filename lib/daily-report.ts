@@ -3,6 +3,7 @@
 // Contenu : PPV perso des dernières 24 h (prénom mis par le chatter / deviné /
 // illisible, refaits, échecs), vocaux de bienvenue, test A/B, crédits OnlyFansAPI.
 import { abStats } from "./ab.js";
+import { abImage, sendAbImageToAdmin } from "./ab-image.js";
 import { readPpvAutoLog, sendAlert } from "./ppv-auto.js";
 import { getWelcomeSettings, readWelcomeLog } from "./welcome.js";
 
@@ -72,5 +73,11 @@ export async function buildDailyReport(now = Date.now()): Promise<string> {
 export async function sendDailyReport(): Promise<string> {
   const text = await buildDailyReport();
   await sendAlert(text);
+  // Image du test A/B/C en privé à Teva, par le bot « French Influence Voice »
+  const s = await getWelcomeSettings();
+  if (s.accountId) {
+    const ab = await abStats(s.accountId);
+    await sendAbImageToAdmin(await abImage(ab), "📊 Test A/B/C — reply rate (daily)");
+  }
   return text;
 }
