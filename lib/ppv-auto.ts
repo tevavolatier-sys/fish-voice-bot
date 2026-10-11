@@ -217,7 +217,6 @@ export function customFirstName(display: string): string | null {
   return cleanFanName(first);
 }
 
-const chatLink = (fanId: string) => `https://onlyfans.com/my/chats/chat/${fanId}`;
 
 /**
  * Lance la fabrication pour un fan (prénom déjà connu). Renvoie le journal.
@@ -253,8 +252,7 @@ export async function producePpvForFan(p: PpvPurchase, name: string, force = fal
     log.elapsedSec = Math.round((Date.now() - p.at) / 1000);
     await sendAlert(
       `💰 ${p.display || p.username || p.fanId}${p.username ? ` (@${p.username})` : ""} just bought the welcome PPV ($${p.amount}).\n` +
-      `🎬 His free preview + PPV 1 videos with his name (${name}) are ready in the vault → folder “${listName}” (auto-deleted in ${s.listMinutes} min).\n` +
-      `💬 Chat: ${chatLink(p.fanId)}`
+      `🎬 His free preview + PPV 1 videos with his name (${name}) are ready in the vault → folder “${listName}” (auto-deleted in ${s.listMinutes} min).`
     ).catch((e) => console.error("alerte Telegram:", e));
   } catch (err) {
     log.error = String((err as Error)?.message ?? err).slice(0, 300);
@@ -262,7 +260,7 @@ export async function producePpvForFan(p: PpvPurchase, name: string, force = fal
     await getRedis().del(doneKey); // on pourra relancer depuis l'interface
     await sendAlert(
       `⚠️ ${p.display || p.username || p.fanId} bought the welcome PPV ($${p.amount}) but the custom videos FAILED: ${log.error}\n` +
-      `Make them by hand with /ppv ${name} in the voice bot. Chat: ${chatLink(p.fanId)}`
+      `Make them by hand with /ppv ${name} in the voice bot.`
     ).catch(() => {});
   }
   await addLog(log);
@@ -295,7 +293,7 @@ export async function handlePpvUnlocked(p: PpvPurchase): Promise<void> {
     });
     await sendAlert(
       `⚠️ ${p.display || p.username || p.fanId} bought the welcome PPV ($${p.amount}) but I can't read his first name from “${p.display || p.name || p.username}”.\n` +
-      `Ask him his name, then rename him on OnlyFans and hit “Redo” in the interface, or make the videos with /ppv Name in the voice bot. Chat: ${chatLink(p.fanId)}`
+      `Ask him his name, then rename him on OnlyFans and hit “Redo” in the interface, or make the videos with /ppv Name in the voice bot.`
     ).catch(() => {});
     return;
   }
