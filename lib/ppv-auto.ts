@@ -281,7 +281,8 @@ export async function handlePpvUnlocked(p: PpvPurchase): Promise<void> {
   // Prénom : nom mis par le chatter sur OF s'il ressemble à un prénom (un seul mot,
   // lettres, pas une étiquette comme « Whale » ou « VIP »), sinon détection IA sur le pseudo
   const custom = customFirstName(p.display);
-  const name = custom ?? (await fanFirstName(p.display || p.name, p.username));
+  // Secours : nom OF du fan puis son pseudo (jamais la note du chatter)
+  const name = custom ?? (await fanFirstName(p.name, p.username));
   if (!name) {
     await addLog({
       at: new Date().toISOString(), fan: p.fanId, display: p.display, username: p.username,
