@@ -6,6 +6,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { waitUntil } from "@vercel/functions";
 import { recordReply, recordRevenue } from "../lib/ab.js";
 import { getRedis } from "../lib/redis.js";
+import { handlePpvUnlocked, runCleanup } from "../lib/ppv-auto.js";
 import { getWelcomeSettings, handleNewSub } from "../lib/welcome.js";
 
 export const maxDuration = 60;
@@ -85,6 +86,20 @@ export async function POST(req: Request): Promise<Response> {
     if (fan.id && accountId && amount > 0 && !/subscri|abonn/.test(kind)) {
       waitUntil(getWelcomeSettings().then((s) => (s.accountId === accountId ? recordRevenue(accountId, fan.id, amount) : false)));
     }
+  } else if (body?.event === "messages.ppv.unlocked") {
+    // PPV perso automatique : achat du PPV de bienvenue → preview + PPV 1 avec le prénom
+    const p = body?.payload ?? {};
+    const f = p?.fan ?? {};
+    const accountId = str(body?.account_id);
+    const fanId = str(f.id ?? p?.chat_id);
+    if (accountId && fanId) {
+      const at = Date.parse(String(p?.createdAt ?? "")) || Date.now();
+      waitUntil(handlePpvUnlocked({
+        accountId, fanId, chatId: str(p?.chat_id) || fanId, messageId: str(p?.message_id),
+        display: str(f.display_name) || str(f.name), name: str(f.name), username: str(f.username),
+        amount: Number(p?.amountGross ?? 0) || 0, at,
+      }));
+    }
   } else if (body?.event === "messages.received") {
     // Test A/B : un fan du test a écrit → on note sa première réponse (si dans les 72 h)
     const fan = fanOf(body?.payload ?? {});
@@ -95,6 +110,8 @@ export async function POST(req: Request): Promise<Response> {
       );
     }
   }
+  // Nettoyage du vault (dossiers PPV perso expirés) au passage, sans bloquer la réponse
+  waitUntil(runCleanup().catch((e) => console.error("nettoyage:", e)));
   // Répondre vite : le vocal est généré et envoyé après la réponse
   return Response.json({ ok: true });
 }

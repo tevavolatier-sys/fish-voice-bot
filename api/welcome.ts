@@ -8,6 +8,20 @@ import { aiProviders, clearHandwriting, getSelfiePhoto, getSelfieSettings, hasHa
 import { ensureWebhook, getFanSpend, requestsThisMonth } from "../lib/onlyfans.js";
 import { getRedis } from "../lib/redis.js";
 import {
+  alertConfigured,
+  getPpvAutoSettings,
+  pendingCleanups,
+  ppvReady,
+  producePpvForFan,
+  readPpvAutoLog,
+  runCleanup,
+  savePpvAutoSettings,
+  sendAlertVideo,
+  type PpvAutoSettings,
+} from "../lib/ppv-auto.js";
+import { buildPpvForFan } from "../lib/ppv-build.js";
+import { cleanFanName } from "../lib/ppv.js";
+import {
   MONTHLY_LIMIT,
   uploadTake,
   STOP_AT,
@@ -108,10 +122,42 @@ export async function POST(req: Request): Promise<Response> {
         await saveSelfieSettings(st);
         return Response.json({ ok: true });
       }
+      // ── PPV perso automatique ──
+      case "ppvLoad": {
+        const [settings, log, ready, pending] = await Promise.all([getPpvAutoSettings(), readPpvAutoLog(), ppvReady(), pendingCleanups()]);
+        return Response.json({ ok: true, settings, log, ready, pending, alert: alertConfigured() });
+      }
+      case "ppvSave":
+        await savePpvAutoSettings(a.settings as Partial<PpvAutoSettings>);
+        return Response.json({ ok: true });
+      case "ppvTest": {
+        // Fabrique les vidéos pour un prénom et les envoie dans le groupe Telegram d'alerte (rien sur OF)
+        const name = cleanFanName(String(a.name ?? ""));
+        if (!name) throw new Error("Prénom invalide (lettres, 2 à 20 caractères).");
+        const b = await buildPpvForFan(name);
+        await sendAlertVideo(b.preview.video, `preview-${name}.mp4`, `🧪 TEST — free preview · ${name}`);
+        await sendAlertVideo(b.paid1.video, `ppv1-${name}.mp4`, `🧪 TEST — PPV 1 · ${name}`);
+        return Response.json({ ok: true, name });
+      }
+      case "ppvRedo": {
+        // Refaire pour un fan du journal (prénom corrigé possible), dossier + alerte comme en vrai
+        const s = await getWelcomeSettings();
+        const name = cleanFanName(String(a.name ?? ""));
+        if (!name) throw new Error("Prénom invalide (lettres, 2 à 20 caractères).");
+        const log = await producePpvForFan({
+          accountId: s.accountId, fanId: String(a.fan ?? ""), chatId: String(a.fan ?? ""), messageId: "",
+          display: String(a.display ?? ""), name: String(a.display ?? ""), username: String(a.username ?? ""),
+          amount: Number(a.amount ?? 0) || 0, at: Date.now(),
+        }, name, true);
+        if (log.status !== "done") throw new Error(log.error ?? "échec");
+        return Response.json({ ok: true, listName: log.listName });
+      }
+      case "ppvCleanup":
+        return Response.json({ ok: true, ...(await runCleanup()) });
       case "webhookSetup": {
         // Déclare / complète le webhook OnlyFansAPI de ce déploiement (API, pas de console)
         const url = `${new URL(req.url).origin}/api/of-webhook`;
-        const r = await ensureWebhook(url, ["subscriptions.new", "messages.received", "transactions.new"]);
+        const r = await ensureWebhook(url, ["subscriptions.new", "messages.received", "transactions.new", "messages.ppv.unlocked"]);
         return Response.json({ ok: true, url, ...r });
       }
       case "selfieZone": {

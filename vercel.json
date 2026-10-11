@@ -6,12 +6,15 @@
       "includeFiles": "node_modules/@ffmpeg-installer/**"
     },
     "api/of-webhook.ts": {
-      "maxDuration": 60,
+      "maxDuration": 300,
       "includeFiles": "{node_modules/@ffmpeg-installer/**,assets/**}"
     },
     "api/welcome.ts": {
-      "maxDuration": 60,
+      "maxDuration": 300,
       "includeFiles": "{node_modules/@ffmpeg-installer/**,assets/**}"
+    },
+    "api/ppv-cron.ts": {
+      "maxDuration": 60
     }
   }
 }

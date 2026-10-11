@@ -159,3 +159,42 @@ export async function ensureWebhook(url: string, wanted: string[]): Promise<{ id
   const w = r.data ?? (r as OfWebhook);
   return { id: w.id, events: wanted, created: true };
 }
+
+// ── Messages ────────────────────────────────────────────────────────────────
+/** Texte (brut, sans HTML) d'un message du chat ; "" si introuvable */
+export async function getChatMessageText(accountId: string, chatId: string, messageId: string): Promise<string> {
+  const r = await api<{ data?: { text?: string }; text?: string }>(accountId, `/chats/${chatId}/messages/${messageId}`, { method: "GET" });
+  const html = String(r.data?.text ?? r.text ?? "");
+  return html.replace(/<br\s*\/?>/gi, "\n").replace(/<[^>]+>/g, "").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&#0?39;/g, "'").replace(/&quot;/g, '"').trim();
+}
+
+// ── Vault (médias + dossiers « listes ») ────────────────────────────────────
+const idOf = (r: unknown): string => {
+  const d = (r as { data?: { id?: unknown }; id?: unknown }) ?? {};
+  const id = d.data?.id ?? d.id;
+  if (id === undefined || id === null) throw new Error("OnlyFansAPI : réponse sans id");
+  return String(id);
+};
+
+/** Dépose une vidéo dans le vault et renvoie son id (traitement synchrone) */
+export async function uploadToVault(accountId: string, file: Buffer, filename: string): Promise<string> {
+  const form = new FormData();
+  form.set("file", new Blob([new Uint8Array(file)], { type: "video/mp4" }), filename);
+  return idOf(await api(accountId, "/media/vault", { method: "POST", body: form }));
+}
+
+export async function createVaultList(accountId: string, name: string): Promise<string> {
+  return idOf(await api(accountId, "/media/vault/lists", { method: "POST", body: JSON.stringify({ name }) }));
+}
+
+export async function addToVaultList(accountId: string, listId: string, mediaIds: string[]): Promise<void> {
+  await api(accountId, `/media/vault/lists/${listId}/media`, { method: "POST", body: JSON.stringify({ mediaIds }) });
+}
+
+export async function deleteVaultList(accountId: string, listId: string): Promise<void> {
+  await api(accountId, `/media/vault/lists/${listId}`, { method: "DELETE" });
+}
+
+export async function deleteVaultMedia(accountId: string, mediaIds: string[]): Promise<void> {
+  await api(accountId, "/media/vault/delete-media", { method: "DELETE", body: JSON.stringify({ mediaIds }) });
+}
