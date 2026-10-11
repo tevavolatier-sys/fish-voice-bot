@@ -460,29 +460,59 @@ $("#abReset").onclick = async () => {
 };
 const pct = (r) => r == null ? "–" : Math.round(r * 100) + " %";
 const eur = (x) => x == null ? "–" : (Math.round(x * 100) / 100).toLocaleString("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " $";
-// Courbe du reply rate par jour d'abonnement (une ligne par groupe), en SVG
+// Courbe du reply rate par jour d'abonnement : une ligne par groupe + la moyenne (noir épais),
+// barres du nombre de fans par jour, valeurs au survol, jour en cours en pointillé
 function renderAbChart(daily) {
   const box = $("#abChart");
   const days = Object.keys(daily || {}).sort();
   if (!days.length) { box.innerHTML = ""; return; }
   const G = [["voice", "Vocal seul", "#3b82f6"], ["none", "Rien", "#9ca3af"], ["selfie", "Selfie seul", "#e0457b"]];
-  const W = 640, H = 220, L = 38, R = 10, T = 10, B = 28;
+  const today = new Date().toISOString().slice(0, 10);
+  const avg = days.map((d) => { const n = G.reduce((a, [k]) => a + daily[d][k].n, 0), r = G.reduce((a, [k]) => a + daily[d][k].r, 0); return { n, r }; });
+  const W = 720, H = 300, L = 44, R = 16, T = 16, B = 74, BAR = 40;
+  const plotH = H - T - B;
   const x = (i) => L + (days.length === 1 ? (W - L - R) / 2 : (i * (W - L - R)) / (days.length - 1));
-  const vals = days.flatMap((d) => G.map(([k]) => (daily[d][k].n >= 5 ? daily[d][k].r / daily[d][k].n : null))).filter((v) => v != null);
-  const max = Math.max(0.1, Math.ceil((Math.max(...vals, 0) + 0.05) * 10) / 10);
-  const y = (v) => T + (H - T - B) * (1 - v / max);
+  const rates = days.flatMap((d, i) => [...G.map(([k]) => (daily[d][k].n >= 5 ? daily[d][k].r / daily[d][k].n : null)), avg[i].n ? avg[i].r / avg[i].n : null]).filter((v) => v != null);
+  const max = Math.max(0.1, Math.ceil((Math.max(...rates, 0) + 0.05) * 10) / 10);
+  const y = (v) => T + plotH * (1 - v / max);
+  const maxN = Math.max(...avg.map((a) => a.n), 1);
+  const fg = "currentColor";
   let svg = '<svg viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="Reply rate par jour d’abonnement">';
-  for (let k = 0; k <= 4; k++) { const v = (max * k) / 4, yy = y(v); svg += '<line x1="' + L + '" x2="' + (W - R) + '" y1="' + yy + '" y2="' + yy + '" stroke="currentColor" stroke-opacity=".12"/><text x="' + (L - 6) + '" y="' + (yy + 4) + '" font-size="11" text-anchor="end" fill="currentColor" fill-opacity=".6">' + Math.round(v * 100) + ' %</text>'; }
-  days.forEach((d, i) => { if (days.length <= 10 || i % Math.ceil(days.length / 10) === 0) svg += '<text x="' + x(i) + '" y="' + (H - 8) + '" font-size="11" text-anchor="middle" fill="currentColor" fill-opacity=".6">' + d.slice(8, 10) + "/" + d.slice(5, 7) + "</text>"; });
-  for (const [k, , c] of G) {
-    const pts = days.map((d, i) => [i, daily[d][k]]).filter(([, g]) => g.n >= 5);
-    if (!pts.length) continue;
-    svg += '<polyline fill="none" stroke="' + c + '" stroke-width="2.5" points="' + pts.map(([i, g]) => x(i) + "," + y(g.r / g.n)).join(" ") + '"/>';
-    for (const [i, g] of pts) svg += '<circle cx="' + x(i) + '" cy="' + y(g.r / g.n) + '" r="3.5" fill="' + c + '"><title>' + days[i] + " · " + Math.round((g.r / g.n) * 100) + " % (" + g.r + "/" + g.n + ")</title></circle>";
+  // grille
+  for (let k = 0; k <= 5; k++) { const v = (max * k) / 5, yy = y(v); svg += '<line x1="' + L + '" x2="' + (W - R) + '" y1="' + yy + '" y2="' + yy + '" stroke="' + fg + '" stroke-opacity=".1"/><text x="' + (L - 8) + '" y="' + (yy + 4) + '" font-size="11" text-anchor="end" fill="' + fg + '" fill-opacity=".55">' + Math.round(v * 100) + ' %</text>'; }
+  // jour en cours (incomplet)
+  const ti = days.indexOf(today);
+  if (ti >= 0 && days.length > 1) { const x0 = x(ti) - (W - L - R) / (days.length - 1) / 2; svg += '<rect x="' + x0 + '" y="' + T + '" width="' + (W - R - x0) + '" height="' + plotH + '" fill="' + fg + '" fill-opacity=".04"/><text x="' + (W - R - 4) + '" y="' + (T + 12) + '" font-size="10" text-anchor="end" fill="' + fg + '" fill-opacity=".5">en cours</text>'; }
+  // barres : fans par jour
+  const by = H - B + 26;
+  days.forEach((d, i) => { const h = (BAR * avg[i].n) / maxN; svg += '<rect x="' + (x(i) - 9) + '" y="' + (by + BAR - h) + '" width="18" height="' + h + '" rx="2" fill="' + fg + '" fill-opacity=".18"><title>' + d + " : " + avg[i].n + " fans</title></rect>"; });
+  svg += '<text x="' + (L - 8) + '" y="' + (by + BAR - 2) + '" font-size="10" text-anchor="end" fill="' + fg + '" fill-opacity=".5">fans</text>';
+  // axe des dates
+  days.forEach((d, i) => { if (days.length <= 14 || i % Math.ceil(days.length / 14) === 0) svg += '<text x="' + x(i) + '" y="' + (H - B + 16) + '" font-size="11" text-anchor="middle" fill="' + fg + '" fill-opacity=".6">' + d.slice(8, 10) + "/" + d.slice(5, 7) + "</text>"; });
+  const line = (pts, color, w, dashLast) => {
+    let out = "";
+    for (let k = 1; k < pts.length; k++) {
+      const [i0, v0] = pts[k - 1], [i1, v1] = pts[k];
+      const dash = dashLast && days[i1] === today ? ' stroke-dasharray="5 4"' : "";
+      out += '<line x1="' + x(i0) + '" y1="' + y(v0) + '" x2="' + x(i1) + '" y2="' + y(v1) + '" stroke="' + color + '" stroke-width="' + w + '" stroke-linecap="round"' + dash + "/>";
+    }
+    return out;
+  };
+  for (const [k, l, c] of G) {
+    const pts = days.map((d, i) => [i, daily[d][k]]).filter(([, g]) => g.n >= 5).map(([i, g]) => [i, g.r / g.n, g]);
+    svg += line(pts, c, 2, true);
+    for (const [i, v, g] of pts) svg += '<circle cx="' + x(i) + '" cy="' + y(v) + '" r="3.5" fill="' + c + '"><title>' + l + " · " + days[i] + " : " + Math.round(v * 100) + " % (" + g.r + "/" + g.n + ")</title></circle>";
   }
+  // moyenne (tous groupes) en noir, avec la valeur affichée
+  const ap = avg.map((a, i) => [i, a.n ? a.r / a.n : null, a]).filter(([, v]) => v != null);
+  svg += line(ap, "#111", 3.5, true);
+  for (const [i, v, a] of ap) svg += '<circle cx="' + x(i) + '" cy="' + y(v) + '" r="5" fill="#111" stroke="#fff" stroke-width="1.5"><title>Moyenne · ' + days[i] + " : " + Math.round(v * 100) + " % (" + a.r + "/" + a.n + ")</title></circle>" +
+    '<text x="' + x(i) + '" y="' + (y(v) - 10) + '" font-size="12" font-weight="700" text-anchor="middle" fill="' + fg + '">' + Math.round(v * 100) + " %</text>";
   svg += "</svg>";
-  box.innerHTML = '<div class="hint" style="margin-bottom:6px"><b>Reply rate par jour d’abonnement</b> (fans du jour qui ont répondu, à ce jour ; jours avec au moins 5 fans)</div>' + svg +
-    '<div class="lg">' + G.map(([, l, c]) => '<span><i style="background:' + c + '"></i>' + l + "</span>").join("") + "</div>";
+  const rows = days.slice().reverse().map((d) => { const i = days.indexOf(d), a = avg[i]; const cell = (g) => g.n ? Math.round((g.r / g.n) * 100) + " % <span class=hint>(" + g.n + ")</span>" : "–"; return "<tr><td>" + d.slice(8, 10) + "/" + d.slice(5, 7) + (d === today ? " <span class=hint>en cours</span>" : "") + "</td><td><b>" + cell(a) + "</b></td>" + G.map(([k]) => "<td>" + cell(daily[d][k]) + "</td>").join("") + "</tr>"; }).join("");
+  box.innerHTML = '<div style="font-weight:600;margin-bottom:4px">Reply rate par jour d’abonnement</div><div class="hint" style="margin-bottom:8px">Part des fans abonnés ce jour-là qui ont répondu (à ce jour). Ligne noire = moyenne tous groupes. Jour en cours en pointillé (incomplet). Barres = nombre de fans.</div>' + svg +
+    '<div class="lg"><span><i style="background:#111"></i><b>Moyenne</b></span>' + G.map(([, l, c]) => '<span><i style="background:' + c + '"></i>' + l + "</span>").join("") + "</div>" +
+    '<div class="ab-wrap" style="margin-top:10px"><table class="ab"><thead><tr><th>Jour</th><th>Moyenne</th>' + G.map(([, l]) => "<th>" + l + "</th>").join("") + "</tr></thead><tbody>" + rows + "</tbody></table></div>";
 }
 
 function renderAb(ab, on) {
