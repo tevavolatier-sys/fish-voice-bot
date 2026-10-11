@@ -46,6 +46,8 @@ export interface PpvAutoLog {
   name: string;
   amount: number;
   status: "done" | "noname" | "error";
+  /** D'où vient le prénom : custom = mis par le chatter sur OF, guessed = deviné sur le pseudo */
+  source?: "custom" | "guessed";
   error?: string;
   listName?: string;
   /** Secondes entre l'achat et le dossier prêt */
@@ -216,11 +218,11 @@ const chatLink = (fanId: string) => `https://onlyfans.com/my/chats/chat/${fanId}
  * Lance la fabrication pour un fan (prénom déjà connu). Renvoie le journal.
  * `force` : renvoi manuel depuis l'interface (ignore « déjà fait »).
  */
-export async function producePpvForFan(p: PpvPurchase, name: string, force = false): Promise<PpvAutoLog> {
+export async function producePpvForFan(p: PpvPurchase, name: string, force = false, source?: "custom" | "guessed"): Promise<PpvAutoLog> {
   const s = await getPpvAutoSettings();
   const log: PpvAutoLog = {
     at: new Date().toISOString(), fan: p.fanId, display: p.display, username: p.username,
-    name, amount: p.amount, status: "error", manual: force || undefined,
+    name, amount: p.amount, status: "error", manual: force || undefined, source,
   };
   const doneKey = `ppvauto:done:${p.accountId}:${p.fanId}`;
   if (!force && (await getRedis().set(doneKey, "1", { nx: true })) !== "OK") {
@@ -278,7 +280,8 @@ export async function handlePpvUnlocked(p: PpvPurchase): Promise<void> {
 
   // Prénom : nom mis par le chatter sur OF s'il ressemble à un prénom (un seul mot,
   // lettres, pas une étiquette comme « Whale » ou « VIP »), sinon détection IA sur le pseudo
-  const name = customFirstName(p.display) ?? (await fanFirstName(p.display || p.name, p.username));
+  const custom = customFirstName(p.display);
+  const name = custom ?? (await fanFirstName(p.display || p.name, p.username));
   if (!name) {
     await addLog({
       at: new Date().toISOString(), fan: p.fanId, display: p.display, username: p.username,
@@ -290,7 +293,7 @@ export async function handlePpvUnlocked(p: PpvPurchase): Promise<void> {
     ).catch(() => {});
     return;
   }
-  await producePpvForFan(p, name);
+  await producePpvForFan(p, name, false, custom ? "custom" : "guessed");
 }
 
 export { ppvReady };

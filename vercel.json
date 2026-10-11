@@ -15,6 +15,15 @@
     },
     "api/ppv-cron.ts": {
       "maxDuration": 60
+    },
+    "api/daily-report.ts": {
+      "maxDuration": 60
     }
-  }
+  },
+  "crons": [
+    {
+      "path": "/api/daily-report",
+      "schedule": "0 19 * * *"
+    }
+  ]
 }
