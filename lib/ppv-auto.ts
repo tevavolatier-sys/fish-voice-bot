@@ -206,7 +206,12 @@ const NOT_FIRST_NAMES = /^(whale|vip|fan|client|spender|timewaster|tw|big|lead|n
 
 /** Le nom mis par le chatter, seulement si c'est clairement UN prénom */
 export function customFirstName(display: string): string | null {
-  const first = (display || "").trim().split(/\s+/)[0] ?? "";
+  // Les chatters mettent parfois une NOTE dans le nom (« prêt de Nantes je travaille… ») :
+  // plus de 3 mots = une note, pas un prénom (vu le 11/10/2026)
+  const words = (display || "").trim().split(/\s+/).filter((w) => /\p{L}/u.test(w));
+  if (words.length === 0 || words.length > 3) return null;
+  const first = words[0];
+  if (/^(pr[eê]t|de|du|le|la|les|un|une|il|je|mon|ma|aime|veut|est|mec|gars|bro|ok|non|oui)$/i.test(first)) return null;
   if (!/^[\p{L}][\p{L}'’-]{1,19}$/u.test(first)) return null;
   if (/\d/.test(display) || NOT_FIRST_NAMES.test(first.replace(/[^\p{L}]/gu, ""))) return null;
   return cleanFanName(first);
