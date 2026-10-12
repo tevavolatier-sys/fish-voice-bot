@@ -601,6 +601,15 @@ async function generateAndReply(
   intensity: number,
   partLabel?: string
 ): Promise<void> {
+  // Message d'attente bien visible, supprimé dès que le vocal est là
+  const waitMsg = await ctx
+    .reply(`🎙️ <b>${model.name} is recording your voice note…</b> ⏳`, {
+      parse_mode: "HTML",
+      reply_parameters: { message_id: messageId, allow_sending_without_reply: true },
+    })
+    .catch(() => null);
+  const clearWait = () =>
+    waitMsg ? ctx.api.deleteMessage(waitMsg.chat.id, waitMsg.message_id).catch(() => {}) : Promise.resolve();
   try {
     await ctx.replyWithChatAction("record_voice").catch(() => {});
     // Le texte est lu TEL QUEL (la traduction auto EN→FR a été retirée :
@@ -649,6 +658,7 @@ async function generateAndReply(
         (err) => console.error("Source vidéo non enregistrée:", err)
       );
     }
+    await clearWait();
     await recordGeneration(userId, model.key, text.length);
 
     // Surveillance des crédits (le modèle s1 est payant) : sous le seuil,
@@ -671,6 +681,7 @@ async function generateAndReply(
     }
   } catch (err) {
     console.error("Erreur de génération TTS:", err);
+    await clearWait();
     const msg =
       err instanceof FishError
         ? err.userMessage
