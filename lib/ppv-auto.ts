@@ -237,13 +237,21 @@ export async function producePpvForFan(p: PpvPurchase, name: string, force = fal
   try {
     const built = await buildPpvForFan(name);
     const slug = name.normalize("NFD").replace(/[^\w-]+/g, "").toLowerCase() || "fan";
-    const [previewId, paid1Id] = await Promise.all([
-      uploadToVault(p.accountId, built.preview.video, `preview-${slug}.mp4`),
-      uploadToVault(p.accountId, built.paid1.video, `ppv1-${slug}.mp4`),
-    ]);
+    // OnlyFans renvoie parfois un 400 « Bad Request » passager (vu le 12/10 : ok au 3e essai) :
+    // chaque étape est retentée 2 fois. Les uploads l'un après l'autre (moins de 400).
+    const again = async <T>(f: () => Promise<T>): Promise<T> => {
+      for (let i = 0; ; i++) {
+        try { return await f(); } catch (e) {
+          if (i >= 2 || !/OnlyFansAPI (400|5dd)/.test(String(e))) throw e;
+          await new Promise((r) => setTimeout(r, 4000 * (i + 1)));
+        }
+      }
+    };
+    const previewId = await again(() => uploadToVault(p.accountId, built.preview.video, `preview-${slug}.mp4`));
+    const paid1Id = await again(() => uploadToVault(p.accountId, built.paid1.video, `ppv1-${slug}.mp4`));
     const listName = `PPV1 - ${name}`;
-    const listId = await createVaultList(p.accountId, listName);
-    await addToVaultList(p.accountId, listId, [previewId, paid1Id]);
+    const listId = await again(() => createVaultList(p.accountId, listName));
+    await again(() => addToVaultList(p.accountId, listId, [previewId, paid1Id]));
     await scheduleCleanup({
       acct: p.accountId, listId, mediaIds: [previewId, paid1Id],
       listAt: Date.now() + s.listMinutes * 60_000, mediaAt: Date.now() + s.mediaHours * 3600_000,
@@ -256,7 +264,7 @@ export async function producePpvForFan(p: PpvPurchase, name: string, force = fal
       `🎬 His free preview + PPV 1 videos with his name (${name}) are ready in the vault → folder “${listName}” (auto-deleted in ${s.listMinutes} min).`
     ).catch((e) => console.error("alerte Telegram:", e));
   } catch (err) {
-    log.error = String((err as Error)?.message ?? err).slice(0, 300);
+    log.error = String((err as Error)?.message ?? err).slice(0, 800);
     log.elapsedSec = Math.round((Date.now() - p.at) / 1000);
     await getRedis().del(doneKey); // on pourra relancer depuis l'interface
     await sendAlert(

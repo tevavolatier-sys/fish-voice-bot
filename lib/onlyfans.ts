@@ -43,7 +43,7 @@ async function api<T>(accountId: string, route: string, init: RequestInit): Prom
     if (res.status !== 503 || !/not_sent/.test(text) || i === waits.length) break;
     await new Promise((r) => setTimeout(r, waits[i]));
   }
-  if (!res!.ok) throw new Error(`OnlyFansAPI ${res!.status} : ${text.slice(0, 300)}`);
+  if (!res!.ok) throw new Error(`OnlyFansAPI ${res!.status} ${route.split("?")[0].replace(/\/\d+/g, "/:id")} : ${text.slice(0, 700)}`);
   return (text ? JSON.parse(text) : {}) as T;
 }
 
