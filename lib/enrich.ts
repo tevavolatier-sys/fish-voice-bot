@@ -111,7 +111,8 @@ async function enrichWithGemini(
   apiKey: string,
   systemPrompt: string,
   model: string,
-  temperature: number
+  temperature: number,
+  retried = false
 ): Promise<string | null> {
   const res = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
@@ -142,7 +143,14 @@ async function enrichWithGemini(
     }
   );
   if (!res.ok) {
-    console.error(`Gemini ${model} ${res.status}:`, await res.text().catch(() => ""));
+    const body = await res.text().catch(() => "");
+    // Quota par minute dépassé : Google indique le délai ; s'il est court on attend
+    const wait = Number(body.match(/retry in ([\d.]+)s/i)?.[1] ?? NaN);
+    if ((res.status === 429 || res.status === 503) && wait > 0 && wait <= 10 && !retried) {
+      await new Promise((r) => setTimeout(r, wait * 1000 + 300));
+      return enrichWithGemini(text, apiKey, systemPrompt, model, temperature, true);
+    }
+    console.error(`Gemini ${model} ${res.status}:`, body.slice(0, 300));
     return null;
   }
   const data = (await res.json()) as {
