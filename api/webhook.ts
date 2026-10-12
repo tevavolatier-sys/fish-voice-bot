@@ -623,27 +623,26 @@ async function generateAndReply(
     // Fichier MP3 directement dans le chat : il s'écoute dans Telegram et se
     // glisse tel quel dans Infloww / OnlyFans
     const fileName = `${model.name}-${Date.now() % 100000}.mp3`;
-    // 1) Lecteur audio (écoute dans Telegram) avec la mise en scène et les boutons
-    const sent = await ctx.replyWithAudio(new InputFile(audio, fileName), {
-      title: `${model.name} · voice`,
-      performer: model.name,
-      reply_parameters: {
-        message_id: messageId,
-        allow_sending_without_reply: true,
-      },
-      caption,
-      parse_mode: "HTML",
-      reply_markup: voiceKeyboard(videoToken, intensity),
-    });
-    // Le bouton 🎬 retrouvera CE vocal (file_id) pour en faire la vidéo
-    // 2) Le même audio en simple fichier : c'est lui qu'on glisse dans Infloww
-    await ctx
-      .replyWithDocument(new InputFile(audio, fileName), {
-        disable_content_type_detection: true,
-        caption: "📥 Drag & drop THIS file into the Infloww chat",
-        reply_parameters: { message_id: sent.message_id, allow_sending_without_reply: true },
-      })
-      .catch((err) => console.error("Fichier à glisser non envoyé:", err));
+    // Envoyés EN MÊME TEMPS : le lecteur (écoute, mise en scène, boutons) et le
+    // même audio en simple fichier, celui qu'on glisse dans Infloww
+    const reply = { reply_parameters: { message_id: messageId, allow_sending_without_reply: true } };
+    const [sent] = await Promise.all([
+      ctx.replyWithAudio(new InputFile(audio, fileName), {
+        title: `${model.name} · voice`,
+        performer: model.name,
+        ...reply,
+        caption,
+        parse_mode: "HTML",
+        reply_markup: voiceKeyboard(videoToken, intensity),
+      }),
+      ctx
+        .replyWithDocument(new InputFile(audio, fileName), {
+          disable_content_type_detection: true,
+          caption: "📥 Drag & drop THIS file into the Infloww chat",
+          ...reply,
+        })
+        .catch((err) => console.error("Fichier à glisser non envoyé:", err)),
+    ]);
     const fileId = sent.audio?.file_id;
     if (fileId) {
       await setVideoSource(videoToken, { f: fileId, m: model.key, t: spoken, d: finalText }).catch(
