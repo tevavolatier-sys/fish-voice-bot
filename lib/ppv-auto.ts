@@ -120,17 +120,30 @@ export function alertConfigured(): boolean {
   return Boolean(process.env.PPV_ALERT_BOT_TOKEN && process.env.PPV_ALERT_CHAT_ID);
 }
 
-export async function sendAlert(text: string): Promise<void> {
+export async function sendAlert(text: string, markup?: unknown): Promise<void> {
   const token = process.env.PPV_ALERT_BOT_TOKEN;
   const chat = process.env.PPV_ALERT_CHAT_ID;
   if (!token || !chat) throw new Error("Bot d'alerte non configuré (PPV_ALERT_BOT_TOKEN / PPV_ALERT_CHAT_ID).");
   const r = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ chat_id: chat, text, disable_web_page_preview: true }),
+    body: JSON.stringify({ chat_id: chat, text, disable_web_page_preview: true, ...(markup ? { reply_markup: markup } : {}) }),
     signal: AbortSignal.timeout(15_000),
   });
   if (!r.ok) throw new Error(`Telegram ${r.status} : ${(await r.text()).slice(0, 200)}`);
+}
+
+/** Bouton « refaire avec le bon prénom » sous les alertes (géré par api/ppv-bot.ts) */
+export const redoButton = (fanId: string, label = "✏️ Wrong name? Redo with the right one") => ({
+  inline_keyboard: [[{ text: label, callback_data: `redo:${fanId}` }]],
+});
+
+/** Contexte d'un achat, gardé 7 jours pour pouvoir le refaire depuis Telegram */
+export async function saveContext(p: PpvPurchase): Promise<void> {
+  await getRedis().set(`ppvauto:ctx:${p.fanId}`, JSON.stringify(p), { ex: 7 * 24 * 3600 });
+}
+export async function getContext(fanId: string): Promise<PpvPurchase | null> {
+  return parse<PpvPurchase>(await getRedis().get(`ppvauto:ctx:${fanId}`));
 }
 
 /** Vidéo envoyée dans le groupe d'alerte (tests depuis l'interface) */
@@ -229,6 +242,7 @@ export async function producePpvForFan(p: PpvPurchase, name: string, force = fal
     at: new Date().toISOString(), fan: p.fanId, display: p.display, username: p.username,
     name, amount: p.amount, status: "error", manual: force || undefined, source,
   };
+  if (p.display || p.username) await saveContext(p).catch(() => {});
   const doneKey = `ppvauto:done:${p.accountId}:${p.fanId}`;
   if (!force && (await getRedis().set(doneKey, "1", { nx: true })) !== "OK") {
     // Déjà traité pour ce fan : pas de 2e dossier
@@ -261,7 +275,8 @@ export async function producePpvForFan(p: PpvPurchase, name: string, force = fal
     log.elapsedSec = Math.round((Date.now() - p.at) / 1000);
     await sendAlert(
       `💰 ${p.display || p.username || p.fanId}${p.username ? ` (@${p.username})` : ""} just bought the welcome PPV ($${p.amount}).\n` +
-      `🎬 His free preview + PPV 1 videos with his name (${name}) are ready in the vault → folder “${listName}” (auto-deleted in ${s.listMinutes} min).`
+      `🎬 His free preview + PPV 1 videos with his name (${name}) are ready in the vault → folder “${listName}” (auto-deleted in ${s.listMinutes} min).`,
+      redoButton(p.fanId)
     ).catch((e) => console.error("alerte Telegram:", e));
   } catch (err) {
     log.error = String((err as Error)?.message ?? err).slice(0, 800);
@@ -269,7 +284,8 @@ export async function producePpvForFan(p: PpvPurchase, name: string, force = fal
     await getRedis().del(doneKey); // on pourra relancer depuis l'interface
     await sendAlert(
       `⚠️ ${p.display || p.username || p.fanId} bought the welcome PPV ($${p.amount}) but the custom videos FAILED: ${log.error}\n` +
-      `Make them by hand with /ppv ${name} in the voice bot.`
+      `Make them by hand with /ppv ${name} in the voice bot, or tap the button to try again.`,
+      redoButton(p.fanId, "🔁 Try again / change the name")
     ).catch(() => {});
   }
   await addLog(log);
@@ -289,6 +305,7 @@ export async function handlePpvUnlocked(p: PpvPurchase): Promise<void> {
     return;
   }
   if (!isTriggerText(text, s.triggerText)) return;
+  await saveContext(p).catch(() => {});
 
   // Prénom : nom mis par le chatter sur OF s'il ressemble à un prénom (un seul mot,
   // lettres, pas une étiquette comme « Whale » ou « VIP »), sinon détection IA sur le pseudo
@@ -302,7 +319,8 @@ export async function handlePpvUnlocked(p: PpvPurchase): Promise<void> {
     });
     await sendAlert(
       `⚠️ ${p.display || p.username || p.fanId} bought the welcome PPV ($${p.amount}) but I can't read his first name from “${p.display || p.name || p.username}”.\n` +
-      `Ask him his name, then rename him on OnlyFans and hit “Redo” in the interface, or make the videos with /ppv Name in the voice bot.`
+      `Ask him his name, then tap the button and type it.`,
+      redoButton(p.fanId, "✏️ Type his first name")
     ).catch(() => {});
     return;
   }

@@ -152,6 +152,16 @@ export async function POST(req: Request): Promise<Response> {
         if (log.status !== "done") throw new Error(log.error ?? "échec");
         return Response.json({ ok: true, listName: log.listName });
       }
+      case "ppvBotSetup": {
+        // Webhook Telegram du bot d'alerte (bouton « Redo with the right name »)
+        const url = `${new URL(req.url).origin}/api/ppv-bot`;
+        const r = await fetch(`https://api.telegram.org/bot${process.env.PPV_ALERT_BOT_TOKEN}/setWebhook`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url, secret_token: process.env.CRON_SECRET, allowed_updates: ["message", "callback_query"] }),
+        }).then((x) => x.json());
+        return Response.json({ ok: Boolean((r as { ok?: boolean }).ok), url, telegram: r });
+      }
       case "ppvCleanup":
         return Response.json({ ok: true, ...(await runCleanup()) });
       case "webhookSetup": {

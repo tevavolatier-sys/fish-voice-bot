@@ -19,6 +19,10 @@
     "api/daily-report.ts": {
       "maxDuration": 60,
       "includeFiles": "assets/**"
+    },
+    "api/ppv-bot.ts": {
+      "maxDuration": 300,
+      "includeFiles": "{node_modules/@ffmpeg-installer/**,assets/**}"
     }
   },
   "crons": [
