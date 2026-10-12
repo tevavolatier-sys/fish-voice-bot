@@ -4,8 +4,9 @@
 // réels ([soft breath], [small laugh]) et quelques balises de mot
 // (<whisper>…</whisper>) — SANS jamais changer les mots.
 // Fournisseur LLM par ordre de priorité :
-//   1. Google Gemini (GEMINI_API_KEY)
-//   2. Groq (GROQ_API_KEY)
+//   1. xAI Grok (XAI_API_KEY) — accepte les textes adultes, pas besoin de masquer
+//   2. Google Gemini (GEMINI_API_KEY) — mots sensibles masqués
+//   3. Groq (GROQ_API_KEY)
 //   3. Claude (ANTHROPIC_API_KEY)
 //   4. Aucun -> le texte brut est utilisé tel quel
 // En cas d'échec quel qu'il soit, la génération vocale n'est jamais bloquée.
@@ -17,6 +18,10 @@ import { LEFTOVER, maskSensitiveEn, maskSensitiveFr, unmask } from "./translate.
 const EXISTING_TAG = /\[[^\]\n]{2,60}\]|<(whisper|soft|slow|fast|emphasis|stress|forceful)>/i;
 
 const TIMEOUT_MS = 25_000;
+
+/** Modèles Grok : le meilleur, puis un rapide en secours */
+const GROK_MODEL = "grok-4.20-0309-non-reasoning"; // ~1 s, même qualité
+const GROK_FAST_MODEL = "grok-4.7"; // secours (plus lent)
 
 /** Intensity levels picked by the operator via /level (default: 1) */
 export const INTENSITY_LEVELS: Record<number, { label: string; instruction: string }> = {
@@ -54,7 +59,7 @@ export const DEFAULT_INTENSITY = 1;
 
 const PAIRED = ["whisper", "soft", "slow", "fast", "emphasis", "stress", "forceful"];
 
-function buildSystemPrompt(level: number): string {
+export function buildSystemPrompt(level: number): string {
   const intensity =
     INTENSITY_LEVELS[level]?.instruction ?? INTENSITY_LEVELS[DEFAULT_INTENSITY].instruction;
 
@@ -99,7 +104,8 @@ Output: [lowering her voice, breathy] J'ai envie de toi… [soft sigh] [slow, in
 }
 
 /** Nom du fournisseur actif (pour le diagnostic) */
-export function enrichProvider(): "gemini" | "groq" | "claude" | "aucun" {
+export function enrichProvider(): "grok" | "gemini" | "groq" | "claude" | "aucun" {
+  if (process.env.XAI_API_KEY) return "grok";
   if (process.env.GEMINI_API_KEY) return "gemini";
   if (process.env.GROQ_API_KEY) return "groq";
   if (process.env.ANTHROPIC_API_KEY) return "claude";
@@ -169,6 +175,36 @@ async function enrichWithGemini(
     );
   }
   return out || null;
+}
+
+// xAI Grok (API compatible OpenAI)
+async function enrichWithGrok(
+  text: string,
+  apiKey: string,
+  systemPrompt: string,
+  model: string,
+  temperature: number
+): Promise<string | null> {
+  const res = await fetch("https://api.x.ai/v1/chat/completions", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model,
+      temperature,
+      max_tokens: 2048,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: text },
+      ],
+    }),
+    signal: AbortSignal.timeout(TIMEOUT_MS),
+  });
+  if (!res.ok) {
+    console.error(`Grok ${model} ${res.status}:`, (await res.text().catch(() => "")).slice(0, 300));
+    return null;
+  }
+  const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };
+  return data.choices?.[0]?.message?.content?.trim() || null;
 }
 
 async function enrichWithGroq(
@@ -290,12 +326,30 @@ export async function enrichWithEmotionTags(
 ): Promise<string> {
   if (EXISTING_TAG.test(text)) return text;
 
+  const xaiKey = process.env.XAI_API_KEY;
   const geminiKey = process.env.GEMINI_API_KEY;
   const groqKey = process.env.GROQ_API_KEY;
   const anthropicKey = process.env.ANTHROPIC_API_KEY;
-  if (!geminiKey && !groqKey && !anthropicKey) return text;
+  if (!xaiKey && !geminiKey && !groqKey && !anthropicKey) return text;
 
   const systemPrompt = buildSystemPrompt(level);
+
+  // 1) Grok : texte INTACT (il accepte les textes adultes), donc il comprend
+  //    vraiment le message ; 2 modèles avant de passer à Gemini.
+  if (xaiKey) {
+    const grokModels = [process.env.XAI_MODEL?.trim() || GROK_MODEL, GROK_FAST_MODEL];
+    for (const model of grokModels) {
+      try {
+        const raw = await enrichWithGrok(text, xaiKey, systemPrompt, model, variety ? 0.9 : 0.7);
+        const checked = raw ? checkDirected(text, raw) : null;
+        if (checked) return checked;
+        console.error("Mise en scène Grok rejetée:", JSON.stringify({ model, text, raw }));
+      } catch (err) {
+        console.error(`Mise en scène Grok ${model} échouée:`, err);
+      }
+    }
+  }
+  if (!geminiKey && !groqKey && !anthropicKey) return text;
 
   // Gemini REFUSE les textes explicites : les mots sensibles (FR + EN)
   // deviennent des jetons neutres avant l'appel, remis à l'identique après.
