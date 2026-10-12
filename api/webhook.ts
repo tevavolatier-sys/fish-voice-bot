@@ -618,9 +618,7 @@ async function generateAndReply(
     // Légende = aperçu visuel de la mise en scène (le chatter garde l'œil)
     const head = `<b>${model.name}</b>${partLabel ? ` · ${partLabel}` : ""} · ${LEVEL_ICONS[intensity] ?? ""}`;
     const view = directionView(finalText);
-    const dragHint = "📥 <b>Drag &amp; drop this voice note into the Infloww chat.</b>";
-    const caption =
-      visibleLength(view) <= 900 ? `${head}\n\n${view}\n\n${dragHint}` : `${head}\n\n${dragHint}`;
+    const caption = visibleLength(view) <= 950 ? `${head}\n\n${view}` : head;
     const videoToken = newVideoToken();
     // Fichier MP3 directement dans le chat : il s'écoute dans Telegram et se
     // glisse tel quel dans Infloww / OnlyFans
@@ -636,6 +634,15 @@ async function generateAndReply(
       reply_markup: voiceKeyboard(videoToken, intensity),
     });
     // Le bouton 🎬 retrouvera CE vocal (file_id) pour en faire la vidéo
+    // Le MÊME audio en simple fichier : Telegram Desktop ne laisse pas glisser
+    // une note vocale, mais un fichier se glisse dans le chat Infloww
+    await ctx
+      .replyWithDocument(new InputFile(audio, fileName), {
+        disable_content_type_detection: true,
+        caption: "📥 Drag & drop THIS file into the Infloww chat",
+        reply_parameters: { message_id: sent.message_id, allow_sending_without_reply: true },
+      })
+      .catch((err) => console.error("Fichier à glisser non envoyé:", err));
     const fileId = sent.voice?.file_id;
     if (fileId) {
       await setVideoSource(videoToken, { f: fileId, m: model.key, t: spoken, d: finalText }).catch(
