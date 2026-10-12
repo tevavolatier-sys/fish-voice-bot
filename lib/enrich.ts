@@ -71,14 +71,14 @@ STEP 1 (silently, do not output it): understand the message. What does she want 
 
 STEP 2: output the SAME text with Drama 3 markup:
 1. DIRECTIONS — plain English in square brackets, placed right BEFORE the words they color, like a film director talking to an actress:
-   [smiling, a little shy] · [warm, relaxed, close to the mic] · [teasing, slowing down] · [lowering her voice, intimate] · [suddenly excited] · [half laughing]
+   [smiling, a little shy] · [warm, relaxed, close to the mic] · [teasing, playful] · [lowering her voice, intimate] · [suddenly excited] · [half laughing]
    - Start the message with one direction that sets her overall voice.
    - Add a new direction only where the mood really changes (usually 2 to 4 in total, 1 for a very short message).
    - 2 to 8 words each, concrete and physical (smile, closeness, pace, breath), never vague like [emotional].
 2. SOUNDS — where a real woman would make them: [soft breath] [small laugh] [giggle] [soft sigh] [short pause] [shaky breath] [heavy breathing] [panting] [gasp] [moan] [soft moan] [loud moan] [long moan] [whimper] [cry of pleasure] [scream of pleasure] [hum] [lip smack]
    - A breath before a confession or a new idea; a small laugh after a teasing line; a short pause before the key word.
    - Follow the intensity below for how many sounds and which ones.
-3. WORD TAGS — around 1 to 4 words only, at most 2 per message: <whisper>…</whisper> <soft>…</soft> <slow>…</slow> <emphasis>…</emphasis>
+3. WORD TAGS — around 1 to 4 words only, at most 2 per message: <whisper>…</whisper> <soft>…</soft> <emphasis>…</emphasis>
    - Never nested, always closed, never around the whole message.
 
 ${intensity}
@@ -86,6 +86,7 @@ ${intensity}
 STRICT RULES:
 - NEVER add, remove, replace, translate or reorder a WORD. The spoken words must stay exactly the same (keep the original language, slang, typos and emojis-free spelling).
 - You MAY adjust punctuation for spoken rhythm: a comma where she breathes, "?" or "!" if it matches the intent, at most ONE "…" per message. Keep it light.
+- PACE: natural, lively speed like a real voice note. NEVER ask her to slow down: no "slow", "slowly", "slowing down", "drawn out", no <slow> tag.
 - PAUSES: a real voice note flows. At most ONE [short pause] per message, never [long pause], never a pause next to "…". Silence is boring: prefer a breath or a sound.
 - Tokens like ⟦T0⟧ or ⟦T1000⟧ are hidden words: keep each one EXACTLY as written, in its place.
 - Emojis: remove them (they are not spoken).
@@ -103,7 +104,7 @@ Input: I just got out of the shower and I can't stop thinking about you
 Output: [relaxed, intimate, close to the mic] I just got out of the shower… [soft breath] and I <whisper>can't stop</whisper> thinking about you.
 
 Input: j'ai envie de toi, viens me voir ce soir, je t'attends
-Output: [lowering her voice, breathy] J'ai envie de toi… [soft sigh] [slow, intimate] viens me voir ce soir, [short pause] <whisper>je t'attends</whisper>.`;
+Output: [lowering her voice, breathy] J'ai envie de toi… [soft sigh] [intimate, close to the mic] viens me voir ce soir, [short pause] <whisper>je t'attends</whisper>.`;
 }
 
 /** Nom du fournisseur actif (pour le diagnostic) */
@@ -329,6 +330,14 @@ export function checkDirected(input: string, output: string, level = DEFAULT_INT
   if (brackets.length > maxMarks) return null;
   // Emojis restants retirés (ils ne se disent pas)
   out = out.replace(EMOJI, "").replace(/\s{2,}/g, " ").trim();
+  // Pas de voix qui traîne : « slow / slowing down » retirés des directions, <slow> enlevé
+  out = out
+    .replace(/<\/?slow>/gi, "")
+    .replace(/\[([^\]]*)\]/g, (m, d: string) => {
+      if (!/slow|drawn|drawl|lingering/i.test(d)) return m;
+      const kept = d.split(",").map((x) => x.trim()).filter((x) => x && !/slow|drawn|drawl|lingering/i.test(x));
+      return kept.length ? `[${kept.join(", ")}]` : "";
+    });
   // Pas de longs silences : 1 seule pause courte, 1 seul « … » (les autres → virgule)
   let pauses = 0;
   out = out.replace(/\[[^\]]*pause[^\]]*\]\s*/gi, () => (pauses++ === 0 ? "[short pause] " : ""));
