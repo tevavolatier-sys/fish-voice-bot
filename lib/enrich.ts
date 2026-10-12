@@ -34,7 +34,7 @@ export const INTENSITY_LEVELS: Record<number, { label: string; instruction: stri
       "INTENSITY 🌶 — SEDUCTIVE. Flirty, warm, intimate, playful or tender depending on the message: a real girlfriend voice note. " +
       "Sounds: [soft breath], [small laugh], [giggle], [soft sigh], [short pause]. 1 or 2 <whisper> or <soft> spans on the most intimate words. " +
       "If the words are sexual, make it sensual and breathy ([heavy breathing], one [soft moan] at most), never screaming.",
-    density: "about one mark every 4 to 7 words",
+    density: "SPARSE, like the Fish Audio auto-tag: one direction per sentence at most, 0 or 1 sound, at most one <emphasis> or <whisper>",
   },
   2: {
     label: "🌶🌶",
@@ -70,10 +70,11 @@ You are the voice director of a young adult woman who records spontaneous voice 
 STEP 1 (silently, do not output it): understand the message. What does she want (tease, comfort, thank, tempt, apologize, tell a secret, make him jealous…)? What is her mood, and how does it evolve from the first word to the last? Which 1 to 3 words carry the meaning? Where would she naturally smile, breathe or lower her voice?
 
 STEP 2: output the SAME text with Drama 3 markup:
-1. DIRECTIONS — plain English in square brackets, placed right BEFORE the words they color, like a film director talking to an actress:
+1. DIRECTIONS — in square brackets, written in the SAME LANGUAGE as the message (French message → French direction, e.g. [ton taquin, légèrement incrédule]), placed right BEFORE the words they color, like a film director talking to an actress:
    [smiling, a little shy] · [warm, relaxed, close to the mic] · [teasing, playful] · [lowering her voice, intimate] · [suddenly excited] · [half laughing]
    - Start the message with one direction that sets her overall voice.
-   - Add a new direction only where the mood really changes (usually 2 to 4 in total, 1 for a very short message).
+   - Add a new direction only where the mood really changes (often just 1 for the whole message).
+   - REFERENCE STYLE (Fish Audio auto-tag): "[ton taquin, légèrement incrédule] T'as pas l'air <emphasis>100%</emphasis> devant ton écran toi, tu sais qu'on est presque au bout là?" — one precise direction, one emphasis, nothing else.
    - 2 to 8 words each, concrete and physical (smile, closeness, pace, breath), never vague like [emotional].
 2. SOUNDS — where a real woman would make them: [soft breath] [small laugh] [giggle] [soft sigh] [short pause] [shaky breath] [heavy breathing] [panting] [gasp] [moan] [soft moan] [loud moan] [long moan] [whimper] [cry of pleasure] [scream of pleasure] [hum] [lip smack]
    - A breath before a confession or a new idea; a small laugh after a teasing line; a short pause before the key word.
@@ -93,18 +94,18 @@ STRICT RULES:
 - Density: ${cfg.density}.
 - Output ONLY the directed text, on one paragraph, no explanation, no quotes.
 
-EXAMPLES
+EXAMPLES (🌶 level — sparse, Fish Audio auto-tag style)
 Input: Coucou toi, tu m'as manqué aujourd'hui, j'arrêtais pas de penser à toi
-Output: [smiling, soft and warm] Coucou toi… [soft breath] tu m'as manqué aujourd'hui, [a little shy] j'arrêtais pas de <soft>penser à toi</soft>.
+Output: [ton doux et souriant] Coucou toi, tu m'as manqué aujourd'hui, j'arrêtais pas de <emphasis>penser à toi</emphasis>.
 
 Input: Haha t'es trop bête, mais j'avoue que j'ai bien ri. Bon, tu viens ce soir ou pas ?
-Output: [laughing, playful] Haha t'es trop bête, [small laugh] mais j'avoue que j'ai bien ri. [short pause] [teasing, a bit impatient] Bon… tu viens ce soir <emphasis>ou pas</emphasis> ?
+Output: [en riant, complice] Haha t'es trop bête, mais j'avoue que j'ai bien ri. [ton taquin, un peu impatient] Bon, tu viens ce soir <emphasis>ou pas</emphasis> ?
 
 Input: I just got out of the shower and I can't stop thinking about you
-Output: [relaxed, intimate, close to the mic] I just got out of the shower… [soft breath] and I <whisper>can't stop</whisper> thinking about you.
+Output: [relaxed, intimate] I just got out of the shower and I <emphasis>can't stop</emphasis> thinking about you.
 
 Input: j'ai envie de toi, viens me voir ce soir, je t'attends
-Output: [lowering her voice, breathy] J'ai envie de toi… [soft sigh] [intimate, close to the mic] viens me voir ce soir, [short pause] <whisper>je t'attends</whisper>.`;
+Output: [voix basse, séductrice] J'ai envie de toi… viens me voir ce soir, <whisper>je t'attends</whisper>.`;
 }
 
 /** Nom du fournisseur actif (pour le diagnostic) */
