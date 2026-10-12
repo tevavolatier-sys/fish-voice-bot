@@ -75,7 +75,7 @@ STEP 2: output the SAME text with Drama 3 markup:
    - Start the message with one direction that sets her overall voice.
    - Add a new direction only where the mood really changes (usually 2 to 4 in total, 1 for a very short message).
    - 2 to 8 words each, concrete and physical (smile, closeness, pace, breath), never vague like [emotional].
-2. SOUNDS — where a real woman would make them: [soft breath] [small laugh] [giggle] [soft sigh] [short pause] [long pause] [shaky breath] [heavy breathing] [panting] [gasp] [moan] [soft moan] [loud moan] [long moan] [whimper] [cry of pleasure] [scream of pleasure] [hum] [lip smack]
+2. SOUNDS — where a real woman would make them: [soft breath] [small laugh] [giggle] [soft sigh] [short pause] [shaky breath] [heavy breathing] [panting] [gasp] [moan] [soft moan] [loud moan] [long moan] [whimper] [cry of pleasure] [scream of pleasure] [hum] [lip smack]
    - A breath before a confession or a new idea; a small laugh after a teasing line; a short pause before the key word.
    - Follow the intensity below for how many sounds and which ones.
 3. WORD TAGS — around 1 to 4 words only, at most 2 per message: <whisper>…</whisper> <soft>…</soft> <slow>…</slow> <emphasis>…</emphasis>
@@ -85,7 +85,8 @@ ${intensity}
 
 STRICT RULES:
 - NEVER add, remove, replace, translate or reorder a WORD. The spoken words must stay exactly the same (keep the original language, slang, typos and emojis-free spelling).
-- You MAY adjust punctuation for spoken rhythm: "…" for a trailing or teasing end, a comma where she breathes, "?" or "!" if it matches the intent. Keep it light.
+- You MAY adjust punctuation for spoken rhythm: a comma where she breathes, "?" or "!" if it matches the intent, at most ONE "…" per message. Keep it light.
+- PAUSES: a real voice note flows. At most ONE [short pause] per message, never [long pause], never a pause next to "…". Silence is boring: prefer a breath or a sound.
 - Tokens like ⟦T0⟧ or ⟦T1000⟧ are hidden words: keep each one EXACTLY as written, in its place.
 - Emojis: remove them (they are not spoken).
 - Density: ${cfg.density}.
@@ -328,6 +329,12 @@ export function checkDirected(input: string, output: string, level = DEFAULT_INT
   if (brackets.length > maxMarks) return null;
   // Emojis restants retirés (ils ne se disent pas)
   out = out.replace(EMOJI, "").replace(/\s{2,}/g, " ").trim();
+  // Pas de longs silences : 1 seule pause courte, 1 seul « … » (les autres → virgule)
+  let pauses = 0;
+  out = out.replace(/\[[^\]]*pause[^\]]*\]\s*/gi, () => (pauses++ === 0 ? "[short pause] " : ""));
+  let dots = 0;
+  out = out.replace(/…|\.{3,}/g, () => (dots++ === 0 ? "…" : ","));
+  out = out.replace(/,\s*([,.!?])/g, "$1").replace(/\s{2,}/g, " ").trim();
   return out;
 }
 
