@@ -84,6 +84,7 @@ export async function getFishCredits(): Promise<number | null> {
  */
 /** Réglages facultatifs de la synthèse (prises « fixes » plus stables). */
 export interface VoiceOptions {
+  model?: string; // modèle Fish (en-tête « model ») ; sinon FISH_MODEL / s2.1-pro
   temperature?: number;
   top_p?: number;
   speed?: number;
@@ -104,7 +105,7 @@ export async function generateVoice(
         headers: {
           Authorization: `Bearer ${process.env.FISH_API_KEY}`,
           "Content-Type": "application/json",
-          model: fishModel(),
+          model: opts.model ?? fishModel(),
         },
         body: JSON.stringify({
           text,

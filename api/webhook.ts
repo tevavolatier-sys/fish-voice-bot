@@ -572,6 +572,9 @@ function splitLongText(text: string, max: number): string[] {
   return chunks;
 }
 
+// Modèle Fish des vocaux : Drama 3 (le plus naturel), modifiable par FISH_VOICE_MODEL
+const VOICE_NOTE_MODEL = process.env.FISH_VOICE_MODEL?.trim() || "drama-3-preview";
+
 // ---------- Génération TTS (exécutée après la réponse 200 via waitUntil) ----------
 async function generateAndReply(
   ctx: Context,
@@ -595,7 +598,13 @@ async function generateAndReply(
       VOICE_STYLES.map(async (style) => {
         try {
           const finalText = await enrichWithEmotionTags(spoken, intensity, true, style.key);
-          const audio = await generateVoice(finalText, model.referenceId);
+          // Modèle le plus naturel (Drama 3) ; repli sur le modèle standard s'il échoue
+          const audio = await generateVoice(finalText, model.referenceId, { model: VOICE_NOTE_MODEL }).catch(
+            (err) => {
+              console.error("Drama 3 échoué, repli s2.1-pro:", err);
+              return generateVoice(finalText, model.referenceId);
+            }
+          );
           return { style, finalText, audio };
         } catch (err) {
           console.error(`Variante ${style.key} échouée:`, err);
@@ -625,7 +634,12 @@ async function generateAndReply(
         .slice(0, 1024);
       // 🎬 sous chaque version ; niveaux d'intensité sous la DERNIÈRE seulement
       const videoToken = newVideoToken();
-      const sent = await ctx.replyWithVoice(new InputFile(audio, `voice-${style.key}.mp3`), {
+      // Fichier MP3 (et non « note vocale » .ogg) : se glisse tel quel dans le
+      // chat Infloww / OnlyFans depuis Telegram Desktop
+      const fileName = `${model.name}-${style.key}-${Date.now() % 100000}.mp3`;
+      const sent = await ctx.replyWithAudio(new InputFile(audio, fileName), {
+        title: `${model.name} · ${style.label.replace(/^\S+\s/, "")}`,
+        performer: model.name,
         reply_parameters: {
           message_id: messageId,
           allow_sending_without_reply: true,
@@ -634,7 +648,7 @@ async function generateAndReply(
         reply_markup: voiceKeyboard(videoToken, i === ok.length - 1 ? intensity : undefined),
       });
       // Le bouton 🎬 retrouvera CE vocal (file_id) pour en faire la vidéo
-      const fileId = sent.voice?.file_id;
+      const fileId = sent.audio?.file_id;
       if (fileId) {
         await setVideoSource(videoToken, { f: fileId, m: model.key, s: style.label }).catch(
           (err) => console.error("Source vidéo non enregistrée:", err)

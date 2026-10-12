@@ -79,18 +79,17 @@ function buildSystemPrompt(level: number, style?: string): string {
     INTENSITY_LEVELS[level]?.instruction ??
     INTENSITY_LEVELS[DEFAULT_INTENSITY].instruction;
 
-  return `You prepare texts for Fish Audio voice synthesis. These are warm, flirty or intimate voice messages sent by a woman to an admirer.
+  return `You direct a voice actress for Fish Audio "Drama 3", the most natural TTS model. The texts are warm, flirty or intimate voice messages a young woman records on her phone for an admirer (a real voice note, not a read text).
 
-Your only task: insert emotion tags in brackets at natural spots in the text to make the voice feel alive and believable.
+Your only task: add stage DIRECTIONS and SOUNDS so the voice sounds 100% real, alive and spontaneous.
 
-Allowed tags (only these):
-- Positive emotions: [excited] [delighted] [joyful] [satisfied] [proud] [confident] [relaxed] [grateful] [moved] [amused] [curious] [interested]
-- Negative emotions: [sad] [unhappy] [upset] [depressed] [worried] [anxious] [nervous] [scared] [panicked] [angry] [furious] [frustrated] [impatient] [guilty] [embarrassed] [awkward] [hesitating]
-- Other emotions: [surprised] [astonished] [confused] [serious] [sincere] [comforting] [empathetic] [sarcastic]
-- Speaking styles: [whispering] [soft tone] [shouting] [screaming] [in a hurry tone]
-- Sounds and breathing: [laughing] [chuckling] [giggling] [sobbing] [crying loudly] [sighing] [breath] [panting] [groaning] [cough] [lip-smacking]
-- Pauses: [break] [long-break]
-
+Drama 3 syntax (use ONLY this):
+- Plain-language direction in brackets, in English, BEFORE the words it applies to, describing tone, emotion, pace and attitude like a director would:
+  [smiling, playful, a bit shy] · [low intimate voice, close to the mic] · [teasing, slowly] · [suddenly excited] · [hesitant, then confident]
+  Change the direction when the mood changes (2 to 4 directions per message, short: 2 to 8 words).
+- Sounds where they really happen: [soft breath] [small laugh] [giggle] [sigh] [soft sigh] [short pause] [long pause] [lip smack] [hum]
+  (plus [heavy breathing] / [soft moan] ONLY if the intensity level allows it)
+- Word-level paired tags around a FEW words only: <whisper>…</whisper> <soft>…</soft> <slow>…</slow> <emphasis>…</emphasis> <fast>…</fast>
 ${intensity}
 ${style ? style + "\n" : ""}
 Strict rules:
@@ -101,8 +100,9 @@ Strict rules:
   • end a teasing line with "?" or "!" when that matches the intent; a hesitation can become "..."
   • repeat the key word ONLY if it is already in the text; never invent words
   Goal: 2 to 4 rhythm marks (— or ...) per message, placed where a real woman would breathe, tease or hesitate.
-- A tag goes right before the sentence or group of words it colors.
-- BREATHING: a voice that breathes is a believable voice. Place [breath] where a real person would catch their breath.
+- A direction goes right before the sentence or group of words it colors.
+- BREATHING: a voice that breathes is a believable voice. Place [soft breath] where a real person would catch their breath.
+- The intensity/style notes below may name old tags ([whispering], [breath], [panting], [groaning], [break]…): translate them into the Drama 3 syntax above (<whisper>, [soft breath], [heavy breathing], [soft moan], [short pause]…).
 - STRICTLY respect the requested intensity level above, even if the text seems more or less sexual than the level.
 - Reply ONLY with the final tagged text, no explanation, no quotes.`;
 }
@@ -253,7 +253,7 @@ export async function enrichWithEmotionTags(
   const accept = (enriched: string | null, ref: string): string | null => {
     // Garde-fou : réponse vide ou aberrante (trop courte/longue) → refusée
     if (!enriched || enriched.length < ref.length * 0.8) return null;
-    if (enriched.length > ref.length + 300) return null;
+    if (enriched.length > ref.length + 600) return null;
     return enriched;
   };
 
