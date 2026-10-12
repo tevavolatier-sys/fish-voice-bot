@@ -1,44 +1,6 @@
-# Où j'en suis — fish-voice-bot (11/10/2026)
+# Où j'en suis — Voice Bot (2026-10-11)
 
-## Fait
-- Vocal de bienvenue OnlyFans (Sienna) EN PRODUCTION : webhook OnlyFansAPI wh_3dadc47b… (subscriptions.new + messages.received, géré par l'API via l'action `webhookSetup`), interface https://fish-voice-bot.vercel.app/api/welcome. Prénom par LLM Gemini (vérifié).
-- Test A/B vocal / sans vocal EN COURS (coché par Teva) : 18 + 21 fans en attente de leurs 48 h au 07/10. Les réponses ne sont comptées que depuis l'ajout de messages.received (07/10) — les tout premiers fans n'auront pas de réponse enregistrée.
-- Audit (workflow 30 agents) appliqué et déployé (536749b) : modèles image Gemini à jour, budget temps Vercel, voix + selfie en parallèle, repli vocal seul, Idempotency-Key, date d'abonnement createdAt, photo réduite côté navigateur, prénoms avec apostrophe.
-- Automatisation : Claude pilote l'interface par script (WELCOME_AUTOMATION_KEY sur Vercel, copie locale dans .env.automation, ignoré par git) et déploie (règle dans .claude/settings.local.json, autorisée par Teva le 07/10).
-- Selfie « papier avec le prénom » : photo de Sienna installée en prod, zone OK, vocal testé OK. Selfie DÉSACTIVÉ : l'IA Gemini image refuse (« modèles image pas dans l'offre gratuite », 429).
-
-- SELFIE IA ACTIVÉ le 08/10 (OpenAI gpt-image-1-mini, qualité medium, ≈ 0,01 $/selfie ; clé OPENAI_API_KEY sur Vercel). Fonctionnement : seule une vignette autour de la feuille part chez OpenAI (pas de visage → modération OK, 15-25 s), masque = zone d'écriture, puis seule l'encre reliée au prénom est reportée sur la vraie photo (papier/visage/corps intacts, traits parasites effacés), contrôle « prénom coupé » → 2e essai, 2e essai aussi sur refus de modération. Testé en prod : Alex, Dark, Jean, Christopher, Maxou nickel. Pas de secours texte (Teva : fait faux) : si l'IA échoue, vocal seul + raison dans le journal. Gemini en secours seulement si sa facturation est activée (pas le cas).
-
-- 08/10 réalisme (Teva : « pas assez réaliste, il faut voir que c'est fait à la main ») : 3 panels de juges (workflows) → style cursif par défaut (DEFAULT_STYLE, surcharge WELCOME_STYLE), rendu « vrai feutre » déterministe dans compositeZone (encre qui assombrit le papier, pression variable par bruit, bords baveux, plus chargée aux croisements ; WELCOME_INK 0,84 / WELCOME_INK_BLUR 0,6 / WELCOME_INK_PRESSURE 0,45). Échantillon de la vraie écriture de Sienna possible (interface → « Vraie écriture de la modèle », 2e image passée à OpenAI) : demandé à Teva, pas reçu. Essais par script : selfieTest accepte model/quality/style/noReference.
-
-- Panel 3 : gpt-image-1 cursif 6,5/10, mini cursif 5,7/10 (écart faible pour 4× le prix) → on reste sur mini ; reproche restant « encre grise » corrigé (cœur du trait saturé, WELCOME_INK 0,88, pression 0,3).
-
-- 08/10 (Teva : « encore trop fake ») → méthode « note » (défaut, WELCOME_AI_METHOD=edit pour l'ancienne) : OpenAI GÉNÈRE une photo de note manuscrite (images/generations, 12-15 s), lib/selfie.ts placeNote découpe l'encre (pickNoteInk : taches sur la ligne du prénom, exit souligné/pointillés), la pose en perspective dans la zone (70 % de largeur, anti-crénelage) et renderInk fait le rendu feutre. Panel 4 : note 5,8 / edit 4,1 (unanime) → note par défaut ; trous blancs aux croisements corrigés (plancher papier médian + fermeture morphologique, closeHoles).
-
-- 08/10 (Teva : « trop parfait encore ») : consigne de note « bâclée » (NOTE_STYLE, surcharge WELCOME_NOTE_STYLE) + « geste de la main » dans placeNote (displace avec 2 champs aléatoires lisses, WELCOME_WOBBLE 0,6 ; bug corrigé : cartes en gris dès la source sinon fond à 16 → bandes grises) + filtre des taches loin du mot. Panel 5 : 6,8/10 (Alex) contre 5,8 avant. Puis rendu feutre v3 (renderInk : pression avant saturation, bords fibreux faibles WELCOME_INK_FIBER 0,12, croisements ×0,6, stries) + geste à-coups + filtre cadres/soulignés (fill < 6 %). DÉPLOYÉ. Teva n'a toujours pas envoyé d'échantillon de l'écriture de Sienna (demandé 6×) : c'est le dernier levier réel.
-
-- 08/10 : Teva reste sur la méthode note (pas de feuille Sienna). Ajout d'une 2e ligne « bienvenue » + cœur (WELCOME_NOTE_LINE2, vide = prénom seul), encre limitée à l'intérieur de la feuille générée, filtres taches grises / bavures. 10 tests random + 4 tests 2 lignes envoyés, déployé.
-
-- 08/10 : écriture « adulte sans faire attention » (geste 0,4), effet feutre renforcé. TEST A/B/C en prod : ⅓ vocal seul, ⅓ rien, ⅓ vocal + selfie (groupe « selfie » nouveau : les anciens fans restent dans leurs groupes). Interface : 3 colonnes.
-
-- 09-10/10 : groupe selfie = selfie SEUL + texte modifiable (« bcp de gens pensent que je suis un faux profil… »), vocal de repli si échec → hors test. A/B : fenêtre 72 h, CA par groupe (webhook transactions.new + rattrapage rétroactif abBackfill via /users/{id} subscribedOnData, 492/507 fans). 10/10 : crédit OpenAI épuisé à 17 h 38 → Teva doit recharger (platform.openai.com billing, recharge auto conseillée). 8 erreurs OF 400 « Bad Request » sur 100 envois (cause inconnue).
-
-- 11/10 PPV PERSO AUTOMATIQUE (Sienna) EN PROD, ACTIF : webhook messages.ppv.unlocked → si le message acheté commence par « OUVRE CA et attends 5 min… » (texte réglable dans l'interface) → prénom = nom mis par le chatter sur OF (display_name) sinon détection pseudo → preview + PPV 1 comme /ppv (lib/ppv-build.ts, code du bot inchangé) → vault OF : upload + dossier « PPV1 - Prénom » → alerte Telegram en anglais (bot @AUTOCUSTOMZZZBOT, groupe AUTOCUSTOMSPPVS -1004461641984, env PPV_ALERT_BOT_TOKEN / PPV_ALERT_CHAT_ID) → dossier supprimé après 30 min, fichiers après 24 h (nettoyage à chaque webhook + GET /api/ppv-cron?key=<ONLYFANS_WEBHOOK_SECRET> pour un pinger externe ; Vercel Hobby = pas de cron 5 min). Interface : carte « PPV perso automatique » (ON/OFF, texte déclencheur, délais, test par prénom → vidéos dans le groupe, journal + Refaire). Test Julien OK dans le groupe ; vault testé en vrai (upload/dossier/suppression). Premier vrai achat : à surveiller (journal). maxDuration 300 s accepté par Vercel.
-- ⚠️ Crédits OnlyFansAPI : balance 9 505 le 11/10 (sur 20 000/mois) — le compteur Redis de l'interface ne reflète pas la vraie consommation (A/B backfill etc.).
-
-- 11/10 Rapport quotidien Telegram (groupe AUTOCUSTOMSPPVS, @chattingtev tagué) à 9 h Tahiti (cron Vercel 19 h UTC, CRON_SECRET) : PPV perso (prénom mis par le chatter / deviné / illisible, refaits, échecs) + alerte si la majorité des prénoms sont devinés, bienvenue, A/B, crédits OnlyFansAPI. Nom mis par le chatter accepté seulement s'il ressemble à un prénom (« Whale », « VIP » refusés). Si trop d'erreurs de prénom après 1 semaine : passer en mode validation (le chatter confirme le prénom avant fabrication).
-
-## En cours
-- Prod : test A/B/C ; selfie = note bâclée + bienvenue ♥ + feutre + geste + rendu feutre v3 + 2e essai sur 5xx + filtres (cadres, fils pâles). Teva aime « Alex » et « Thomas » (08/10) ; 10 tests envoyés (Kevin, Maxime, Nicolas, Mathieu, Lucas, Antoine, Sébastien, Mohamed, Hugo, Romain), retour Teva 08/10 : « trop noir » → WELCOME_INK 0,72 + saturation 1,45 (déployé). A/B : tuiles et tableau affichent désormais le reply rate PROVISOIRE avec/sans vocal (48 h pas finies incluses) ; au 08/10 : 26,6 % avec vocal (34/128) vs 24,8 % sans (30/121). Bug corrigé 08/10 : ligne en L au bord de la zone (bord du canevas projeté) → bordure remise à 0 en JS (pas drawbox : plage limitée → voile gris). Teva : « toujours trop fake, propose des améliorations » → 5 propositions montrées en photos le 08/10 : (1) VRAIES lettres : lib/glyphs.ts (feuille d'alphabet photographiée → lettres découpées → prénom assemblé → placeInk), démo avec une feuille d'essai IA, marche (13/13/13/13) ; il faut la feuille écrite par Sienna (4 rangées A-M, N-Z, a-m, n-z, feutre, lettres espacées). (2) référence de style IA (ai.reference). (3) gpt-image-1 (≈ 0,04 $). (4) cadrage serré. (5) post-traitement. Teva s'inquiète des crédits (workflow d'experts arrêté) : rester léger. Pour passer sur gpt-image-1 (≈ 0,04 $/selfie, un peu plus crédible) : `vercel env add WELCOME_OPENAI_MODEL production` = gpt-image-1.
-- Premiers vrais envois vocal + selfie : surveiller le journal (colonne « + selfie IA », remarques, erreurs).
-
-## Prochaine étape
-0. Si Teva envoie une photo de l'écriture de Sienna : l'installer (action selfieHandwriting / interface) — NB : elle ne sert qu'à la méthode « edit » (2e image de référence) ; pour la méthode « note », l'ajouter aussi comme référence dans selfieByNote (images/edits avec l'échantillon comme image d'entrée, ou passer en « edit » avec référence) → à coder le moment venu.
-1. Claude : après quelques abonnés, relire le journal (`load` via la clé d'automatisation) : part de selfies réussis, délais (budget 55 s), erreurs OpenAI/modération ; ajuster si besoin (qualité low pour 3× moins cher si le rendu reste bon).
-2. Test A/B : verdict à partir de 30 fans finis par groupe (interface).
-3. Surveiller le journal (premiers envois avec le nouveau code) et le test A/B (verdict à partir de 30 fans finis par groupe).
-- Ensuite : vidéos custom au 1er PPV + alerte chatter Telegram.
-
-## À décider par Teva
-- Activer la facturation Google (ou renoncer au selfie IA).
-- Vidéos PPV en envoi auto ou validation chatter.
+**Fait** : 10 voix (une par créatrice Infloww) : Lea (Sarah, ex-voix d'ado remplacée), Jade, Marie US, Sienna, Lisa, Laura, Marie, Alina, Livia, Lena 🇩🇪 ; Drama 3 + mise en scène Grok (refus → texte masqué, pas de Gemini) ; 2 piments ; aperçu visuel du balisage ; boutons 🔁 🎭.
+**En cours** : —
+**Prochaine étape** : retour de Teva sur les 7 vocaux tests des nouvelles voix ; retirer ENRICH_TEST_SECRET de Vercel.
+**À décider par Teva** : langue de Livia et d'Alina (mises en 🇫🇷 par défaut) ; régénérer le token du bot mass.

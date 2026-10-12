@@ -33,7 +33,8 @@ export interface PpvAutoSettings {
 
 export const DEFAULT_PPV_AUTO: PpvAutoSettings = {
   enabled: false,
-  triggerText: "OUVRE CA et attends 5 min le temps que jme remaquille",
+  // Début court : plusieurs versions du script circulent (« jme » / « je me », « pr » / « pour »), vu le 12/10
+  triggerText: "OUVRE CA et attends 5 min",
   listMinutes: 30,
   mediaHours: 24,
 };
