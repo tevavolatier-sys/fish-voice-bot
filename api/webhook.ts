@@ -605,7 +605,9 @@ async function generateAndReply(
     // Légende = aperçu visuel de la mise en scène (le chatter garde l'œil)
     const head = `<b>${model.name}</b>${partLabel ? ` · ${partLabel}` : ""} · ${LEVEL_ICONS[intensity] ?? ""}`;
     const view = directionView(finalText);
-    const caption = visibleLength(view) <= 950 ? `${head}\n\n${view}` : head;
+    const dragHint = "📥 <b>Ready! Drag &amp; drop this MP3 into the Infloww chat.</b>";
+    const caption =
+      visibleLength(view) <= 900 ? `${head}\n\n${view}\n\n${dragHint}` : `${head}\n\n${dragHint}`;
     const videoToken = newVideoToken();
     // Fichier MP3 directement dans le chat : il s'écoute dans Telegram et se
     // glisse tel quel dans Infloww / OnlyFans
