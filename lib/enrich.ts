@@ -1,110 +1,101 @@
-// Enrichissement automatique du texte avec des tags d'émotion Fish Audio.
+// 🎭 MISE EN SCÈNE AUTOMATIQUE des vocaux pour Fish Audio « Drama 3 ».
+// Un LLM joue le réalisateur : il comprend l'intention du message, puis
+// ajoute des directions en langage naturel ([smiling, a bit shy]), des sons
+// réels ([soft breath], [small laugh]) et quelques balises de mot
+// (<whisper>…</whisper>) — SANS jamais changer les mots.
 // Fournisseur LLM par ordre de priorité :
-//   1. Google Gemini (GEMINI_API_KEY) — GRATUIT, clé via aistudio.google.com
-//   2. Groq (GROQ_API_KEY) — GRATUIT, Llama 3.3 70B, très rapide
-//   3. Claude (ANTHROPIC_API_KEY) — payant, léger coût par message
+//   1. Google Gemini (GEMINI_API_KEY)
+//   2. Groq (GROQ_API_KEY)
+//   3. Claude (ANTHROPIC_API_KEY)
 //   4. Aucun -> le texte brut est utilisé tel quel
 // En cas d'échec quel qu'il soit, la génération vocale n'est jamais bloquée.
 
 import Anthropic from "@anthropic-ai/sdk";
 import { LEFTOVER, maskSensitiveEn, maskSensitiveFr, unmask } from "./translate.js";
 
-/** Détecte un tag déjà présent, ex. [whispering] — dans ce cas on ne touche à rien */
-const EXISTING_TAG = /\[[a-zA-Z][a-zA-Z -]{0,25}\]/;
+/** Le texte contient déjà une mise en scène (l'opérateur l'a faite lui-même) */
+const EXISTING_TAG = /\[[^\]\n]{2,60}\]|<(whisper|soft|slow|fast|emphasis|stress|forceful)>/i;
 
-const TIMEOUT_MS = 10_000;
+const TIMEOUT_MS = 25_000;
 
 /** Intensity levels picked by the operator via /level (default: 1) */
 export const INTENSITY_LEVELS: Record<number, { label: string; instruction: string }> = {
   0: {
     label: "😇 Normal",
     instruction:
-      "INTENSITY LEVEL: NORMAL — NO SEXUALIZATION AT ALL. The message must sound friendly, warm or neutral. " +
-      "Use only simple emotion tags ([soft tone], [breath], [chuckling], emotions matching the text). " +
-      "FORBIDDEN: [panting], [groaning], [whispering] and any sensual effect. " +
-      "1 to 3 tags max, discreet breathing.",
+      "INTENSITY 0/3 — NOT SEXUAL AT ALL. Friendly, warm, natural, like texting a close friend. " +
+      "Directions about smiles, warmth, enthusiasm, tenderness. Sounds: [soft breath], [small laugh] only. " +
+      "FORBIDDEN: <whisper>, sighs of desire, heavy breathing, moans, anything sensual.",
   },
   1: {
     label: "🌶️ Light",
     instruction:
-      "INTENSITY LEVEL: LIGHT FLIRTING (1/3). Charming but soft tone: [soft tone], a few [breath], " +
-      "a playful [chuckling] or [giggling]. No panting, no moaning. 2 to 4 tags.",
+      "INTENSITY 1/3 — LIGHT FLIRT. Charming, smiling, a little shy or teasing. " +
+      "Sounds: [soft breath], [small laugh], [giggle], at most one [soft sigh]. One short <soft> or <whisper> span is allowed. " +
+      "No heavy breathing, no moans.",
   },
   2: {
     label: "🌶️🌶️ Hot",
     instruction:
-      "INTENSITY LEVEL: SENSUAL (2/3). Intimate voice: [whispering] and [soft tone] on confessions, " +
-      "marked breathing with several [breath], some [sighing], and [break] pauses to build tension. " +
-      "3 to 6 tags.",
+      "INTENSITY 2/3 — SENSUAL. Intimate, low voice close to the mic, slower on the confessions. " +
+      "Sounds: several [soft breath], [soft sigh], [short pause] to build tension. 1 to 2 <whisper> spans on the most intimate words. " +
+      "No moans.",
   },
   3: {
     label: "🌶️🌶️🌶️ Very hot",
     instruction:
-      "INTENSITY LEVEL: VERY SENSUAL (3/3). Maximum breath and moaning: multiply [breath] everywhere, " +
-      "add [panting] and [groaning] (moaning) on the exciting parts, some [sighing], " +
-      "[whispering] on almost every sentence, and [break] or [long-break] pauses to build desire. " +
-      "5 to 8 tags.",
+      "INTENSITY 3/3 — VERY SENSUAL. Breathless, aroused, intimate, slow. " +
+      "Sounds: [heavy breathing], [soft moan] on the exciting parts, [shaky breath], [soft sigh], [short pause] before the key words. " +
+      "<whisper> or <slow> on the most intimate words. Still keep it believable: a real woman, not an exaggerated performance.",
   },
 };
 
 export const DEFAULT_INTENSITY = 1;
 
-// ── 3 styles d'interprétation ─────────────────────────────────
-// Le bot sort 3 versions de chaque vocal : même texte, lecture différente.
-// Chaque style pousse le LLM vers un placement de tags distinct.
-export const VOICE_STYLES: { key: string; label: string; instruction: string }[] = [
-  {
-    key: "soft",
-    label: "🌙 Soft",
-    instruction:
-      "READING STYLE: SOFT & INTIMATE. Slow, close to the mic. Favor [whispering], [soft tone], gentle [breath], a [break] before the key phrase. Few or no laughs. Rhythm: slow — long \"...\" suspensions, one soft em dash before the confession.",
-  },
-  {
-    key: "playful",
-    label: "✨ Playful",
-    instruction:
-      "READING STYLE: PLAYFUL & TEASING. Lively, smiling voice. Favor [giggling], [chuckling], [amused], [excited], quick [breath]; light teasing pauses [break]. Less whispering. Rhythm: bouncy — short chunks, a playful \"?\" or \"!\", a teasing dash before the punchline.",
-  },
-  {
-    key: "intense",
-    label: "🔥 Intense",
-    instruction:
-      "READING STYLE: INTENSE & URGENT. Heavier breathing, more [breath] and [sighing], [panting] if the intensity level allows it, [whispering] on the most intimate words, a [long-break] to build tension. Confident, direct. Rhythm: urgent — em dashes that cut the sentence, a repeated key word if present, a hard \"...\" before the climax.",
-  },
-];
+const PAIRED = ["whisper", "soft", "slow", "fast", "emphasis", "stress", "forceful"];
 
-
-function buildSystemPrompt(level: number, style?: string): string {
+function buildSystemPrompt(level: number): string {
   const intensity =
-    INTENSITY_LEVELS[level]?.instruction ??
-    INTENSITY_LEVELS[DEFAULT_INTENSITY].instruction;
+    INTENSITY_LEVELS[level]?.instruction ?? INTENSITY_LEVELS[DEFAULT_INTENSITY].instruction;
 
-  return `You direct a voice actress for Fish Audio "Drama 3", the most natural TTS model. The texts are warm, flirty or intimate voice messages a young woman records on her phone for an admirer (a real voice note, not a read text).
+  return `You are the voice director of a young adult woman who records spontaneous voice notes on her phone for a man she likes. The audio is generated by Fish Audio "Drama 3", a TTS model you direct in plain language. The result must sound like a REAL voice note: natural, alive, imperfect, never like someone reading a text, never theatrical.
 
-Your only task: add stage DIRECTIONS and SOUNDS so the voice sounds 100% real, alive and spontaneous.
+STEP 1 (silently, do not output it): understand the message. What does she want (tease, comfort, thank, tempt, apologize, tell a secret, make him jealous…)? What is her mood, and how does it evolve from the first word to the last? Which 1 to 3 words carry the meaning? Where would she naturally smile, breathe, hesitate, slow down or lower her voice?
 
-Drama 3 syntax (use ONLY this):
-- Plain-language direction in brackets, in English, BEFORE the words it applies to, describing tone, emotion, pace and attitude like a director would:
-  [smiling, playful, a bit shy] · [low intimate voice, close to the mic] · [teasing, slowly] · [suddenly excited] · [hesitant, then confident]
-  Change the direction when the mood changes (2 to 4 directions per message, short: 2 to 8 words).
-- Sounds where they really happen: [soft breath] [small laugh] [giggle] [sigh] [soft sigh] [short pause] [long pause] [lip smack] [hum]
-  (plus [heavy breathing] / [soft moan] ONLY if the intensity level allows it)
-- Word-level paired tags around a FEW words only: <whisper>…</whisper> <soft>…</soft> <slow>…</slow> <emphasis>…</emphasis> <fast>…</fast>
+STEP 2: output the SAME text with Drama 3 markup:
+1. DIRECTIONS — plain English in square brackets, placed right BEFORE the words they color, like a film director talking to an actress:
+   [smiling, a little shy] · [warm, relaxed, close to the mic] · [teasing, slowing down] · [lowering her voice, intimate] · [suddenly excited] · [half laughing]
+   - Start the message with one direction that sets her overall voice.
+   - Add a new direction only where the mood really changes (usually 2 to 4 in total, 1 for a very short message).
+   - 2 to 8 words each, concrete and physical (smile, closeness, pace, breath), never vague like [emotional].
+2. SOUNDS — only where a real woman would make them: [soft breath] [small laugh] [giggle] [soft sigh] [short pause] [long pause] [shaky breath] [heavy breathing] [soft moan] [hum] [lip smack]
+   - A breath before a confession or a new idea; a small laugh after a teasing line; a short pause before the key word.
+   - Never two sounds in a row, never a sound in the middle of a 2-word group.
+3. WORD TAGS — around 1 to 4 words only, at most 2 per message: <whisper>…</whisper> <soft>…</soft> <slow>…</slow> <emphasis>…</emphasis>
+   - Never nested, always closed, never around the whole message.
+
 ${intensity}
-${style ? style + "\n" : ""}
-Strict rules:
-- NEVER change the WORDS of the text: no word added, removed or corrected.
-- RHYTHM (very important — the voice sounds flat without it): you MAY and SHOULD reshape the punctuation so it sounds like a real spoken voice note, not a read text:
-  • use an em dash " — " where she would pause mid-sentence or hold back ("je te jure — détruis-moi")
-  • use "..." for suspense or trailing off, and break long sentences into shorter spoken chunks with commas or periods
-  • end a teasing line with "?" or "!" when that matches the intent; a hesitation can become "..."
-  • repeat the key word ONLY if it is already in the text; never invent words
-  Goal: 2 to 4 rhythm marks (— or ...) per message, placed where a real woman would breathe, tease or hesitate.
-- A direction goes right before the sentence or group of words it colors.
-- BREATHING: a voice that breathes is a believable voice. Place [soft breath] where a real person would catch their breath.
-- The intensity/style notes below may name old tags ([whispering], [breath], [panting], [groaning], [break]…): translate them into the Drama 3 syntax above (<whisper>, [soft breath], [heavy breathing], [soft moan], [short pause]…).
-- STRICTLY respect the requested intensity level above, even if the text seems more or less sexual than the level.
-- Reply ONLY with the final tagged text, no explanation, no quotes.`;
+
+STRICT RULES:
+- NEVER add, remove, replace, translate or reorder a WORD. The spoken words must stay exactly the same (keep the original language, slang, typos and emojis-free spelling).
+- You MAY adjust punctuation for spoken rhythm: "…" for a trailing or teasing end, a comma where she breathes, "?" or "!" if it matches the intent. Keep it light.
+- Tokens like ⟦T0⟧ or ⟦T1000⟧ are hidden words: keep each one EXACTLY as written, in its place.
+- Emojis: remove them (they are not spoken).
+- Density: about one mark (direction, sound or tag) every 5 to 8 words. Less is more: a natural voice is not over-acted.
+- Output ONLY the directed text, on one paragraph, no explanation, no quotes.
+
+EXAMPLES
+Input: Coucou toi, tu m'as manqué aujourd'hui, j'arrêtais pas de penser à toi
+Output: [smiling, soft and warm] Coucou toi… [soft breath] tu m'as manqué aujourd'hui, [a little shy] j'arrêtais pas de <soft>penser à toi</soft>.
+
+Input: Haha t'es trop bête, mais j'avoue que j'ai bien ri. Bon, tu viens ce soir ou pas ?
+Output: [laughing, playful] Haha t'es trop bête, [small laugh] mais j'avoue que j'ai bien ri. [short pause] [teasing, a bit impatient] Bon… tu viens ce soir <emphasis>ou pas</emphasis> ?
+
+Input: I just got out of the shower and I can't stop thinking about you
+Output: [relaxed, intimate, close to the mic] I just got out of the shower… [soft breath] and I <whisper>can't stop</whisper> thinking about you.
+
+Input: j'ai envie de toi, viens me voir ce soir, je t'attends
+Output: [lowering her voice, breathy] J'ai envie de toi… [soft sigh] [slow, intimate] viens me voir ce soir, [short pause] <whisper>je t'attends</whisper>.`;
 }
 
 /** Nom du fournisseur actif (pour le diagnostic) */
@@ -119,11 +110,9 @@ async function enrichWithGemini(
   text: string,
   apiKey: string,
   systemPrompt: string,
-  variety = false
+  model: string,
+  temperature: number
 ): Promise<string | null> {
-  // Alias "latest" : suit automatiquement le dernier modèle flash-lite,
-  // évite les erreurs 404 quand Google retire un ancien modèle.
-  const model = "gemini-flash-lite-latest";
   const res = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
     {
@@ -135,8 +124,12 @@ async function enrichWithGemini(
       body: JSON.stringify({
         systemInstruction: { parts: [{ text: systemPrompt }] },
         contents: [{ role: "user", parts: [{ text }] }],
-        // variety = « nouvelles émotions » : température haute pour varier les tags
-        generationConfig: { temperature: variety ? 1.1 : 0.3, maxOutputTokens: 1024 },
+        // Réflexion courte : le réalisateur analyse l'intention avant d'annoter
+        generationConfig: {
+          temperature,
+          maxOutputTokens: 4096,
+          thinkingConfig: { thinkingBudget: 512 },
+        },
         // Textes séduisants : on désactive les filtres pour éviter les blocages
         safetySettings: [
           { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
@@ -149,15 +142,24 @@ async function enrichWithGemini(
     }
   );
   if (!res.ok) {
-    console.error(`Gemini ${res.status}:`, await res.text().catch(() => ""));
+    console.error(`Gemini ${model} ${res.status}:`, await res.text().catch(() => ""));
     return null;
   }
   const data = (await res.json()) as {
-    candidates?: { content?: { parts?: { text?: string }[] }; finishReason?: string }[];
+    candidates?: { content?: { parts?: { text?: string; thought?: boolean }[] }; finishReason?: string }[];
+    promptFeedback?: { blockReason?: string };
   };
   const cand = data.candidates?.[0];
-  const out = cand?.content?.parts?.map((p) => p.text ?? "").join("").trim();
-  if (!out && cand?.finishReason) console.error(`Gemini enrich refus: ${cand.finishReason}`);
+  const out = cand?.content?.parts
+    ?.filter((p) => !p.thought)
+    .map((p) => p.text ?? "")
+    .join("")
+    .trim();
+  if (!out) {
+    console.error(
+      `Gemini ${model} refus: ${cand?.finishReason ?? data.promptFeedback?.blockReason ?? "vide"}`
+    );
+  }
   return out || null;
 }
 
@@ -175,7 +177,7 @@ async function enrichWithGroq(
     body: JSON.stringify({
       model: "llama-3.3-70b-versatile",
       max_tokens: 1024,
-      temperature: 0.3,
+      temperature: 0.5,
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: text },
@@ -210,19 +212,73 @@ async function enrichWithClaude(
   );
 }
 
+// ── Contrôle de la mise en scène ─────────────────────────────────────────────
+const EMOJI = /[\p{Extended_Pictographic}\u{FE0F}\u{200D}]/gu;
+
+/** Les mots réellement dits (sans mise en scène, ponctuation ni emojis) */
+export function spokenWords(text: string): string[] {
+  return text
+    .replace(/\[[^\]]*\]/g, " ")
+    .replace(/<\/?[a-z]+>/gi, " ")
+    .replace(EMOJI, " ")
+    .normalize("NFC")
+    .toLowerCase()
+    .replace(/[’`]/g, "'")
+    .split(/[^\p{L}\p{N}'⟦⟧]+/u)
+    .map((w) => w.replace(/^'+|'+$/g, ""))
+    .filter(Boolean);
+}
+
 /**
- * Ajoute automatiquement des tags d'émotion au texte, selon le niveau
- * d'intensité choisi par l'opérateur (0 à 3).
+ * Vérifie et répare la sortie du LLM. null si elle est inutilisable :
+ * mots changés, balises inconnues ou mal fermées, mise en scène trop chargée.
+ */
+export function checkDirected(input: string, output: string): string | null {
+  let out = output
+    .replace(/^```[a-z]*\s*|\s*```$/g, "")
+    .replace(/^["«]\s*|\s*["»]$/g, "")
+    .replace(/\s*\n+\s*/g, " ")
+    .trim();
+  // Balises de mot : seules les connues, jamais imbriquées, toujours fermées
+  const tags = [...out.matchAll(/<(\/?)([a-z]+)>/gi)];
+  let open: string | null = null;
+  for (const [, slash, name] of tags) {
+    const n = name.toLowerCase();
+    if (!PAIRED.includes(n)) return null;
+    if (!slash) {
+      if (open) return null;
+      open = n;
+    } else {
+      if (open !== n) return null;
+      open = null;
+    }
+  }
+  if (open) return null;
+  // Mêmes mots, dans le même ordre
+  const a = spokenWords(input);
+  const b = spokenWords(out);
+  if (a.length !== b.length || a.some((w, i) => w !== b[i])) return null;
+  // Directions et sons : pas de crochet vide, pas de pavé, densité raisonnable
+  const brackets = [...out.matchAll(/\[([^\]]*)\]/g)].map((m) => m[1].trim());
+  if (brackets.some((d) => !d || d.split(/\s+/).length > 12)) return null;
+  if (brackets.length > 3 + Math.ceil(a.length / 4)) return null;
+  // Emojis restants retirés (ils ne se disent pas)
+  out = out.replace(EMOJI, "").replace(/\s{2,}/g, " ").trim();
+  return out;
+}
+
+/**
+ * Met en scène le texte pour Drama 3 selon le niveau d'intensité (0 à 3).
  * Retourne le texte d'origine si :
  * - aucune clé LLM n'est configurée
- * - le texte contient déjà des tags (l'opérateur les a mis lui-même)
- * - l'appel au LLM échoue, dépasse le délai ou renvoie un résultat aberrant
+ * - le texte contient déjà une mise en scène (l'opérateur l'a faite lui-même)
+ * - le LLM échoue, dépasse le délai ou change les mots
  */
 export async function enrichWithEmotionTags(
   text: string,
   level: number = DEFAULT_INTENSITY,
   variety = false,
-  styleKey?: string
+  _styleKey?: string
 ): Promise<string> {
   if (EXISTING_TAG.test(text)) return text;
 
@@ -231,54 +287,44 @@ export async function enrichWithEmotionTags(
   const anthropicKey = process.env.ANTHROPIC_API_KEY;
   if (!geminiKey && !groqKey && !anthropicKey) return text;
 
-  const styleInstruction = VOICE_STYLES.find((v) => v.key === styleKey)?.instruction;
-  const systemPrompt =
-    buildSystemPrompt(level, styleInstruction) +
-    "\n- Some words are replaced by placeholder tokens like ⟦T0⟧: keep every token EXACTLY as written, in place. Never remove or alter a token.";
+  const systemPrompt = buildSystemPrompt(level);
 
-  // Gemini REFUSE les textes explicites (PROHIBITED_CONTENT) → sans tags.
-  // Même parade que la traduction : les mots sensibles (FR + EN) deviennent
-  // des jetons neutres avant l'appel, remis à l'identique après. On tente
-  // masqué d'abord (2×), puis brut en dernier recours.
+  // Gemini REFUSE les textes explicites : les mots sensibles (FR + EN)
+  // deviennent des jetons neutres avant l'appel, remis à l'identique après.
   const maskFr = maskSensitiveFr(text);
   const maskBoth = maskSensitiveEn(maskFr.masked);
   const table = new Map([...maskFr.table, ...maskBoth.table]);
   const masked = maskBoth.masked;
-  const attempts: [string, boolean][] = [
-    [masked, variety],
-    [masked, true],
-    [text, variety],
+
+  // Meilleur modèle d'abord, puis un plus rapide si refus / mots changés
+  const attempts: [string, number][] = [
+    [process.env.ENRICH_MODEL?.trim() || "gemini-flash-latest", variety ? 0.9 : 0.6],
+    ["gemini-flash-latest", 0.8],
+    ["gemini-flash-lite-latest", 0.5],
   ];
 
-  const accept = (enriched: string | null, ref: string): string | null => {
-    // Garde-fou : réponse vide ou aberrante (trop courte/longue) → refusée
-    if (!enriched || enriched.length < ref.length * 0.8) return null;
-    if (enriched.length > ref.length + 600) return null;
-    return enriched;
-  };
-
-  for (const [input, vary] of attempts) {
+  for (const [model, temperature] of attempts) {
     try {
       const raw = geminiKey
-        ? await enrichWithGemini(input, geminiKey, systemPrompt, vary)
+        ? await enrichWithGemini(masked, geminiKey, systemPrompt, model, temperature)
         : groqKey
-          ? await enrichWithGroq(input, groqKey, systemPrompt)
-          : await enrichWithClaude(input, anthropicKey!, systemPrompt);
-      const enriched = accept(raw, input);
-      if (!enriched) {
-        console.error("Enrich rejeté (longueur/vide):", JSON.stringify({ input, raw }));
+          ? await enrichWithGroq(masked, groqKey, systemPrompt)
+          : await enrichWithClaude(masked, anthropicKey!, systemPrompt);
+      const checked = raw ? checkDirected(masked, raw) : null;
+      if (!checked) {
+        console.error("Mise en scène rejetée:", JSON.stringify({ model, masked, raw }));
         continue;
       }
-      const restored = input === masked ? unmask(enriched, table) : enriched;
+      const restored = unmask(checked, table);
       if (LEFTOVER.test(restored)) {
-        console.error("Enrich rejeté (jeton perdu):", JSON.stringify({ restored }));
-        continue; // un jeton a été mangé → essai suivant
+        console.error("Mise en scène rejetée (jeton perdu):", JSON.stringify({ restored }));
+        continue;
       }
       return restored;
     } catch (err) {
-      console.error("Enrichissement LLM échoué (essai suivant):", err);
+      console.error(`Mise en scène ${model} échouée (essai suivant):`, err);
     }
   }
-  console.error("Enrichissement impossible après 3 essais, texte brut utilisé");
+  console.error("Mise en scène impossible après 3 essais, texte brut utilisé");
   return text;
 }

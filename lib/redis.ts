@@ -94,6 +94,8 @@ export interface VideoSource {
   f: string; // file_id Telegram du vocal
   m: string; // clé de la modèle
   s?: string; // style (🌙 Soft…)
+  t?: string; // texte d'origine (🔁 refaire)
+  d?: string; // texte mis en scène (🎭 voir / modifier le balisage)
 }
 
 export async function setVideoSource(token: string, src: VideoSource): Promise<void> {

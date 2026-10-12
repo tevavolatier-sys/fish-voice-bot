@@ -114,7 +114,6 @@ import {
   DEFAULT_INTENSITY,
   INTENSITY_LEVELS,
   enrichProvider,
-  VOICE_STYLES,
   enrichWithEmotionTags,
 } from "../lib/enrich.js";
 
@@ -134,22 +133,23 @@ async function sendModelPicker(ctx: Context, intro: string): Promise<void> {
 // ---------- Clavier d'intensité ----------
 // Affiché sous chaque vocal et sous le choix de voix : le niveau actif porte un ✅.
 // `base` : clavier déjà commencé (ex. bouton 🎬 Video) auquel on ajoute les niveaux.
+const LEVEL_ICONS: Record<number, string> = { 0: "😇", 1: "🌶", 2: "🌶🌶", 3: "🌶🌶🌶" };
+
 function intensityKeyboard(current?: number, base?: InlineKeyboard): InlineKeyboard {
   const kb = base ?? new InlineKeyboard();
-  const entries = Object.entries(INTENSITY_LEVELS);
-  entries.forEach(([level, cfg], i) => {
-    const active = Number(level) === current;
-    kb.text(`${active ? "✅ " : ""}${cfg.label}`, `level:${level}`);
-    if (i % 2 === 1) kb.row();
-  });
+  for (const level of Object.keys(INTENSITY_LEVELS).map(Number)) {
+    kb.text(`${level === current ? "✅" : ""}${LEVEL_ICONS[level] ?? level}`, `level:${level}`);
+  }
   return kb;
 }
 
-// ---------- Clavier sous un vocal ----------
-// « 🎬 Video » sous CHAQUE version (on transforme la prise qu'on préfère),
-// + les niveaux d'intensité sous la dernière seulement.
+// ---------- Clavier sous un vocal (minimaliste) ----------
+// 🔁 refaire · 🎭 voir / modifier le balisage · 🎬 vidéo, puis le piment.
 function voiceKeyboard(videoToken: string, intensity?: number): InlineKeyboard {
-  const kb = new InlineKeyboard().text("🎬 Video", `vid:${videoToken}`);
+  const kb = new InlineKeyboard()
+    .text("🔁", `redo:${videoToken}`)
+    .text("🎭", `tags:${videoToken}`)
+    .text("🎬", `vid:${videoToken}`);
   if (intensity === undefined) return kb;
   return intensityKeyboard(intensity, kb.row());
 }
@@ -590,72 +590,38 @@ async function generateAndReply(
     // Le texte est lu TEL QUEL (la traduction auto EN→FR a été retirée :
     // pour une voix 🇫🇷, écrire directement en français).
     const spoken = text;
-    // ── 3 VERSIONS du même vocal, 3 interprétations (🌙 Soft / ✨ Playful /
-    // 🔥 Intense) : même texte, tags/intonation différents, synthèses en
-    // parallèle. L'opérateur garde celle qui colle le mieux au fan.
-    // Si un style échoue, les autres partent quand même.
-    const variants = await Promise.all(
-      VOICE_STYLES.map(async (style) => {
-        try {
-          const finalText = await enrichWithEmotionTags(spoken, intensity, true, style.key);
-          // Modèle le plus naturel (Drama 3) ; repli sur le modèle standard s'il échoue
-          const audio = await generateVoice(finalText, model.referenceId, { model: VOICE_NOTE_MODEL }).catch(
-            (err) => {
-              console.error("Drama 3 échoué, repli s2.1-pro:", err);
-              return generateVoice(finalText, model.referenceId);
-            }
-          );
-          return { style, finalText, audio };
-        } catch (err) {
-          console.error(`Variante ${style.key} échouée:`, err);
-          return null;
-        }
-      })
+    // UNE version, mise en scène soignée (directions Drama 3 + sons + balises)
+    const finalText = await enrichWithEmotionTags(spoken, intensity);
+    // Modèle le plus naturel (Drama 3) ; repli sur le modèle standard s'il échoue
+    const audio = await generateVoice(finalText, model.referenceId, { model: VOICE_NOTE_MODEL }).catch(
+      (err) => {
+        console.error("Drama 3 échoué, repli s2.1-pro:", err);
+        return generateVoice(finalText, model.referenceId);
+      }
     );
-    const ok = variants.filter((v): v is NonNullable<typeof v> => v !== null);
-    if (ok.length === 0) {
-      // Aucune variante : on remonte la dernière erreur Fish pour le message utilisateur
-      throw new FishError(
-        "❌ All 3 versions failed to generate. Try again; if it keeps happening, tell the admin.",
-        "3 variantes KO"
+    const caption = `${model.name}${partLabel ? ` · ${partLabel}` : ""}`;
+    const videoToken = newVideoToken();
+    // Fichier MP3 directement dans le chat : il s'écoute dans Telegram et se
+    // glisse tel quel dans Infloww / OnlyFans
+    const fileName = `${model.name}-${Date.now() % 100000}.mp3`;
+    const sent = await ctx.replyWithAudio(new InputFile(audio, fileName), {
+      title: `${model.name} · voice`,
+      performer: model.name,
+      reply_parameters: {
+        message_id: messageId,
+        allow_sending_without_reply: true,
+      },
+      caption,
+      reply_markup: voiceKeyboard(videoToken, intensity),
+    });
+    // Le bouton 🎬 retrouvera CE vocal (file_id) pour en faire la vidéo
+    const fileId = sent.audio?.file_id;
+    if (fileId) {
+      await setVideoSource(videoToken, { f: fileId, m: model.key, t: spoken, d: finalText }).catch(
+        (err) => console.error("Source vidéo non enregistrée:", err)
       );
     }
-    for (let i = 0; i < ok.length; i++) {
-      const { style, finalText, audio } = ok[i];
-      // Légende : voix (+ drapeau, + n° de partie), style, texte FRANÇAIS
-      // réellement dit si traduit, et les tags (limite Telegram : 1024)
-      const caption = [
-        `🎤 ${modelLabel(model)}${partLabel ? ` · part ${partLabel}` : ""} · ${style.label} (${i + 1}/${ok.length})`,
-        i === 0 && spoken !== text ? `🇫🇷 ${spoken}` : null,
-        finalText !== spoken ? `🎭 ${finalText}` : null,
-      ]
-        .filter(Boolean)
-        .join("\n")
-        .slice(0, 1024);
-      // 🎬 sous chaque version ; niveaux d'intensité sous la DERNIÈRE seulement
-      const videoToken = newVideoToken();
-      // Fichier MP3 (et non « note vocale » .ogg) : se glisse tel quel dans le
-      // chat Infloww / OnlyFans depuis Telegram Desktop
-      const fileName = `${model.name}-${style.key}-${Date.now() % 100000}.mp3`;
-      const sent = await ctx.replyWithAudio(new InputFile(audio, fileName), {
-        title: `${model.name} · ${style.label.replace(/^\S+\s/, "")}`,
-        performer: model.name,
-        reply_parameters: {
-          message_id: messageId,
-          allow_sending_without_reply: true,
-        },
-        caption,
-        reply_markup: voiceKeyboard(videoToken, i === ok.length - 1 ? intensity : undefined),
-      });
-      // Le bouton 🎬 retrouvera CE vocal (file_id) pour en faire la vidéo
-      const fileId = sent.audio?.file_id;
-      if (fileId) {
-        await setVideoSource(videoToken, { f: fileId, m: model.key, s: style.label }).catch(
-          (err) => console.error("Source vidéo non enregistrée:", err)
-        );
-      }
-    }
-    await recordGeneration(userId, model.key, text.length * ok.length);
+    await recordGeneration(userId, model.key, text.length);
 
     // Surveillance des crédits (le modèle s1 est payant) : sous le seuil,
     // alerte à l'admin — au plus une fois par 24 h.
@@ -733,62 +699,21 @@ function createBot(): Bot {
     const label =
       INTENSITY_LEVELS[current]?.label ??
       INTENSITY_LEVELS[DEFAULT_INTENSITY].label;
-    await ctx.reply(
-      "🌡️ VOICE INTENSITY\n\n" +
-        `Current level: ${label}\n\n` +
-        "😇 Normal = no sexualization at all.\n" +
-        "The hotter the level, the more breathing, moaning and sensual pauses.\n\n" +
-        "👇 Pick a level:",
-      { reply_markup: intensityKeyboard(current) }
-    );
+    await ctx.reply(`🌡️ Intensity: ${label}`, { reply_markup: intensityKeyboard(current) });
   });
 
   bot.command(["help", "aide"], async (ctx) => {
     await ctx.reply(
-      "📖 TUTORIAL — HOW TO MAKE A VOICE NOTE\n\n" +
-        "1️⃣ Type /voice\n" +
-        "2️⃣ Tap the girl\n" +
-        "3️⃣ Write your message as if SHE was the one talking — in the language of the voice\n" +
-        "   🇫🇷 = French voice → write in FRENCH\n" +
-        "   🇺🇸 = English voice → write in ENGLISH\n" +
-        "4️⃣ Send the message\n" +
-        "5️⃣ Wait a few seconds\n" +
-        "6️⃣ You receive 3 VERSIONS of the voice note 🎤 — same words, 3 readings: 🌙 Soft · ✨ Playful · 🔥 Intense → pick the one that fits the fan and send it\n" +
-        "🎬 Fan wants a VIDEO (\"a video with my name\")? Tap 🎬 Video under the version you like: you get the same voice as a black-screen video, ready to send.\n" +
-        "💰 PPV with his name: type /ppv + his first name (ex: /ppv Julien) → a FREE preview + the PPV 1 video with his name in it (buttons under it: volume + voice effect).\n\n" +
-        "✅ DO THIS:\n" +
-        "• Short sentences, like a real voice note\n" +
-        "• Write normally, emotions are added AUTOMATICALLY ✨\n\n" +
-        "🌡️ INTENSITY: use the buttons under each voice note (or /level):\n" +
-        "😇 Normal (no sexualization) → 🌶️ Light → 🌶️🌶️ Hot → 🌶️🌶️🌶️ Very hot\n" +
-        "The hotter, the more breathing, moaning and pauses.\n\n" +
-        "❌ DON'T DO THIS:\n" +
-        `• A text longer than ${MAX_CHARS * 3} characters (the bot will refuse)\n` +
-        `• Between ${MAX_CHARS} and ${MAX_CHARS * 3} characters: the bot splits it into several voice notes automatically 📚\n` +
-        "• Writing like a robot (\"Hello. How are you.\")\n\n" +
-        "————————————\n" +
-        "🎭 PRO MODE (optional!)\n" +
-        "You can place tags [like this] in your text yourself.\n" +
-        "If you do, the bot adds nothing and keeps your tags as-is.\n\n" +
-        "😊 Positive emotions:\n" +
-        "[excited] [delighted] [joyful] [satisfied] [proud] [confident]\n" +
-        "[relaxed] [grateful] [moved] [amused] [curious] [interested]\n\n" +
-        "😢 Negative emotions:\n" +
-        "[sad] [unhappy] [upset] [depressed] [worried] [anxious]\n" +
-        "[nervous] [scared] [panicked] [angry] [furious] [frustrated]\n" +
-        "[impatient] [guilty] [embarrassed] [awkward] [hesitating]\n\n" +
-        "😲 Other emotions:\n" +
-        "[surprised] [astonished] [confused] [serious] [sincere]\n" +
-        "[comforting] [empathetic] [sarcastic]\n\n" +
-        "🗣️ Speaking styles:\n" +
-        "[whispering] [soft tone] [shouting] [screaming] [in a hurry tone]\n\n" +
-        "🔊 Sounds and breathing:\n" +
-        "[laughing] [chuckling] [giggling] [sobbing] [crying loudly]\n" +
-        "[sighing] [breath] [panting] [groaning] [cough] [lip-smacking]\n\n" +
-        "⏸️ Pauses:\n" +
-        "[break] [long-break]\n\n" +
-        "Example:\n" +
-        "[whispering] Hey you... [break] [excited] I have a surprise for you!"
+      "🎤 VOICE NOTES\n" +
+        "1. /voice → pick the girl\n" +
+        "2. Send your text (in her language)\n" +
+        "3. You get the MP3 → drag it into the Infloww chat\n\n" +
+        "Under the voice note:\n" +
+        "🔁 new take · 🎭 see / edit the acting · 🎬 video\n" +
+        "😇 🌶 🌶🌶 🌶🌶🌶 = intensity\n\n" +
+        "🎭 The acting is added automatically. To do it yourself, write it like this:\n" +
+        "[smiling, a bit shy] Coucou toi… [soft breath] tu m'as manqué. <whisper>Viens.</whisper>\n\n" +
+        "💰 /ppv Julien → free preview + PPV with his name"
     );
   });
 
@@ -891,18 +816,7 @@ function createBot(): Bot {
       (await getIntensity(ctx.from.id).catch(() => null)) ?? DEFAULT_INTENSITY;
     await ctx
       .editMessageText(
-        `✅ Voice selected: ${modelLabel(model)}\n\n` +
-          (model.lang === "fr"
-            ? "🇫🇷 She speaks FRENCH: write your message IN FRENCH, it's spoken as-is.\n\n"
-            : "🇺🇸 She speaks ENGLISH: write your message in English, it's spoken as-is.\n\n") +
-          "📝 STEP 2 of 3: write your message\n" +
-          "• Write as if SHE was the one talking\n" +
-          "• Short, natural sentences\n" +
-          "• Write normally: emotions are added AUTOMATICALLY ✨\n\n" +
-          "Example:\n" +
-          "Hey you, I missed you today...\n\n" +
-          "📤 STEP 3 of 3: send your message, wait a few seconds, and you get the voice note 🎤\n\n" +
-          "🌡️ Intensity of the voice — tap to change:",
+        `✅ ${modelLabel(model)} — send your text ${model.lang === "fr" ? "in FRENCH 🇫🇷" : "in ENGLISH 🇺🇸"}.`,
         { reply_markup: intensityKeyboard(currentLevel) }
       )
       .catch(() => {});
@@ -1388,7 +1302,7 @@ function createBot(): Bot {
     const chunks = splitLongText(text, MAX_CHARS);
     if (chunks.length > 1) {
       await ctx.reply(
-        `📚 Long text — I'll send ${chunks.length} parts × 3 versions each, in order. Hold on…`
+        `📚 Long text — I'll send ${chunks.length} parts, in order. Hold on…`
       );
     }
 
@@ -1446,7 +1360,7 @@ function createBot(): Bot {
             height: VIDEO_HEIGHT,
             duration,
             supports_streaming: true,
-            caption: `🎬 ${model ? modelLabel(model) : "Voice"}${src.s ? ` · ${src.s}` : ""} — black-screen video, ready to send`,
+            caption: `🎬 ${model ? model.name : "Voice"}`,
             ...(replyTo
               ? { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } }
               : {}),
@@ -1461,6 +1375,35 @@ function createBot(): Bot {
         }
       })()
     );
+  });
+
+  // 🔁 Refaire le même texte (nouvelle prise, piment actuel)
+  bot.callbackQuery(/^redo:([a-z0-9]{6,32})$/, async (ctx) => {
+    const src = await getVideoSource(ctx.match[1]).catch(() => null);
+    const model = src ? modelByKey(src.m) : undefined;
+    if (!src?.t || !model) {
+      await ctx.answerCallbackQuery({ text: "Too old — send the text again." });
+      return;
+    }
+    await ctx.answerCallbackQuery({ text: "🔁" });
+    const level = (await getIntensity(ctx.from.id).catch(() => null)) ?? DEFAULT_INTENSITY;
+    const replyTo = ctx.callbackQuery.message?.message_id ?? 0;
+    waitUntil(generateAndReply(ctx, model, src.t, replyTo, ctx.from.id, level));
+  });
+
+  // 🎭 Voir le balisage : à copier, modifier et renvoyer (il est alors gardé tel quel)
+  bot.callbackQuery(/^tags:([a-z0-9]{6,32})$/, async (ctx) => {
+    const src = await getVideoSource(ctx.match[1]).catch(() => null);
+    if (!src?.d) {
+      await ctx.answerCallbackQuery({ text: "Too old." });
+      return;
+    }
+    await ctx.answerCallbackQuery();
+    const esc = (t: string) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    await ctx.reply(`<code>${esc(src.d)}</code>\n\n✏️ Tap to copy, edit, send it back: I keep your version as-is.`, {
+      parse_mode: "HTML",
+      reply_parameters: { message_id: ctx.callbackQuery.message?.message_id ?? 0, allow_sending_without_reply: true },
+    });
   });
 
   // 🔁 « Try again » après un échec : re-génère le dernier texte (30 min max)
@@ -1662,7 +1605,12 @@ export async function GET(req: Request): Promise<Response> {
   }
   const t = u.searchParams.get("t");
   if (t) {
-    if (u.searchParams.get("s") !== (process.env.DIAG_SECRET ?? process.env.TELEGRAM_WEBHOOK_SECRET)) {
+    const s = u.searchParams.get("s");
+    const testSecret = process.env.ENRICH_TEST_SECRET?.trim() ?? "";
+    const allowed =
+      s === (process.env.DIAG_SECRET ?? process.env.TELEGRAM_WEBHOOK_SECRET) ||
+      (testSecret.length >= 24 && s === testSecret);
+    if (!allowed) {
       return Response.json({ error: "forbidden" }, { status: 403 });
     }
     try {
