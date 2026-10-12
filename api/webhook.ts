@@ -616,9 +616,8 @@ async function generateAndReply(
     // Fichier MP3 directement dans le chat : il s'écoute dans Telegram et se
     // glisse tel quel dans Infloww / OnlyFans
     const fileName = `${model.name}-${Date.now() % 100000}.mp3`;
-    const sent = await ctx.replyWithAudio(new InputFile(audio, fileName), {
-      title: `${model.name} · voice`,
-      performer: model.name,
+    // Note vocale (comme avant) : c'est ce format que les chatters glissent dans Infloww
+    const sent = await ctx.replyWithVoice(new InputFile(audio, fileName), {
       reply_parameters: {
         message_id: messageId,
         allow_sending_without_reply: true,
@@ -628,7 +627,7 @@ async function generateAndReply(
       reply_markup: voiceKeyboard(videoToken, intensity),
     });
     // Le bouton 🎬 retrouvera CE vocal (file_id) pour en faire la vidéo
-    const fileId = sent.audio?.file_id;
+    const fileId = sent.voice?.file_id;
     if (fileId) {
       await setVideoSource(videoToken, { f: fileId, m: model.key, t: spoken, d: finalText }).catch(
         (err) => console.error("Source vidéo non enregistrée:", err)
