@@ -30,6 +30,7 @@ export async function POST(req: Request): Promise<Response> {
     return new Response("non autorisé", { status: 401 });
   }
   const u = (await req.json().catch(() => ({}))) as Any;
+  console.log("ppv-bot update:", JSON.stringify({ cb: u.callback_query?.data, chat: (u.message ?? u.callback_query?.message)?.chat?.id, text: u.message?.text?.slice(0, 40), replyTo: u.message?.reply_to_message?.message_id, thread: u.message?.message_thread_id }));
 
   // 1) Clic sur le bouton → on demande le prénom en réponse forcée
   const cb = u.callback_query;
@@ -46,6 +47,7 @@ export async function POST(req: Request): Promise<Response> {
       reply_markup: { force_reply: true, selective: true, input_field_placeholder: "First name" },
     });
     const msgId = sent?.result?.message_id;
+    console.log("ppv-bot ask sent:", JSON.stringify(sent).slice(0, 300));
     if (chat && msgId) await getRedis().set(ASK(chat, msgId), fanId, { ex: 24 * 3600 });
     return Response.json({ ok: true });
   }
@@ -54,8 +56,10 @@ export async function POST(req: Request): Promise<Response> {
   const m = u.message;
   const replyTo = m?.reply_to_message?.message_id;
   if (m?.text && replyTo) {
-    const fanId = await getRedis().get<string>(ASK(m.chat.id, replyTo));
-    if (!fanId) return Response.json({ ok: true });
+    const raw = await getRedis().get<string | number>(ASK(m.chat.id, replyTo));
+    console.log("ppv-bot reply lookup:", ASK(m.chat.id, replyTo), "→", raw);
+    if (raw == null) return Response.json({ ok: true });
+    const fanId = String(raw);
     const name = cleanFanName(String(m.text).trim().split(/\s+/)[0] ?? "");
     if (!name) {
       await tg("sendMessage", { chat_id: m.chat.id, reply_to_message_id: m.message_id, text: "❌ That doesn't look like a first name (letters only, 2 to 20). Tap the button again." });
