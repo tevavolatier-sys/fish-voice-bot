@@ -393,7 +393,39 @@ export async function recordGeneration(
   p.hincrby("stats:chars:model", modelKey, chars);
   p.hincrby("stats:gen:user", String(userId), 1);
   p.hincrby("stats:chars:user", String(userId), chars);
+  // Compteur du jour (heure de Paris) : alimente le leaderboard de la paie
+  const dayKey = `vday:${parisDay(new Date())}`;
+  p.hincrby(dayKey, String(userId), 1);
+  p.expire(dayKey, 400 * 86_400);
   await p.exec();
+}
+
+const parisDay = (d: Date) => d.toLocaleDateString("en-CA", { timeZone: "Europe/Paris" });
+
+/**
+ * Vocaux par chatter (id Telegram → nombre). Avec dates : somme des jours
+ * from → to (inclus, 400 jours max). Sans date : total depuis le début.
+ */
+export async function readVoiceCounts(from?: string, to?: string): Promise<Record<string, number>> {
+  const r = getRedis();
+  const out: Record<string, number> = {};
+  const add = (h: Record<string, unknown> | null) => {
+    for (const [k, v] of Object.entries(h ?? {})) out[k] = (out[k] ?? 0) + Number(v);
+  };
+  if (!from && !to) {
+    add(await r.hgetall<Record<string, unknown>>("stats:gen:user"));
+    return out;
+  }
+  const end = new Date(`${to ?? parisDay(new Date())}T12:00:00Z`);
+  const start = new Date(`${from ?? to}T12:00:00Z`);
+  const days: string[] = [];
+  for (let d = new Date(start); d <= end && days.length < 400; d.setUTCDate(d.getUTCDate() + 1)) {
+    days.push(d.toISOString().slice(0, 10));
+  }
+  const p = r.pipeline();
+  for (const day of days) p.hgetall(`vday:${day}`);
+  for (const h of (await p.exec()) as (Record<string, unknown> | null)[]) add(h);
+  return out;
 }
 
 export interface Stats {
