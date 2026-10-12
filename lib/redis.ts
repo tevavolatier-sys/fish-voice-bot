@@ -87,6 +87,18 @@ export async function shouldWarnTranslate(): Promise<boolean> {
   return ok === "OK";
 }
 
+/** ✏️ Retouche demandée par un chatter : le vocal visé, en attente de sa consigne (10 min) */
+export async function setPendingEdit(userId: number, token: string): Promise<void> {
+  await getRedis().set(`editwait:${userId}`, token, { ex: 600 });
+}
+
+export async function takePendingEdit(userId: number): Promise<string | null> {
+  const r = getRedis();
+  const token = await r.get<string>(`editwait:${userId}`);
+  if (token) await r.del(`editwait:${userId}`);
+  return token;
+}
+
 /**
  * 🎬 Source d'une vidéo : le vocal exact (file_id Telegram) derrière le
  * bouton « 🎬 Video ». Gardé 7 jours : on peut faire la vidéo plus tard.

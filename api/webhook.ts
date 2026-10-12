@@ -13,6 +13,8 @@ import {
 } from "../lib/config.js";
 import {
   getIntensity,
+  setPendingEdit,
+  takePendingEdit,
   getLastText,
   getSelectedModel,
   getVideoSource,
@@ -116,6 +118,7 @@ import {
   INTENSITY_LEVELS,
   enrichProvider,
   enrichWithEmotionTags,
+  reviseDirection,
 } from "../lib/enrich.js";
 
 export const maxDuration = 60;
@@ -152,6 +155,7 @@ function intensityKeyboard(current?: number, base?: InlineKeyboard): InlineKeybo
 function voiceKeyboard(videoToken: string, intensity?: number): InlineKeyboard {
   const kb = new InlineKeyboard()
     .text("🔁", `redo:${videoToken}`)
+    .text("✏️ AI edit", `aiedit:${videoToken}`)
     .text("🎭", `tags:${videoToken}`);
   if (intensity === undefined) return kb;
   return intensityKeyboard(intensity, kb.row());
@@ -1279,6 +1283,28 @@ function createBot(): Bot {
   bot.on("message:text", async (ctx) => {
     const text = ctx.message.text.trim();
 
+    // ✏️ Consigne de retouche attendue pour un vocal
+    if (!text.startsWith("/")) {
+      const editToken = await takePendingEdit(ctx.from.id).catch(() => null);
+      const src = editToken ? await getVideoSource(editToken).catch(() => null) : null;
+      const model = src ? modelByKey(src.m) : undefined;
+      if (src?.d && model) {
+        const level = (await getIntensity(ctx.from.id).catch(() => null)) ?? DEFAULT_INTENSITY;
+        await ctx.replyWithChatAction("record_voice").catch(() => {});
+        waitUntil(
+          (async () => {
+            const revised = await reviseDirection(src.d!, text, level);
+            if (!revised) {
+              await ctx.reply("❌ Couldn't apply that change — try saying it differently.").catch(() => {});
+              return;
+            }
+            await generateAndReply(ctx, model, revised, ctx.message.message_id, ctx.from.id, level);
+          })()
+        );
+        return;
+      }
+    }
+
     if (text.startsWith("/")) {
       await ctx.reply("Unknown command. Use /voice, /ppv, /level, /help or /stats.");
       return;
@@ -1399,6 +1425,21 @@ function createBot(): Bot {
     const level = (await getIntensity(ctx.from.id).catch(() => null)) ?? DEFAULT_INTENSITY;
     const replyTo = ctx.callbackQuery.message?.message_id ?? 0;
     waitUntil(generateAndReply(ctx, model, src.t, replyTo, ctx.from.id, level));
+  });
+
+  // ✏️ Retouche par l'IA : le chatter dit ce qu'il veut changer, l'IA refait la mise en scène
+  bot.callbackQuery(/^aiedit:([a-z0-9]{6,32})$/, async (ctx) => {
+    const src = await getVideoSource(ctx.match[1]).catch(() => null);
+    if (!src?.d) {
+      await ctx.answerCallbackQuery({ text: "Too old." });
+      return;
+    }
+    await setPendingEdit(ctx.from.id, ctx.match[1]);
+    await ctx.answerCallbackQuery();
+    await ctx.reply(
+      "✏️ What should I change? Just type it, e.g.:\n• less laughing\n• more whispering\n• hotter, more moaning\n• happier tone",
+      { reply_parameters: { message_id: ctx.callbackQuery.message?.message_id ?? 0, allow_sending_without_reply: true } }
+    );
   });
 
   // 🎭 Voir le balisage : à copier, modifier et renvoyer (il est alors gardé tel quel)

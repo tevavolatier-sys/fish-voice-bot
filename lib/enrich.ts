@@ -348,6 +348,38 @@ export function checkDirected(input: string, output: string, level = DEFAULT_INT
 }
 
 /**
+ * ✏️ Le chatter demande une retouche (« moins de rires », « plus chaud »…) :
+ * l'IA modifie la mise en scène existante, sans toucher aux mots.
+ * null si impossible (pas de clé, refus, mots changés).
+ */
+export async function reviseDirection(
+  directed: string,
+  request: string,
+  level: number = DEFAULT_INTENSITY
+): Promise<string | null> {
+  const key = process.env.XAI_API_KEY;
+  if (!key) return null;
+  const system =
+    buildSystemPrompt(level) +
+    "\n\nREVISION MODE: you receive an already directed text and the chatter's change request (any language). " +
+    "Apply the request to the directions, sounds and word tags only. The spoken words stay exactly the same. " +
+    "Output ONLY the revised directed text.";
+  const user = `CURRENT:\n${directed}\n\nCHANGE REQUEST:\n${request.slice(0, 300)}`;
+  for (const temperature of [0.6, 0.9]) {
+    try {
+      const raw = await enrichWithGrok(user, key, system, process.env.XAI_MODEL?.trim() || GROK_MODEL, temperature);
+      if (!raw || REFUSAL.test(raw)) continue;
+      const checked = checkDirected(directed, raw.replace(/^REVISED:?\s*/i, ""), 2);
+      if (checked) return checked;
+      console.error("Retouche rejetée:", JSON.stringify({ directed, request, raw }));
+    } catch (err) {
+      console.error("Retouche échouée:", err);
+    }
+  }
+  return null;
+}
+
+/**
  * Met en scène le texte pour Drama 3 selon le niveau d'intensité (0 à 3).
  * Retourne le texte d'origine si :
  * - aucune clé LLM n'est configurée
