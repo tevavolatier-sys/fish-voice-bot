@@ -123,7 +123,10 @@ export const maxDuration = 60;
 // ---------- Clavier de sélection ----------
 function modelKeyboard(): InlineKeyboard {
   const kb = new InlineKeyboard();
-  for (const m of ACTIVE_MODELS) kb.text(`🎤 ${modelLabel(m)}`, `voice:${m.key}`).row();
+  ACTIVE_MODELS.forEach((m, i) => {
+    kb.text(modelLabel(m), `voice:${m.key}`);
+    if (i % 2 === 1) kb.row();
+  });
   return kb;
 }
 
@@ -821,7 +824,7 @@ function createBot(): Bot {
       (await getIntensity(ctx.from.id).catch(() => null)) ?? DEFAULT_INTENSITY;
     await ctx
       .editMessageText(
-        `✅ ${modelLabel(model)} — send your text ${model.lang === "fr" ? "in FRENCH 🇫🇷" : "in ENGLISH 🇺🇸"}.`,
+        `✅ ${modelLabel(model)} — send your text ${{ fr: "in FRENCH 🇫🇷", en: "in ENGLISH 🇺🇸", de: "in GERMAN 🇩🇪" }[model.lang]}.`,
         { reply_markup: intensityKeyboard(currentLevel) }
       )
       .catch(() => {});
