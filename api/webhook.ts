@@ -600,7 +600,7 @@ async function generateAndReply(
     // UNE version, mise en scène soignée (directions Drama 3 + sons + balises)
     const finalText = await enrichWithEmotionTags(spoken, intensity, false, undefined, model.lang);
     // Modèle le plus naturel (Drama 3) ; repli sur le modèle standard s'il échoue
-    const audio = await generateVoice(finalText, model.referenceId, { model: VOICE_NOTE_MODEL, temperature: 1, top_p: 0.95 }).catch(
+    const audio = await generateVoice(finalText, model.referenceId, { model: VOICE_NOTE_MODEL, temperature: 1, top_p: 0.95, speed: 1.3 }).catch(
       (err) => {
         console.error("Drama 3 échoué, repli s2.1-pro:", err);
         return generateVoice(finalText, model.referenceId);
