@@ -2,6 +2,7 @@
 // Usage :  npx tsx scripts/test-enrich.ts
 import assert from "node:assert/strict";
 import { checkDirected, spokenWords } from "../lib/enrich.js";
+import { directionView, visibleLength } from "../lib/direction-view.js";
 
 const input = "Coucou toi, tu m’as manqué aujourd’hui 😘 j’arrêtais pas de penser à ⟦T0⟧";
 
@@ -33,5 +34,18 @@ assert.equal(
 assert.deepEqual(spokenWords("J’ai envie… de toi !"), spokenWords("[breathy] j'ai envie, de toi"));
 // Guillemets / bloc de code autour de la réponse : nettoyés
 assert.ok(checkDirected("salut toi", "```\n[warm] Salut toi…\n```"));
+
+// 🌶🌶 : gémissements ajoutés (« ahh », « mmh ») acceptés, vrais mots ajoutés refusés
+const hot = "Oh oui, continue, plus fort";
+assert.ok(checkDirected(hot, "[moaning loudly] Oh oui… [loud moan] ahh… continue, mmh… <forceful>plus fort</forceful>", 2));
+assert.equal(checkDirected(hot, "[moaning] Oh oui, continue, encore plus fort", 2), null);
+
+// Aperçu visuel : directions en italique, sons en emojis, chuchoté souligné, HTML échappé
+const v = directionView("[smiling, soft] Coucou <toi>… [soft breath] [loud moan] <whisper>viens</whisper> [short pause] & là");
+assert.ok(v.includes("🎬<i>smiling, soft</i>"));
+assert.ok(v.includes("💨") && v.includes("🥵") && v.includes("⏸"));
+assert.ok(v.includes("🤫<u>viens</u>"));
+assert.ok(v.includes("&amp;"));
+assert.ok(visibleLength(v) < v.length);
 
 console.log("tests mise en scène : OK");

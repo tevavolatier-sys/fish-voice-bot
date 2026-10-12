@@ -49,7 +49,8 @@ export async function setSelectedModel(
 /** Niveau d'intensité (0-3) choisi par un opérateur via /niveau */
 export async function getIntensity(userId: number): Promise<number | null> {
   const v = await getRedis().get<number | string>(`intensity:${userId}`);
-  return v === null || v === undefined ? null : Number(v);
+  // 2 niveaux seulement : 🌶 (1) et 🌶🌶 (2) — les anciens 0 / 3 y sont ramenés
+  return v === null || v === undefined ? null : Number(v) >= 2 ? 2 : 1;
 }
 
 export async function setIntensity(

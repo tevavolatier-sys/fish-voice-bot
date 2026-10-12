@@ -109,6 +109,7 @@ import {
   type Panel,
 } from "../lib/ppv-panel.js";
 import { VIDEO_HEIGHT, VIDEO_WIDTH, blackVideoFromAudio, videoSelfTest } from "../lib/video.js";
+import { directionView, visibleLength } from "../lib/direction-view.js";
 import { FishError, generateVoice, getFishCredits } from "../lib/fish.js";
 import {
   DEFAULT_INTENSITY,
@@ -133,7 +134,7 @@ async function sendModelPicker(ctx: Context, intro: string): Promise<void> {
 // ---------- Clavier d'intensité ----------
 // Affiché sous chaque vocal et sous le choix de voix : le niveau actif porte un ✅.
 // `base` : clavier déjà commencé (ex. bouton 🎬 Video) auquel on ajoute les niveaux.
-const LEVEL_ICONS: Record<number, string> = { 0: "😇", 1: "🌶", 2: "🌶🌶", 3: "🌶🌶🌶" };
+const LEVEL_ICONS: Record<number, string> = { 1: "🌶", 2: "🌶🌶" };
 
 function intensityKeyboard(current?: number, base?: InlineKeyboard): InlineKeyboard {
   const kb = base ?? new InlineKeyboard();
@@ -148,8 +149,7 @@ function intensityKeyboard(current?: number, base?: InlineKeyboard): InlineKeybo
 function voiceKeyboard(videoToken: string, intensity?: number): InlineKeyboard {
   const kb = new InlineKeyboard()
     .text("🔁", `redo:${videoToken}`)
-    .text("🎭", `tags:${videoToken}`)
-    .text("🎬", `vid:${videoToken}`);
+    .text("🎭", `tags:${videoToken}`);
   if (intensity === undefined) return kb;
   return intensityKeyboard(intensity, kb.row());
 }
@@ -599,7 +599,10 @@ async function generateAndReply(
         return generateVoice(finalText, model.referenceId);
       }
     );
-    const caption = `${model.name}${partLabel ? ` · ${partLabel}` : ""}`;
+    // Légende = aperçu visuel de la mise en scène (le chatter garde l'œil)
+    const head = `<b>${model.name}</b>${partLabel ? ` · ${partLabel}` : ""} · ${LEVEL_ICONS[intensity] ?? ""}`;
+    const view = directionView(finalText);
+    const caption = visibleLength(view) <= 950 ? `${head}\n\n${view}` : head;
     const videoToken = newVideoToken();
     // Fichier MP3 directement dans le chat : il s'écoute dans Telegram et se
     // glisse tel quel dans Infloww / OnlyFans
@@ -612,6 +615,7 @@ async function generateAndReply(
         allow_sending_without_reply: true,
       },
       caption,
+      parse_mode: "HTML",
       reply_markup: voiceKeyboard(videoToken, intensity),
     });
     // Le bouton 🎬 retrouvera CE vocal (file_id) pour en faire la vidéo
@@ -709,8 +713,9 @@ function createBot(): Bot {
         "2. Send your text (in her language)\n" +
         "3. You get the MP3 → drag it into the Infloww chat\n\n" +
         "Under the voice note:\n" +
-        "🔁 new take · 🎭 see / edit the acting · 🎬 video\n" +
-        "😇 🌶 🌶🌶 🌶🌶🌶 = intensity\n\n" +
+        "🔁 new take · 🎭 copy / edit the acting\n" +
+        "Caption: 🎬 acting · 💨 breath · 😄 laugh · 🥵 moan · 😩 scream · ⏸ pause · 🤫 whisper\n" +
+        "🌶 = seductive · 🌶🌶 = hardcore (moans, screams)\n\n" +
         "🎭 The acting is added automatically. To do it yourself, write it like this:\n" +
         "[smiling, a bit shy] Coucou toi… [soft breath] tu m'as manqué. <whisper>Viens.</whisper>\n\n" +
         "💰 /ppv Julien → free preview + PPV with his name"
@@ -793,11 +798,11 @@ function createBot(): Bot {
     const videoData = (ctx.callbackQuery.message?.reply_markup?.inline_keyboard ?? [])
       .flat()
       .map((b) => ("callback_data" in b ? b.callback_data : undefined))
-      .find((d): d is string => typeof d === "string" && d.startsWith("vid:"));
+      .find((d): d is string => typeof d === "string" && /^(vid|redo):/.test(d));
     await ctx
       .editMessageReplyMarkup({
         reply_markup: videoData
-          ? voiceKeyboard(videoData.slice(4), level)
+          ? voiceKeyboard(videoData.slice(videoData.indexOf(":") + 1), level)
           : intensityKeyboard(level),
       })
       .catch(() => {});
