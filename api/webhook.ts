@@ -152,13 +152,22 @@ function intensityKeyboard(current?: number, base?: InlineKeyboard): InlineKeybo
 
 // ---------- Clavier sous un vocal (minimaliste) ----------
 // 🔁 refaire · 🎭 voir / modifier le balisage · 🎬 vidéo, puis le piment.
+// Ligne 1 : refaire · ligne 2 : intensité (refait le vocal) · ligne 3 : émotions
+const EMOTIONS: Record<string, { label: string; ask: string }> = {
+  tease: { label: "😏 Tease", ask: "make it teasing, playful and mischievous" },
+  whisper: { label: "🤫 Whisper", ask: "whisper most of it, very close and intimate" },
+  happy: { label: "😄 Happy", ask: "make it happy, bright and smiling" },
+  hot: { label: "🥵 Hotter", ask: "make it hotter: breathier, add moans and heavy breathing" },
+};
+
 function voiceKeyboard(videoToken: string, intensity?: number): InlineKeyboard {
-  const kb = new InlineKeyboard()
-    .text("🔁", `redo:${videoToken}`)
-    .text("✏️ AI edit", `aiedit:${videoToken}`)
-    .text("🎭", `tags:${videoToken}`);
-  if (intensity === undefined) return kb;
-  return intensityKeyboard(intensity, kb.row());
+  const kb = new InlineKeyboard().text("🔁 Redo", `redo:${videoToken}`).row();
+  for (const [lvl, label] of [[1, "🌶 Seductive"], [2, "🌶🌶 Hardcore"]] as const) {
+    kb.text(`${lvl === intensity ? "✅ " : ""}${label}`, `lvlre:${videoToken}:${lvl}`);
+  }
+  kb.row();
+  for (const [key, e] of Object.entries(EMOTIONS)) kb.text(e.label, `emo:${videoToken}:${key}`);
+  return kb.text("✏️", `aiedit:${videoToken}`);
 }
 
 const newVideoToken = () => randomUUID().replace(/-/g, "").slice(0, 16);
@@ -609,7 +618,7 @@ async function generateAndReply(
     // Légende = aperçu visuel de la mise en scène (le chatter garde l'œil)
     const head = `<b>${model.name}</b>${partLabel ? ` · ${partLabel}` : ""} · ${LEVEL_ICONS[intensity] ?? ""}`;
     const view = directionView(finalText);
-    const dragHint = "📥 <b>Ready! Drag &amp; drop this MP3 into the Infloww chat.</b>";
+    const dragHint = "📥 <b>Drag &amp; drop this voice note into the Infloww chat.</b>";
     const caption =
       visibleLength(view) <= 900 ? `${head}\n\n${view}\n\n${dragHint}` : `${head}\n\n${dragHint}`;
     const videoToken = newVideoToken();
@@ -807,6 +816,7 @@ function createBot(): Bot {
       .flat()
       .map((b) => ("callback_data" in b ? b.callback_data : undefined))
       .find((d): d is string => typeof d === "string" && /^(vid|redo):/.test(d));
+    // (anciens vocaux : clavier reconstruit avec le nouveau ✅)
     await ctx
       .editMessageReplyMarkup({
         reply_markup: videoData
@@ -1424,6 +1434,46 @@ function createBot(): Bot {
     const level = (await getIntensity(ctx.from.id).catch(() => null)) ?? DEFAULT_INTENSITY;
     const replyTo = ctx.callbackQuery.message?.message_id ?? 0;
     waitUntil(generateAndReply(ctx, model, src.t, replyTo, ctx.from.id, level));
+  });
+
+  // 🌶 / 🌶🌶 sous un vocal : change l'intensité ET refait le vocal
+  bot.callbackQuery(/^lvlre:([a-z0-9]{6,32}):([12])$/, async (ctx) => {
+    const src = await getVideoSource(ctx.match[1]).catch(() => null);
+    const model = src ? modelByKey(src.m) : undefined;
+    if (!src?.t || !model) {
+      await ctx.answerCallbackQuery({ text: "Too old — send the text again." });
+      return;
+    }
+    const level = Number(ctx.match[2]);
+    await setIntensity(ctx.from.id, level);
+    await ctx.answerCallbackQuery({ text: level === 2 ? "🌶🌶" : "🌶" });
+    const replyTo = ctx.callbackQuery.message?.message_id ?? 0;
+    waitUntil(generateAndReply(ctx, model, src.t, replyTo, ctx.from.id, level));
+  });
+
+  // 😏 🤫 😄 🥵 : retouche d'émotion en un clic (même texte, nouvelle mise en scène)
+  bot.callbackQuery(/^emo:([a-z0-9]{6,32}):([a-z]+)$/, async (ctx) => {
+    const src = await getVideoSource(ctx.match[1]).catch(() => null);
+    const model = src ? modelByKey(src.m) : undefined;
+    const emo = EMOTIONS[ctx.match[2]];
+    if (!src?.d || !model || !emo) {
+      await ctx.answerCallbackQuery({ text: "Too old — send the text again." });
+      return;
+    }
+    await ctx.answerCallbackQuery({ text: emo.label });
+    const level = (await getIntensity(ctx.from.id).catch(() => null)) ?? DEFAULT_INTENSITY;
+    const replyTo = ctx.callbackQuery.message?.message_id ?? 0;
+    waitUntil(
+      (async () => {
+        await ctx.replyWithChatAction("record_voice").catch(() => {});
+        const revised = await reviseDirection(src.d!, emo.ask, level);
+        if (!revised) {
+          await ctx.reply("❌ Couldn't change it — tap again.").catch(() => {});
+          return;
+        }
+        await generateAndReply(ctx, model, revised, replyTo, ctx.from.id, level);
+      })()
+    );
   });
 
   // ✏️ Retouche par l'IA : le chatter dit ce qu'il veut changer, l'IA refait la mise en scène
