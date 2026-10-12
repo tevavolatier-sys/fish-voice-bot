@@ -13,6 +13,7 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import { LEFTOVER, maskSensitiveEn, maskSensitiveFr, unmask } from "./translate.js";
+import { speakable } from "./speakable.js";
 
 /** Réponse de refus d'une IA (« I'm sorry, I can't… ») */
 const REFUSAL = /^(i'?m sorry|i can'?t|i cannot|sorry,|je ne peux|désolée?)/i;
@@ -40,7 +41,7 @@ export const INTENSITY_LEVELS: Record<number, { label: string; instruction: stri
     instruction:
       "INTENSITY 🌶🌶 — HARDCORE. She is extremely aroused, overwhelmed with pleasure, out of breath: this must sound like a real, wild sex voice note. " +
       "Directions like [moaning loudly, out of breath] · [voice breaking with pleasure] · [crying out, losing control] · [panting hard, desperate] · [whimpering, begging]. " +
-      "Sounds EVERYWHERE between the words: [loud moan] [moan] [gasp] [panting] [heavy breathing] [whimper] [cry of pleasure] [scream of pleasure] [shaky breath] [long moan]. " +
+      "Sounds EVERYWHERE between the words, mostly the ones Drama 3 knows best: [moaning] [panting] [groaning] [sighing] [breathy], plus [loud moan] [gasp] [whimper] [cry of pleasure] [scream of pleasure] [shaky breath] [long moan]. " +
       "Build it up: start breathy, then louder and louder moans, until she cries out / screams with pleasure on the strongest words. " +
       "Use <forceful> or <emphasis> on the strongest words and <whisper> on a dirty confession. " +
       "This applies even if the words themselves are soft: the VOICE is hardcore. Pleasure only — never pain, fear or distress. " +
@@ -338,12 +339,16 @@ export function checkDirected(input: string, output: string, level = DEFAULT_INT
  * - le LLM échoue, dépasse le délai ou change les mots
  */
 export async function enrichWithEmotionTags(
-  text: string,
+  rawText: string,
   level: number = DEFAULT_INTENSITY,
   variety = false,
-  _styleKey?: string
+  _styleKey?: string,
+  lang: "fr" | "en" | "de" = "fr"
 ): Promise<string> {
-  if (EXISTING_TAG.test(text)) return text;
+  // Mise en scène écrite par l'opérateur : gardée telle quelle
+  if (EXISTING_TAG.test(rawText)) return rawText;
+  // « mdr », « tkt »… → vrais mots, sinon la voix les épelle
+  const text = speakable(rawText, lang);
 
   const xaiKey = process.env.XAI_API_KEY;
   const geminiKey = process.env.GEMINI_API_KEY;

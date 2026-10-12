@@ -594,7 +594,7 @@ async function generateAndReply(
     // pour une voix 🇫🇷, écrire directement en français).
     const spoken = text;
     // UNE version, mise en scène soignée (directions Drama 3 + sons + balises)
-    const finalText = await enrichWithEmotionTags(spoken, intensity);
+    const finalText = await enrichWithEmotionTags(spoken, intensity, false, undefined, model.lang);
     // Modèle le plus naturel (Drama 3) ; repli sur le modèle standard s'il échoue
     const audio = await generateVoice(finalText, model.referenceId, { model: VOICE_NOTE_MODEL, temperature: 1, top_p: 0.95 }).catch(
       (err) => {

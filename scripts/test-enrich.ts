@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import { checkDirected, spokenWords } from "../lib/enrich.js";
 import { directionView, visibleLength } from "../lib/direction-view.js";
+import { speakable } from "../lib/speakable.js";
 
 const input = "Coucou toi, tu m’as manqué aujourd’hui 😘 j’arrêtais pas de penser à ⟦T0⟧";
 
@@ -47,5 +48,11 @@ assert.ok(v.includes("💨") && v.includes("🥵") && v.includes("⏸"));
 assert.ok(v.includes("🤫<u>viens</u>"));
 assert.ok(v.includes("&amp;"));
 assert.ok(visibleLength(v) < v.length);
+
+// SMS → mots prononçables
+assert.equal(speakable("tkt jsp mdr, cc toi 😂", "fr"), "t'inquiète je sais pas haha, coucou toi haha");
+assert.equal(speakable("Stp viens trooooop vite!!!", "fr"), "S'il te plaît viens trooop vite!");
+assert.equal(speakable("omg u r so cute lol", "en"), "oh my god you r so cute haha");
+assert.equal(speakable("Ptdr t'es bête", "fr"), "haha t'es bête");
 
 console.log("tests mise en scène : OK");
