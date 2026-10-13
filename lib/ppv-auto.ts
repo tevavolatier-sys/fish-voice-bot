@@ -222,12 +222,15 @@ const NOT_FIRST_NAMES = /^(whale|vip|fan|client|spender|timewaster|tw|big|lead|n
 export function customFirstName(display: string): string | null {
   // Les chatters mettent parfois une NOTE dans le nom (« prêt de Nantes je travaille… ») :
   // plus de 3 mots = une note, pas un prénom (vu le 11/10/2026)
-  const words = (display || "").trim().split(/\s+/).filter((w) => /\p{L}/u.test(w));
+  // Format courant des chatters : « Mathieu | Toulon | yacht captain », « Fabien | 30 » :
+  // seule la partie avant le premier séparateur compte (12/10/2026)
+  const head = (display || "").split(/\s*(?:[|•·\/,(]|\s-\s)\s*/)[0] ?? "";
+  const words = head.trim().split(/\s+/).filter((w) => /\p{L}/u.test(w));
   if (words.length === 0 || words.length > 3) return null;
   const first = words[0];
   if (/^(pr[eê]t|de|du|le|la|les|un|une|il|je|mon|ma|aime|veut|est|mec|gars|bro|ok|non|oui)$/i.test(first)) return null;
   if (!/^[\p{L}][\p{L}'’-]{1,19}$/u.test(first)) return null;
-  if (/\d/.test(display) || NOT_FIRST_NAMES.test(first.replace(/[^\p{L}]/gu, ""))) return null;
+  if (NOT_FIRST_NAMES.test(first.replace(/[^\p{L}]/gu, ""))) return null;
   return cleanFanName(first);
 }
 
