@@ -256,8 +256,9 @@ export async function producePpvForFan(p: PpvPurchase, name: string, force = fal
     const again = async <T>(f: () => Promise<T>): Promise<T> => {
       for (let i = 0; ; i++) {
         try { return await f(); } catch (e) {
-          if (i >= 2 || !/OnlyFansAPI (400|5dd)/.test(String(e))) throw e;
-          await new Promise((r) => setTimeout(r, 4000 * (i + 1)));
+          // 503 « OnlyFans is currently experiencing issues » : panne de quelques dizaines de s (vu le 12/10)
+          if (i >= 4 || !/OnlyFansAPI (400|5dd)/.test(String(e))) throw e;
+          await new Promise((r) => setTimeout(r, [5000, 10000, 20000, 30000][i]));
         }
       }
     };
