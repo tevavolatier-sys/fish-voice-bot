@@ -268,7 +268,7 @@ export async function producePpvForFan(p: PpvPurchase, name: string, force = fal
       for (let i = 0; ; i++) {
         try { return await f(); } catch (e) {
           // 503 « OnlyFans is currently experiencing issues » : panne de quelques dizaines de s (vu le 12/10)
-          if (i >= 4 || !/OnlyFansAPI (400|5dd)/.test(String(e))) throw e;
+          if (i >= 4 || !/OnlyFansAPI (400|5\d\d)/.test(String(e))) throw e;
           await new Promise((r) => setTimeout(r, [5000, 10000, 20000, 30000][i]));
         }
       }
@@ -295,7 +295,7 @@ export async function producePpvForFan(p: PpvPurchase, name: string, force = fal
     log.elapsedSec = Math.round((Date.now() - p.at) / 1000);
     await getRedis().del(doneKey); // on pourra relancer depuis l'interface
     // Panne d'OnlyFans (5xx) : nouvel essai automatique toutes les 5 min, 6 fois max (30 min)
-    if (/OnlyFansAPI 5dd/.test(log.error) && tries < 6) {
+    if (/OnlyFansAPI 5\d\d/.test(log.error) && tries < 6) {
       await getRedis().zadd(RETRY_KEY, { score: Date.now() + 5 * 60_000, member: JSON.stringify({ p, name, source, tries: tries + 1 }) });
       if (tries === 0) {
         await sendAlert(
