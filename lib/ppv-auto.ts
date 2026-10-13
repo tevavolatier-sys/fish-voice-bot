@@ -68,6 +68,7 @@ interface Cleanup {
 const CFG_KEY = "ppvauto:cfg";
 const LOG_KEY = "ppvauto:log";
 const CLEAN_KEY = "ppvauto:cleanup";
+const RETRY_KEY = "ppvauto:retry";
 
 const parse = <T>(raw: unknown): T | null => (raw == null ? null : typeof raw === "string" ? (JSON.parse(raw) as T) : (raw as T));
 
@@ -166,9 +167,16 @@ async function scheduleCleanup(c: Cleanup): Promise<void> {
 }
 
 /** Supprime les dossiers / fichiers arrivés à échéance. Appelé par les webhooks et /api/ppv-cron. */
-export async function runCleanup(): Promise<{ lists: number; media: number }> {
+export async function runCleanup(): Promise<{ lists: number; media: number; retried?: number }> {
   const r = getRedis();
   const now = Date.now();
+  // Nouveaux essais après une panne d'OnlyFans (un seul par passage : ~1 min de travail)
+  let retried = 0;
+  const retry = (await r.zrange<string[]>(RETRY_KEY, 0, now, { byScore: true }))[0];
+  if (retry && (await r.zrem(RETRY_KEY, retry)) === 1) {
+    const j = parse<{ p: PpvPurchase; name: string; source?: "custom" | "guessed"; tries: number }>(retry);
+    if (j) { await producePpvForFan(j.p, j.name, true, j.source, j.tries); retried = 1; }
+  }
   const due = await r.zrange<string[]>(CLEAN_KEY, 0, now, { byScore: true });
   let lists = 0, media = 0;
   for (const raw of due) {
@@ -195,7 +203,7 @@ export async function runCleanup(): Promise<{ lists: number; media: number }> {
       await r.zadd(CLEAN_KEY, { score: now + 10 * 60_000, member: raw });
     }
   }
-  return { lists, media };
+  return { lists, media, retried };
 }
 
 export async function pendingCleanups(): Promise<number> {
@@ -239,7 +247,7 @@ export function customFirstName(display: string): string | null {
  * Lance la fabrication pour un fan (prénom déjà connu). Renvoie le journal.
  * `force` : renvoi manuel depuis l'interface (ignore « déjà fait »).
  */
-export async function producePpvForFan(p: PpvPurchase, name: string, force = false, source?: "custom" | "guessed"): Promise<PpvAutoLog> {
+export async function producePpvForFan(p: PpvPurchase, name: string, force = false, source?: "custom" | "guessed", tries = 0): Promise<PpvAutoLog> {
   const s = await getPpvAutoSettings();
   const log: PpvAutoLog = {
     at: new Date().toISOString(), fan: p.fanId, display: p.display, username: p.username,
@@ -286,6 +294,20 @@ export async function producePpvForFan(p: PpvPurchase, name: string, force = fal
     log.error = String((err as Error)?.message ?? err).slice(0, 800);
     log.elapsedSec = Math.round((Date.now() - p.at) / 1000);
     await getRedis().del(doneKey); // on pourra relancer depuis l'interface
+    // Panne d'OnlyFans (5xx) : nouvel essai automatique toutes les 5 min, 6 fois max (30 min)
+    if (/OnlyFansAPI 5dd/.test(log.error) && tries < 6) {
+      await getRedis().zadd(RETRY_KEY, { score: Date.now() + 5 * 60_000, member: JSON.stringify({ p, name, source, tries: tries + 1 }) });
+      if (tries === 0) {
+        await sendAlert(
+          `⏳ ${p.display || p.username || p.fanId} bought the welcome PPV (${p.amount}) but OnlyFans is down right now. ` +
+          `I'll retry ${name}'s videos automatically every 5 min, you'll get an alert when they're ready.`,
+          redoButton(p.fanId, "✏️ Change the name")
+        ).catch(() => {});
+      }
+      log.error = `OnlyFans en panne, nouvel essai auto dans 5 min (${tries + 1}/6) — ${log.error}`;
+      await addLog(log);
+      return log;
+    }
     await sendAlert(
       `⚠️ ${p.display || p.username || p.fanId} bought the welcome PPV ($${p.amount}) but the custom videos FAILED: ${log.error}\n` +
       `Make them by hand with /ppv ${name} in the voice bot, or tap the button to try again.`,
