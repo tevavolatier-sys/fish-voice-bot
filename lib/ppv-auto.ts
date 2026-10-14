@@ -239,6 +239,8 @@ export function customFirstName(display: string): string | null {
   if (/^(pr[eê]t|de|du|le|la|les|un|une|il|je|mon|ma|aime|veut|est|mec|gars|bro|ok|non|oui)$/i.test(first)) return null;
   if (!/^[\p{L}][\p{L}'’-]{1,19}$/u.test(first)) return null;
   if (NOT_FIRST_NAMES.test(first.replace(/[^\p{L}]/gu, ""))) return null;
+  // Pas un prénom prononçable (« Zzzzzzzjhhhhh », « xkq ») : 3 lettres identiques, pas de voyelle, trop long (14/10)
+  if (/(\p{L})\1\1/iu.test(first) || !/[aeiouyàâäéèêëîïôöùûü]/i.test(first) || first.length > 14) return null;
   return cleanFanName(first);
 }
 
