@@ -41,12 +41,13 @@ export const INTENSITY_LEVELS: Record<number, { label: string; instruction: stri
     instruction:
       "INTENSITY 🌶🌶 — HARDCORE. She is extremely aroused, overwhelmed with pleasure, out of breath: this must sound like a real, wild sex voice note. " +
       "Directions like [moaning loudly, out of breath] · [voice breaking with pleasure] · [crying out, losing control] · [panting hard, desperate] · [whimpering, begging]. " +
-      "Sounds EVERYWHERE between the words, mostly the ones Drama 3 knows best: [moaning] [panting] [groaning] [sighing] [breathy], plus [loud moan] [gasp] [whimper] [cry of pleasure] [scream of pleasure] [shaky breath] [long moan]. " +
-      "Build it up: start breathy, then louder and louder moans, until she cries out / screams with pleasure on the strongest words. " +
+      "Sounds between the words, mostly the ones Drama 3 knows best: [moaning] [panting] [groaning] [sighing] [gasp] [whimper]. " +
+      "ONE sound at a time (never two in a row), at most one sound per sentence chunk, NEVER [long moan] or long sounds: the voice note must stay SHORT (a few seconds more than the text, never long moaning). " +
+      "Build it up: breathy at first, louder on the strongest words. " +
       "Use <forceful> or <emphasis> on the strongest words and <whisper> on a dirty confession. " +
       "This applies even if the words themselves are soft: the VOICE is hardcore. Pleasure only — never pain, fear or distress. " +
       "At this level ONLY you may repeat a few words that are already in the text (\"viens… viens\") and add moan sounds like \"ahh\" or \"mmh\", but NEVER a new word.",
-    density: "very dense: a sound or direction every 2 to 4 words, several moans per sentence",
+    density: "intense but compact: a sound every 5 to 8 words, never two sounds in a row",
   },
 };
 

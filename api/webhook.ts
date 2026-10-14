@@ -618,12 +618,26 @@ async function generateAndReply(
     // UNE version, mise en scène soignée (directions Drama 3 + sons + balises)
     const finalText = await enrichWithEmotionTags(spoken, intensity, false, undefined, model.lang);
     // Modèle le plus naturel (Drama 3) ; repli sur le modèle standard s'il échoue
-    const audio = await generateVoice(finalText, model.referenceId, { model: VOICE_NOTE_MODEL, temperature: 1, top_p: 0.95, speed: 1 }).catch(
-      (err) => {
-        console.error("Drama 3 échoué, repli s2.1-pro:", err);
-        return generateVoice(finalText, model.referenceId);
-      }
-    );
+    const tts = (t: string) =>
+      generateVoice(t, model.referenceId, { model: VOICE_NOTE_MODEL, temperature: 1, top_p: 0.95, speed: 1 }).catch(
+        (err) => {
+          console.error("Drama 3 échoué, repli s2.1-pro:", err);
+          return generateVoice(t, model.referenceId);
+        }
+      );
+    let audio = await tts(finalText);
+    // Drama 3 part parfois en gémissements interminables (« IA qui bugue ») :
+    // si le vocal est bien plus long que le texte, on le refait sans les sons
+    const words = spoken.split(/\s+/).filter(Boolean).length;
+    const maxSec = Math.max(10, words * 0.6 + 6);
+    const sec = await audioSeconds(audio).catch(() => 0);
+    if (sec > maxSec) {
+      console.error(`Vocal trop long (${sec.toFixed(1)} s > ${maxSec.toFixed(0)} s) : refait sans les sons`);
+      const lighter = finalText.replace(/\[(?:[^\],]*\b(?:moan|groan|pant|sigh|gasp|whimper|cry|scream|breath)\w*[^\],]*)\]\s*/gi, "");
+      const retry = await tts(lighter);
+      const sec2 = await audioSeconds(retry).catch(() => 0);
+      if (sec2 && sec2 < sec) audio = retry;
+    }
     // Légende = aperçu visuel de la mise en scène (le chatter garde l'œil)
     const head = `<b>${model.name}</b>${partLabel ? ` · ${partLabel}` : ""} · ${LEVEL_ICONS[intensity] ?? ""}`;
     const view = directionView(finalText);
