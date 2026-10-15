@@ -125,7 +125,8 @@ export const WELCOME_TEXTS: Record<OfAccount["lang"], { line: (name: string) => 
 export function defaultWelcomeSettings(a: OfAccount = SIENNA): WelcomeSettings {
   if (a.legacy) return DEFAULT_SETTINGS;
   const t = WELCOME_TEXTS[a.lang];
-  return { ...DEFAULT_SETTINGS, enabled: false, accountId: a.acct, abTest: "v90", fixedText: t.fixed(a.modelName), fallbackText: t.fallback, followUpText: t.followUp };
+  // test A/B actif d'office (Teva, 15/10) : 9 fans sur 10 vocal perso dans la voix de la modèle, 1 sur 10 rien
+  return { ...DEFAULT_SETTINGS, enabled: false, accountId: a.acct, abEnabled: true, abTest: "v90", fixedText: t.fixed(a.modelName), fallbackText: t.fallback, followUpText: t.followUp };
 }
 
 /** Forfait OnlyFansAPI : requêtes par mois, et seuil où l'on coupe tout */
