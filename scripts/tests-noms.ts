@@ -78,12 +78,12 @@ button.main{font:inherit;background:var(--acc);border:0;color:#fff;border-radius
 </main><script>
 const META = ${JSON.stringify(meta)};
 let order, notes = {};
-try { order = JSON.parse(localStorage.getItem("tn-order")); notes = JSON.parse(localStorage.getItem("tn-notes")) || {}; } catch {}
+try { order = JSON.parse(localStorage.getItem("tn2-order")); notes = JSON.parse(localStorage.getItem("tn2-notes")) || {}; } catch {}
 if (!Array.isArray(order) || order.length !== META.length) {
   order = META.map((_, i) => i).sort(() => Math.random() - 0.5);
-  try { localStorage.setItem("tn-order", JSON.stringify(order)); } catch {}
+  try { localStorage.setItem("tn2-order", JSON.stringify(order)); } catch {}
 }
-const save = () => { try { localStorage.setItem("tn-notes", JSON.stringify(notes)); } catch {} };
+const save = () => { try { localStorage.setItem("tn2-notes", JSON.stringify(notes)); } catch {} };
 const list = document.getElementById("list");
 order.forEach((idx, pos) => {
   const m = META[idx];
