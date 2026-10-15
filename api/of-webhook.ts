@@ -1,13 +1,16 @@
 // Webhooks OnlyFansAPI : subscriptions.new (vocal de bienvenue), messages.received et transactions.new (test A/B).
 // Déclaré/mis à jour automatiquement par l'action « webhookSetup » de api/welcome.ts
 // (API OnlyFansAPI /webhooks), avec le secret ONLYFANS_WEBHOOK_SECRET.
+// Multi-comptes (Sienna, Lena, Jade : lib/accounts.ts) : le compte est celui du payload (account_id),
+// ou à défaut le paramètre ?acct=<acct_… ou lena/jade> de l'URL du webhook.
 // Une 401 répétée (mauvais secret) met le webhook en pause après 20 échecs (événements perdus).
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { waitUntil } from "@vercel/functions";
 import { recordReply, recordRevenue } from "../lib/ab.js";
 import { getRedis } from "../lib/redis.js";
 import { handlePpvUnlocked, runCleanup } from "../lib/ppv-auto.js";
-import { getWelcomeSettings, handleNewSub } from "../lib/welcome.js";
+import { accountFromParam } from "../lib/accounts.js";
+import { getWelcomeSettings, handleNewSub, resolveAccount } from "../lib/welcome.js";
 
 export const maxDuration = 60;
 
@@ -64,6 +67,15 @@ export async function POST(req: Request): Promise<Response> {
     if (fresh !== "OK") return Response.json({ ok: true, duplicate: true });
   }
 
+  // Compte : account_id du payload, sinon ?acct= dans l'URL
+  const acctParam = accountFromParam(new URL(req.url).searchParams.get("acct"));
+  const acctOf = () => str(body?.account_id) || acctParam?.acct || "";
+  /** Le fan appartient-il au test de ce compte ? (compte connu et réglages au même acct_) */
+  const sameAccount = async (accountId: string) => {
+    const a = await resolveAccount(accountId);
+    return a ? (await getWelcomeSettings(a)).accountId === accountId : false;
+  };
+
   if (body?.event === "subscriptions.new") {
     const fan = fanOf(body?.payload ?? {});
     // Heure de l'abonnement : celle du payload si elle existe, sinon la réception du webhook
@@ -74,23 +86,23 @@ export async function POST(req: Request): Promise<Response> {
     const parsed = rawAt ? Date.parse(String(rawAt)) : NaN;
     const age = Date.now() - parsed;
     const subscribedAt = Number.isFinite(parsed) && age > -60_000 && age < 10 * 60_000 ? parsed : Date.now();
-    if (fan.id) waitUntil(handleNewSub(str(body?.account_id), fan.id, fan.name, fan.username, { subscribedAt }));
+    if (fan.id) waitUntil(handleNewSub(acctOf(), fan.id, fan.name, fan.username, { subscribedAt }));
   } else if (body?.event === "transactions.new") {
     // Test A/B : CA du fan (tip, PPV, extension…) dans sa fenêtre
     const p = body?.payload ?? {};
     const fan = fanOf(p);
-    const accountId = str(body?.account_id);
+    const accountId = acctOf();
     const amount = Number(p?.amount?.gross ?? p?.amount_gross ?? p?.gross ?? p?.amount ?? p?.price ?? 0) || 0;
     // Les abonnements (nouveaux, renouvellements) ne comptent pas dans le CA du test : même base que le rattrapage OF
     const kind = String(p?.type ?? p?.transactionType ?? p?.description ?? "").toLowerCase();
     if (fan.id && accountId && amount > 0 && !/subscri|abonn/.test(kind)) {
-      waitUntil(getWelcomeSettings().then((s) => (s.accountId === accountId ? recordRevenue(accountId, fan.id, amount) : false)));
+      waitUntil(sameAccount(accountId).then((ok) => (ok ? recordRevenue(accountId, fan.id, amount) : false)));
     }
   } else if (body?.event === "messages.ppv.unlocked") {
     // PPV perso automatique : achat du PPV de bienvenue → preview + PPV 1 avec le prénom
     const p = body?.payload ?? {};
     const f = p?.fan ?? {};
-    const accountId = str(body?.account_id);
+    const accountId = acctOf();
     const fanId = str(f.id ?? p?.chat_id);
     if (accountId && fanId) {
       const at = Date.parse(String(p?.createdAt ?? "")) || Date.now();
@@ -103,11 +115,9 @@ export async function POST(req: Request): Promise<Response> {
   } else if (body?.event === "messages.received") {
     // Test A/B : un fan du test a écrit → on note sa première réponse (si dans les 72 h)
     const fan = fanOf(body?.payload ?? {});
-    const accountId = str(body?.account_id);
+    const accountId = acctOf();
     if (fan.id && accountId) {
-      waitUntil(
-        getWelcomeSettings().then((s) => (s.accountId === accountId ? recordReply(accountId, fan.id) : false))
-      );
+      waitUntil(sameAccount(accountId).then((ok) => (ok ? recordReply(accountId, fan.id) : false)));
     }
   }
   // Nettoyage du vault (dossiers PPV perso expirés) au passage, sans bloquer la réponse
