@@ -24,7 +24,7 @@ const NAMES: [string, string][] = [
 ];
 
 const line = (name: string) =>
-  `[Young woman, relaxed on the couch, close to the mic, reading his name off her screen for the first time, a small smile] Coucou… ${name} ? Bienvenue sur ma page.`;
+  `[Young woman, relaxed on the couch, close to the mic, reading his name off her screen for the first time, a small smile] Coucou ${name}… c'est ça ? Bienvenue sur ma page.`;
 
 async function tts(text: string): Promise<Buffer> {
   for (let attempt = 1; attempt <= 3; attempt++) {
