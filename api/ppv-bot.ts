@@ -63,10 +63,15 @@ export async function POST(req: Request): Promise<Response> {
   // 2) Réponse avec le prénom → nouvelles vidéos
   const m = u.message;
   const replyTo = m?.reply_to_message?.message_id;
-  if (m?.text && replyTo) {
-    const raw = await getRedis().get<string | number>(ASK(m.chat.id, replyTo));
-    console.log("ppv-bot reply lookup:", ASK(m.chat.id, replyTo), "→", raw);
+  // Réponse au message du bot, OU simple message d'un mot juste après un clic sur le bouton
+  // (les chatters oubliaient « Répondre » → rien ne se passait, 14-15/10/2026)
+  const oneWord = Boolean(m?.text) && !m.from?.is_bot && !String(m.text).startsWith("/") && String(m.text).trim().split(/\s+/).length <= 2;
+  if (m?.text && (replyTo || oneWord)) {
+    let raw = replyTo ? await getRedis().get<string | number>(ASK(m.chat.id, replyTo)) : null;
+    if (raw == null && oneWord) raw = await getRedis().get<string | number>(LAST(m.chat.id));
+    console.log("ppv-bot reply lookup:", replyTo, "→", raw);
     if (raw == null) return Response.json({ ok: true });
+    await getRedis().del(LAST(m.chat.id));
     const [k, f] = String(raw).includes(":") ? String(raw).split(":") : ["", String(raw)];
     const acc = accountByKey(k);
     const fanId = f;
