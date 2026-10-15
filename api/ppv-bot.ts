@@ -25,6 +25,8 @@ async function tg(method: string, body: Record<string, unknown>): Promise<Any> {
 }
 
 const ASK = (chat: number | string, msg: number) => `ppvbot:ask:${chat}:${msg}`;
+/** Dernière demande de prénom du groupe (15 min) : un simple message « Kevin » suffit, sans « Répondre » */
+const LAST = (chat: number | string) => `ppvbot:last:${chat}`;
 
 export async function POST(req: Request): Promise<Response> {
   if (req.headers.get("x-telegram-bot-api-secret-token") !== process.env.CRON_SECRET) {
@@ -46,13 +48,15 @@ export async function POST(req: Request): Promise<Response> {
     const ctx = await getContext(fanId, acc);
     const sent = await tg("sendMessage", {
       chat_id: chat,
-      text: `✏️ ${who} reply to this message with the right first name for ${ctx?.display || ctx?.username || `fan ${fanId}`} (just the name, e.g. Kevin):`,
+      text: `✏️ ${who} type the right first name for ${ctx?.display || ctx?.username || `fan ${fanId}`} (just the name, e.g. Kevin) — reply to this message or just send it in the group:`,
       reply_to_message_id: cb.message?.message_id,
       reply_markup: { force_reply: true, selective: true, input_field_placeholder: "First name" },
     });
     const msgId = sent?.result?.message_id;
     console.log("ppv-bot ask sent:", JSON.stringify(sent).slice(0, 300));
-    if (chat && msgId) await getRedis().set(ASK(chat, msgId), acc.legacy ? fanId : `${acc.key}:${fanId}`, { ex: 24 * 3600 });
+    const target = acc.legacy ? fanId : `${acc.key}:${fanId}`;
+    if (chat && msgId) await getRedis().set(ASK(chat, msgId), target, { ex: 24 * 3600 });
+    if (chat) await getRedis().set(LAST(chat), target, { ex: 15 * 60 });
     return Response.json({ ok: true });
   }
 
@@ -71,7 +75,7 @@ export async function POST(req: Request): Promise<Response> {
       await tg("sendMessage", { chat_id: m.chat.id, reply_to_message_id: m.message_id, text: "❌ That doesn't look like a first name (letters only, 2 to 20). Tap the button again." });
       return Response.json({ ok: true });
     }
-    await getRedis().del(ASK(m.chat.id, replyTo));
+    if (replyTo) await getRedis().del(ASK(m.chat.id, replyTo));
     const ctx = (await getContext(fanId, acc)) ?? {
       accountId: await accountIdOf(acc), fanId, chatId: fanId, messageId: "", display: "", name: "", username: "", amount: 0, at: Date.now(),
     };
