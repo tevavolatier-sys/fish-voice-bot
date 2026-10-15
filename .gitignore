@@ -18,3 +18,5 @@ tests-vocaux/
 
 # Permissions locales Claude (propres à ce PC)
 .claude/settings.local.json
+tutorial/
+tests_noms/
