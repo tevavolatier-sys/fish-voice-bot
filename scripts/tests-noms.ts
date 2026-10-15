@@ -24,7 +24,8 @@ const NAMES: [string, string][] = [
 ];
 
 const line = (name: string) =>
-  `[Young woman, relaxed on the couch, close to the mic, reading his name off her screen for the first time, a small smile] Coucou ${name}… c'est ça ? Bienvenue sur ma page.`;
+  `[Young woman, relaxed on the couch, close to the mic, reading his name off her screen for the first time, a small smile] Coucou ${name}… ` +
+  `[suddenly bright and joyful, smiling wide, excited, putting a happy emphasis on the last word] Bienvenue sur ma PAGE !`;
 
 async function tts(text: string): Promise<Buffer> {
   for (let attempt = 1; attempt <= 3; attempt++) {
@@ -78,12 +79,12 @@ button.main{font:inherit;background:var(--acc);border:0;color:#fff;border-radius
 </main><script>
 const META = ${JSON.stringify(meta)};
 let order, notes = {};
-try { order = JSON.parse(localStorage.getItem("tn2-order")); notes = JSON.parse(localStorage.getItem("tn2-notes")) || {}; } catch {}
+try { order = JSON.parse(localStorage.getItem("tn3-order")); notes = JSON.parse(localStorage.getItem("tn3-notes")) || {}; } catch {}
 if (!Array.isArray(order) || order.length !== META.length) {
   order = META.map((_, i) => i).sort(() => Math.random() - 0.5);
-  try { localStorage.setItem("tn2-order", JSON.stringify(order)); } catch {}
+  try { localStorage.setItem("tn3-order", JSON.stringify(order)); } catch {}
 }
-const save = () => { try { localStorage.setItem("tn2-notes", JSON.stringify(notes)); } catch {} };
+const save = () => { try { localStorage.setItem("tn3-notes", JSON.stringify(notes)); } catch {} };
 const list = document.getElementById("list");
 order.forEach((idx, pos) => {
   const m = META[idx];
