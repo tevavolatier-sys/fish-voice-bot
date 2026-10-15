@@ -19,6 +19,53 @@ async function count(): Promise<void> {
   await r.expire(key, 40 * 24 * 3600);
 }
 
+// ── Crédits OnlyFansAPI : compteur GLOBAL, commun à tous les comptes ET au site mass-dm-of
+// (même Redis). Clés partagées : ofapi:credits:<AAAA-MM-JJ UTC> (crédits utilisés ce jour),
+// ofapi:balance (dernier solde lu), ofapi:cap (plafond journalier, 4000 par défaut).
+const creditsKey = (d = new Date()) => `ofapi:credits:${d.toISOString().slice(0, 10)}`;
+export const DEFAULT_CREDITS_CAP = 4000;
+
+/** Lit _meta._credits d'une réponse OnlyFansAPI et met à jour le compteur du jour + le solde */
+async function recordCredits(text: string): Promise<void> {
+  try {
+    const c = (JSON.parse(text) as { _meta?: { _credits?: { used?: unknown; balance?: unknown } } })?._meta?._credits;
+    if (!c) return;
+    const r = getRedis();
+    const used = Number(c.used);
+    if (Number.isFinite(used) && used > 0) {
+      const k = creditsKey();
+      await r.incrby(k, Math.round(used));
+      await r.expire(k, 40 * 24 * 3600);
+    }
+    const bal = Number(c.balance);
+    if (c.balance != null && Number.isFinite(bal)) await r.set("ofapi:balance", bal);
+  } catch {
+    /* réponse non JSON : rien à compter */
+  }
+}
+
+export async function creditsToday(): Promise<number> {
+  return Number(await getRedis().get<number>(creditsKey())) || 0;
+}
+export async function lastCreditsBalance(): Promise<number | null> {
+  const v = await getRedis().get<number>("ofapi:balance");
+  return v == null || !Number.isFinite(Number(v)) ? null : Number(v);
+}
+export async function getCreditsCap(): Promise<number> {
+  const v = Number(await getRedis().get<number>("ofapi:cap"));
+  return Number.isFinite(v) && v > 0 ? v : DEFAULT_CREDITS_CAP;
+}
+export async function setCreditsCap(n: number): Promise<number> {
+  const cap = Math.max(1, Math.min(1_000_000, Math.round(Number(n) || DEFAULT_CREDITS_CAP)));
+  await getRedis().set("ofapi:cap", cap);
+  return cap;
+}
+/** Plafond journalier global atteint ? (les automatismes s'arrêtent) */
+export async function creditsCapReached(): Promise<{ over: boolean; used: number; cap: number }> {
+  const [used, cap] = await Promise.all([creditsToday(), getCreditsCap()]);
+  return { over: used >= cap, used, cap };
+}
+
 async function api<T>(accountId: string, route: string, init: RequestInit): Promise<T> {
   const headers: Record<string, string> = {
     ...((init.headers as Record<string, string> | undefined) ?? {}),
@@ -40,6 +87,7 @@ async function api<T>(accountId: string, route: string, init: RequestInit): Prom
       signal: AbortSignal.timeout(45_000),
     });
     text = await res.text();
+    await recordCredits(text);
     if (res.status !== 503 || !/not_sent/.test(text) || i === waits.length) break;
     await new Promise((r) => setTimeout(r, waits[i]));
   }
@@ -120,8 +168,20 @@ async function global<T>(route: string, init: RequestInit = {}): Promise<T> {
     signal: AbortSignal.timeout(30_000),
   });
   const text = await res.text();
+  await recordCredits(text);
   if (!res.ok) throw new Error(`OnlyFansAPI ${res.status} : ${text.slice(0, 300)}`);
   return (text ? JSON.parse(text) : {}) as T;
+}
+
+/** Solde de crédits lu en direct (1 requête en lecture), null si indisponible */
+export async function creditsBalanceLive(): Promise<number | null> {
+  try {
+    const r = await global<{ _meta?: { _credits?: { balance?: number } } }>("/webhooks");
+    const b = r._meta?._credits?.balance;
+    return typeof b === "number" ? b : await lastCreditsBalance();
+  } catch {
+    return lastCreditsBalance().catch(() => null);
+  }
 }
 
 export async function listWebhooks(): Promise<OfWebhook[]> {
