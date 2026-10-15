@@ -258,6 +258,8 @@ export function customFirstName(display: string): string | null {
   // Format courant des chatters : « Mathieu | Toulon | yacht captain », « Fabien | 30 » :
   // seule la partie avant le premier séparateur compte (12/10/2026)
   const head = (display || "").split(/\s*(?:[|•·\/,(]|\s-\s)\s*/)[0] ?? "";
+  // « Haute-Savoie- electrician » : un mot collé à un tiret final = une étiquette (lieu…), pas un prénom (15/10)
+  if (/^\S+-(\s|$)/.test(head.trim())) return null;
   const words = head.trim().split(/\s+/).filter((w) => /\p{L}/u.test(w));
   if (words.length === 0 || words.length > 3) return null;
   const first = words[0];
