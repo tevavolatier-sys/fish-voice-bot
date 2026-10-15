@@ -8,6 +8,7 @@
 import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { SIENNA, scoped, type OfAccount } from "./accounts.js";
 import { getRedis } from "./redis.js";
 import { ffmpegBinary, run } from "./video.js";
 
@@ -54,10 +55,19 @@ export const DEFAULT_SELFIE: SelfieSettings = {
   zone: [[61, 50], [96, 53], [89, 65], [57, 63]],
 };
 
-const CFG_KEY = "welcome:selfie:cfg";
-const PHOTO_KEY = "welcome:selfie:photo";
+// Clés par compte (Sienna : clés d'origine ; Lena/Jade : suffixées)
+const CFG_KEY = (a: OfAccount) => scoped("welcome:selfie:cfg", a);
+const PHOTO_KEY = (a: OfAccount) => scoped("welcome:selfie:photo", a);
 /** Photo d'un mot écrit par la modèle elle-même : l'IA copie SON écriture (facultatif) */
-const HANDWRITING_KEY = "welcome:selfie:handwriting";
+const HANDWRITING_KEY = (a: OfAccount) => scoped("welcome:selfie:handwriting", a);
+
+/** Texte sous le selfie, dans la langue du compte */
+const SELFIE_CAPTION: Record<OfAccount["lang"], string> = {
+  fr: "bcp de gens pensent que je suis un faux profil, donc tiens un ptit selfie de bienvenue perso pour te prouver que je suis pas fake 😘",
+  en: "so many people think I'm a fake profile lol, so here's a lil personal welcome selfie just for you to prove I'm real 😘",
+  de: "viele denken, ich wär ein Fake-Profil, also hier ein kleines Willkommens-Selfie nur für dich, damit du siehst, dass ich echt bin 😘",
+};
+const defaultSelfie = (a: OfAccount): SelfieSettings => (a.legacy ? DEFAULT_SELFIE : { ...DEFAULT_SELFIE, caption: SELFIE_CAPTION[a.lang] });
 const FONT = join(process.cwd(), "assets", "Caveat-Bold.ttf");
 /**
  * Modèles d'image Gemini essayés dans l'ordre (IDs stables au 07/10/2026 ; les « -preview » sont
@@ -91,12 +101,12 @@ function parse<T>(raw: unknown): T | null {
   return (typeof raw === "string" ? JSON.parse(raw) : raw) as T;
 }
 
-export async function getSelfieSettings(): Promise<SelfieSettings> {
-  return { ...DEFAULT_SELFIE, ...(parse<Partial<SelfieSettings>>(await getRedis().get(CFG_KEY)) ?? {}) };
+export async function getSelfieSettings(a: OfAccount = SIENNA): Promise<SelfieSettings> {
+  return { ...defaultSelfie(a), ...(parse<Partial<SelfieSettings>>(await getRedis().get(CFG_KEY(a))) ?? {}) };
 }
 
-export async function saveSelfieSettings(s: Partial<SelfieSettings>): Promise<void> {
-  const cur = await getSelfieSettings();
+export async function saveSelfieSettings(s: Partial<SelfieSettings>, a: OfAccount = SIENNA): Promise<void> {
+  const cur = await getSelfieSettings(a);
   // Champ vide ou illisible → on garde la valeur actuelle (jamais 0 par accident)
   const num = (v: unknown, d: number, lo: number, hi: number) => {
     const n = Number(v);
@@ -116,7 +126,7 @@ export async function saveSelfieSettings(s: Partial<SelfieSettings>): Promise<vo
     fallback: Boolean(s.fallback ?? cur.fallback),
     zone: cleanZone(s.zone) ?? cur.zone,
   };
-  await getRedis().set(CFG_KEY, JSON.stringify(clean));
+  await getRedis().set(CFG_KEY(a), JSON.stringify(clean));
 }
 
 function cleanZone(z: unknown): [number, number][] | null {
@@ -171,28 +181,28 @@ export async function selfieGuide(photo: Buffer, s: SelfieSettings): Promise<Buf
   });
 }
 
-export async function getSelfiePhoto(): Promise<Buffer | null> {
-  const b64 = await getRedis().get<string>(PHOTO_KEY);
+export async function getSelfiePhoto(a: OfAccount = SIENNA): Promise<Buffer | null> {
+  const b64 = await getRedis().get<string>(PHOTO_KEY(a));
   return b64 ? Buffer.from(b64, "base64") : null;
 }
 
 /** Une photo de base est-elle installée ? (sans la télécharger) */
-export async function hasSelfiePhoto(): Promise<boolean> {
-  return (await getRedis().exists(PHOTO_KEY)) === 1;
+export async function hasSelfiePhoto(a: OfAccount = SIENNA): Promise<boolean> {
+  return (await getRedis().exists(PHOTO_KEY(a))) === 1;
 }
 
-export async function getHandwriting(): Promise<Buffer | null> {
-  const b64 = await getRedis().get<string>(HANDWRITING_KEY);
+export async function getHandwriting(a: OfAccount = SIENNA): Promise<Buffer | null> {
+  const b64 = await getRedis().get<string>(HANDWRITING_KEY(a));
   return b64 ? Buffer.from(b64, "base64") : null;
 }
-export async function hasHandwriting(): Promise<boolean> {
-  return (await getRedis().exists(HANDWRITING_KEY)) === 1;
+export async function hasHandwriting(a: OfAccount = SIENNA): Promise<boolean> {
+  return (await getRedis().exists(HANDWRITING_KEY(a))) === 1;
 }
-export async function clearHandwriting(): Promise<void> {
-  await getRedis().del(HANDWRITING_KEY);
+export async function clearHandwriting(a: OfAccount = SIENNA): Promise<void> {
+  await getRedis().del(HANDWRITING_KEY(a));
 }
 /** Échantillon d'écriture : ramené à 1024 px max, JPEG compressé jusqu'à tenir dans Redis */
-export async function saveHandwriting(image: Buffer): Promise<{ bytes: number }> {
+export async function saveHandwriting(image: Buffer, a: OfAccount = SIENNA): Promise<{ bytes: number }> {
   const b64 = await withTmp(async (dir) => {
     const inp = join(dir, "in.img");
     await writeFile(inp, image);
@@ -206,7 +216,7 @@ export async function saveHandwriting(image: Buffer): Promise<{ bytes: number }>
     }
     throw new Error("Échantillon trop lourd : envoie une photo plus simple.");
   });
-  await getRedis().set(HANDWRITING_KEY, b64);
+  await getRedis().set(HANDWRITING_KEY(a), b64);
   return { bytes: Math.round((b64.length * 3) / 4) };
 }
 
@@ -223,7 +233,7 @@ async function withTmp<T>(fn: (dir: string) => Promise<T>): Promise<T> {
  * Photo de base : ramenée à 1280 px max et en JPEG. Redis (Upstash) refuse une valeur
  * de plus de 1 Mo : on compresse de plus en plus jusqu'à tenir (base64 = ×1,33).
  */
-export async function saveSelfiePhoto(image: Buffer): Promise<{ bytes: number }> {
+export async function saveSelfiePhoto(image: Buffer, a: OfAccount = SIENNA): Promise<{ bytes: number }> {
   const b64 = await withTmp(async (dir) => {
     const inp = join(dir, "in.img");
     await writeFile(inp, image);
@@ -237,7 +247,7 @@ export async function saveSelfiePhoto(image: Buffer): Promise<{ bytes: number }>
     }
     throw new Error("Photo trop lourde même compressée : envoie un JPEG plus simple.");
   });
-  await getRedis().set(PHOTO_KEY, b64);
+  await getRedis().set(PHOTO_KEY(a), b64);
   return { bytes: Math.round((b64.length * 3) / 4) };
 }
 
@@ -522,6 +532,8 @@ export interface AiOverrides {
   method?: "note" | "edit";
   /** Échantillon d'écriture fourni directement (essais locaux), à la place de celui de Redis */
   reference?: Buffer;
+  /** Compte dont on prend l'échantillon d'écriture (Sienna par défaut) */
+  account?: OfAccount;
 }
 export const aiMethod = (ai: AiOverrides): "note" | "edit" =>
   ai.method === "edit" || ai.method === "note" ? ai.method : process.env.WELCOME_AI_METHOD?.trim() === "edit" ? "edit" : "note";
@@ -556,7 +568,7 @@ export async function selfieByOpenAi(photo: Buffer, name: string, s: SelfieSetti
     const paddedBuf = await readFile(padded);
     const maskBuf = await readFile(mask);
     // Vraie écriture de la modèle (si installée) : passée en 2e image, l'IA l'imite
-    const handwriting = ai.noReference ? null : ai.reference ?? (await getHandwriting());
+    const handwriting = ai.noReference ? null : ai.reference ?? (await getHandwriting(ai.account));
     const basePrompt =
       `In the editable area (the blank white sheet of paper she is holding), write the name "${name}" ` +
       `${(ai.style?.trim() || process.env.WELCOME_STYLE?.trim() || DEFAULT_STYLE)}. ` +
@@ -1112,17 +1124,18 @@ export async function selfieByAi(photo: Buffer, name: string, s: SelfieSettings,
  */
 export async function makeSelfie(
   name: string,
-  opts: { force?: boolean; mode?: "ai" | "text"; ai?: AiOverrides } = {}
+  opts: { force?: boolean; mode?: "ai" | "text"; ai?: AiOverrides } = {},
+  a: OfAccount = SIENNA
 ): Promise<{ jpeg: Buffer; how: "ai" | "text"; provider?: "openai" | "gemini"; note?: string; aiError?: string } | null> {
-  const s = await getSelfieSettings();
+  const s = await getSelfieSettings(a);
   if (!name || (!s.enabled && !opts.force)) return null;
-  const photo = await getSelfiePhoto();
+  const photo = await getSelfiePhoto(a);
   if (!photo) throw new Error("pas de photo de base installée (interface → carte Selfie)");
   const mode = opts.mode ?? s.mode;
   if (mode === "ai" && !aiProviders().length) throw new Error("aucune clé IA image (OPENAI_API_KEY ou GEMINI_API_KEY) sur Vercel");
   if (mode === "ai") {
     try {
-      const r = await selfieByAi(photo, name, s, opts.ai ?? {});
+      const r = await selfieByAi(photo, name, s, { ...(opts.ai ?? {}), account: a });
       return { jpeg: r.jpeg, how: "ai", provider: r.provider, note: r.note };
     } catch (err) {
       const aiError = String((err as Error)?.message ?? err).slice(0, 200);

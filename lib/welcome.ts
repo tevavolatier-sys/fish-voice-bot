@@ -13,14 +13,15 @@ import { getSelfieSettings, makeSelfie } from "./selfie.js";
 import { ADMIN_ID, modelByKey } from "./config.js";
 import { fanFirstName } from "./fan-name.js";
 import { generateVoice } from "./fish.js";
-import { requestsThisMonth, sendChatMessage, uploadMedia } from "./onlyfans.js";
+import { creditsCapReached, requestsThisMonth, sendChatMessage, uploadMedia } from "./onlyfans.js";
+import { ACCOUNTS, SIENNA, accountByAcct, scoped, tagOf, type OfAccount } from "./accounts.js";
 import { EFFECT_PRESETS, isEffectKey, roomVoiceSameLevel, type RoomParams } from "./ppv.js";
 import { audioSeconds, extractNameAudio, joinFixedAndName } from "./ppv-voice.js";
 import { defaultSettings, voiceOpts } from "./ppv-settings.js";
 import { getRedis } from "./redis.js";
 import { ffmpegBinary, run } from "./video.js";
 
-/** La seule modèle branchée au vocal de bienvenue pour l'instant */
+/** Modèle historique du vocal de bienvenue (les autres comptes : lib/accounts.ts) */
 export const WELCOME_MODEL = "sienna";
 
 export type TakeKind = "fixed" | "fallback";
@@ -54,6 +55,8 @@ export interface WelcomeSettings {
   /** Écart entre le 1er vocal et la relance (s), au hasard entre min et max — Teva : 5-6 s */
   followUpMinSec: number;
   followUpMaxSec: number;
+  /** Texte de la relance générée par Fish (comptes sans vrai enregistrement : Lena, Jade) */
+  followUpText: string;
 }
 
 /** Vrais enregistrements de Sienna (assets/vocaux) : relance Netflix et pseudo illisible */
@@ -86,7 +89,44 @@ export const DEFAULT_SETTINGS: WelcomeSettings = {
   followUpEnabled: true,
   followUpMinSec: 5,
   followUpMaxSec: 6,
+  followUpText: "",
 };
+
+/**
+ * Textes par langue. FR = Sienna (inchangé). DE (Lena) et EN (Jade) : même ton, chaud et joueur.
+ * Les consignes de jeu entre crochets restent en anglais (Fish les lit comme des indications).
+ */
+const DIRECTION_1 = "[Young woman, relaxed on the couch, close to the mic, reading his name off her screen for the first time, a small smile]";
+export const WELCOME_TEXTS: Record<OfAccount["lang"], { line: (name: string) => string; linePreview: string; fixed: (model: string) => string; fallback: string; followUp: string }> = {
+  fr: {
+    line: (name) => `${DIRECTION_1} Coucou ${name}… [a little warmer, smiling, gently cheerful, a light lift on the word page] Bienvenue sur ma page !`,
+    linePreview: "Coucou {prénom}… Bienvenue sur ma page !",
+    fixed: (m) => `[soft tone] Moi c'est ${m}, bienvenuuue !`,
+    fallback: "[soft tone] Bienvenue dans mon univers ! C'est quoi ton nom ? Parce que je peux pas lire ton pseudo.",
+    followUp: "",
+  },
+  de: {
+    line: (name) => `${DIRECTION_1} Hey ${name}… [a little warmer, smiling, gently cheerful, a light lift on the word Seite] Willkommen auf meiner Seite!`,
+    linePreview: "Hey {Vorname}… Willkommen auf meiner Seite!",
+    fixed: (m) => `[soft tone] Ich bin ${m}, willkommen!`,
+    fallback: "[soft tone] Willkommen in meiner Welt! Wie heißt du eigentlich? Ich kann deinen Nutzernamen nämlich nicht lesen.",
+    followUp: "[relaxed, playful, a little smile] Ich wollte grad eigentlich was auf Netflix anmachen… aber ehrlich gesagt quatsch ich lieber mit dir. Was machst du gerade?",
+  },
+  en: {
+    line: (name) => `${DIRECTION_1} Hey ${name}… [a little warmer, smiling, gently cheerful, a light lift on the word page] Welcome to my page!`,
+    linePreview: "Hey {name}… Welcome to my page!",
+    fixed: (m) => `[soft tone] I'm ${m}, welcome!`,
+    fallback: "[soft tone] Welcome to my world! So what's your name? Cause I honestly can't read your username, haha.",
+    followUp: "[relaxed, playful, a little smile] I was literally about to put something on Netflix… but honestly, I'd rather talk to you. What are you up to?",
+  },
+};
+
+/** Réglages par défaut du compte : Sienna inchangée ; Lena/Jade désactivées, test v90, textes traduits */
+export function defaultWelcomeSettings(a: OfAccount = SIENNA): WelcomeSettings {
+  if (a.legacy) return DEFAULT_SETTINGS;
+  const t = WELCOME_TEXTS[a.lang];
+  return { ...DEFAULT_SETTINGS, enabled: false, accountId: a.acct, abTest: "v90", fixedText: t.fixed(a.modelName), fallbackText: t.fallback, followUpText: t.followUp };
+}
 
 /** Forfait OnlyFansAPI : requêtes par mois, et seuil où l'on coupe tout */
 export const MONTHLY_LIMIT = Number(process.env.ONLYFANS_MONTHLY_LIMIT) || 20_000;
@@ -126,27 +166,43 @@ export interface WelcomeLog {
 
 // ── Réglages ────────────────────────────────────────────────────────────────
 
-const cfgKey = `welcome:cfg:${WELCOME_MODEL}`;
-const takeKey = (kind: TakeKind) => `welcome:take:${WELCOME_MODEL}:${kind}`;
-const candKey = (kind: TakeKind, i: number) => `welcome:cand:${WELCOME_MODEL}:${kind}:${i}`;
+// Clés par compte (pour Sienna : exactement les clés d'origine, « sienna » = WELCOME_MODEL)
+const cfgKey = (a: OfAccount) => `welcome:cfg:${a.key}`;
+const takeKey = (kind: TakeKind, a: OfAccount) => `welcome:take:${a.key}:${kind}`;
+const candKey = (kind: TakeKind, i: number, a: OfAccount) => `welcome:cand:${a.key}:${kind}:${i}`;
+const logKey = (a: OfAccount) => scoped("welcome:log", a);
 
 function parse<T>(raw: unknown): T | null {
   if (raw == null) return null;
   return (typeof raw === "string" ? JSON.parse(raw) : raw) as T;
 }
 
-export async function getWelcomeSettings(): Promise<WelcomeSettings> {
-  const cfg = parse<Partial<WelcomeSettings>>(await getRedis().get(cfgKey));
-  return { ...DEFAULT_SETTINGS, ...(cfg ?? {}) };
+export async function getWelcomeSettings(a: OfAccount = SIENNA): Promise<WelcomeSettings> {
+  const cfg = parse<Partial<WelcomeSettings>>(await getRedis().get(cfgKey(a)));
+  return { ...defaultWelcomeSettings(a), ...(cfg ?? {}) };
 }
 
-export async function saveWelcomeSettings(s: Partial<WelcomeSettings>): Promise<void> {
-  const cur = await getWelcomeSettings();
+/** Compte d'un acct_… reçu par webhook : registre, ou le compte enregistré dans les réglages de Sienna */
+export async function resolveAccount(acct: string): Promise<OfAccount | null> {
+  if (!acct) return null;
+  const a = accountByAcct(acct);
+  if (a) return a;
+  return (await getWelcomeSettings(SIENNA)).accountId === acct ? SIENNA : null;
+}
+
+/** acct_… effectif du compte (celui des réglages, sinon celui du registre) */
+export async function accountIdOf(a: OfAccount): Promise<string> {
+  return (await getWelcomeSettings(a)).accountId || a.acct;
+}
+
+export async function saveWelcomeSettings(s: Partial<WelcomeSettings>, a: OfAccount = SIENNA): Promise<void> {
+  const cur = await getWelcomeSettings(a);
+  const def = defaultWelcomeSettings(a);
   const clean: WelcomeSettings = {
     enabled: Boolean(s.enabled ?? cur.enabled),
     accountId: String(s.accountId ?? cur.accountId).trim(),
-    fixedText: String(s.fixedText ?? cur.fixedText).trim().slice(0, 300) || DEFAULT_SETTINGS.fixedText,
-    fallbackText: String(s.fallbackText ?? cur.fallbackText).trim().slice(0, 300) || DEFAULT_SETTINGS.fallbackText,
+    fixedText: String(s.fixedText ?? cur.fixedText).trim().slice(0, 300) || def.fixedText,
+    fallbackText: String(s.fallbackText ?? cur.fallbackText).trim().slice(0, 300) || def.fallbackText,
     caption: String(s.caption ?? cur.caption).trim().slice(0, 500),
     delayMax: Math.max(0, Math.min(30, Number(s.delayMax ?? cur.delayMax) || 0)),
     maxDelaySec: Math.max(10, Math.min(3600, Number(s.maxDelaySec ?? cur.maxDelaySec) || 120)),
@@ -158,49 +214,82 @@ export async function saveWelcomeSettings(s: Partial<WelcomeSettings>): Promise<
     followUpEnabled: Boolean(s.followUpEnabled ?? cur.followUpEnabled),
     followUpMinSec: Math.max(0, Math.min(60, Number(s.followUpMinSec ?? cur.followUpMinSec) || 0)),
     followUpMaxSec: Math.max(0, Math.min(60, Number(s.followUpMaxSec ?? cur.followUpMaxSec) || 0)),
+    followUpText: String(s.followUpText ?? cur.followUpText ?? "").trim().slice(0, 400) || def.followUpText,
   };
-  await getRedis().set(cfgKey, JSON.stringify(clean));
+  await getRedis().set(cfgKey(a), JSON.stringify(clean));
 }
 
-export async function getChosenTake(kind: TakeKind): Promise<ChosenTake | null> {
-  return parse<ChosenTake>(await getRedis().get(takeKey(kind)));
+export async function getChosenTake(kind: TakeKind, a: OfAccount = SIENNA): Promise<ChosenTake | null> {
+  return parse<ChosenTake>(await getRedis().get(takeKey(kind, a)));
 }
 
 // ── Prises fixes : générer 5, écouter, choisir ─────────────────────────────
 
-export function voiceId(): string {
-  const m = modelByKey(WELCOME_MODEL);
-  if (!m) throw new Error(`Modèle ${WELCOME_MODEL} absente de lib/config.ts`);
+export function voiceId(a: OfAccount = SIENNA): string {
+  const m = modelByKey(a.voiceKey);
+  if (!m) throw new Error(`Modèle ${a.voiceKey} absente de lib/config.ts`);
   return m.referenceId;
 }
 
 /** Génère 5 prises du texte (gardées 24 h) et les renvoie en base64 */
-export async function generateTakes(kind: TakeKind, text: string): Promise<string[]> {
+export async function generateTakes(kind: TakeKind, text: string, a: OfAccount = SIENNA): Promise<string[]> {
   const clean = text.trim();
   if (!clean) throw new Error("Texte vide.");
   const takes = await Promise.all(
-    Array.from({ length: TAKE_COUNT }, () => generateVoice(clean, voiceId()))
+    Array.from({ length: TAKE_COUNT }, () => generateVoice(clean, voiceId(a)))
   );
   const r = getRedis();
   const b64 = takes.map((t) => t.toString("base64"));
   await Promise.all(
-    b64.map((audio, i) => r.set(candKey(kind, i), JSON.stringify({ text: clean, audio }), { ex: 24 * 3600 }))
+    b64.map((audio, i) => r.set(candKey(kind, i, a), JSON.stringify({ text: clean, audio }), { ex: 24 * 3600 }))
   );
   return b64;
 }
 
 /** Installe la prise n° i (parmi les 5 dernières générées) */
-export async function chooseTake(kind: TakeKind, i: number): Promise<void> {
-  const cand = parse<{ text: string; audio: string }>(await getRedis().get(candKey(kind, i)));
+export async function chooseTake(kind: TakeKind, i: number, a: OfAccount = SIENNA): Promise<void> {
+  const cand = parse<{ text: string; audio: string }>(await getRedis().get(candKey(kind, i, a)));
   if (!cand) throw new Error("Prise expirée : régénère les 5 prises.");
   const chosen: ChosenTake = { ...cand, at: new Date().toISOString() };
-  await getRedis().set(takeKey(kind), JSON.stringify(chosen));
+  await getRedis().set(takeKey(kind, a), JSON.stringify(chosen));
 }
 
 /** Vrai enregistrement de la modèle à la place d'une prise Fish (text = ce qu'elle dit) */
-export async function uploadTake(kind: TakeKind, text: string, audioB64: string): Promise<void> {
+export async function uploadTake(kind: TakeKind, text: string, audioB64: string, a: OfAccount = SIENNA): Promise<void> {
   const chosen: ChosenTake = { text, audio: audioB64, at: new Date().toISOString() };
-  await getRedis().set(takeKey(kind), JSON.stringify(chosen));
+  await getRedis().set(takeKey(kind, a), JSON.stringify(chosen));
+}
+
+/** Modèle Fish des phrases jouées (Drama 3 par défaut) */
+const lineModel = () => process.env.WELCOME_LINE_MODEL?.trim() || "drama-3";
+
+/**
+ * Phrase complète générée une fois puis gardée (MP3 prêt à envoyer), refaite si le texte change.
+ * Sert aux comptes sans vrais enregistrements (Lena, Jade) : vocal « pseudo illisible » et relance.
+ */
+async function cachedLine(a: OfAccount, kind: "fallback" | "followup", text: string): Promise<Buffer> {
+  const clean = text.trim();
+  if (!clean) throw new Error(`Texte ${kind === "fallback" ? "« pseudo illisible »" : "de relance"} vide.`);
+  const k = `welcome:gen:${a.key}:${kind}`;
+  const hit = parse<{ text: string; audio: string }>(await getRedis().get(k));
+  if (hit && hit.text === clean) return Buffer.from(hit.audio, "base64");
+  const mp3 = await toMp3(await generateVoice(clean, voiceId(a), { model: lineModel() }));
+  await getRedis().set(k, JSON.stringify({ text: clean, audio: mp3.toString("base64") }));
+  return mp3;
+}
+
+/** Vocal « pseudo illisible » du compte (MP3) : vrai vocal de Sienna, sinon prise choisie, sinon généré */
+export async function unreadableAudio(a: OfAccount = SIENNA, s?: WelcomeSettings): Promise<Buffer> {
+  if (a.legacy) return realAudio(REAL_UNREADABLE);
+  const take = await getChosenTake("fallback", a);
+  if (take) return toMp3(Buffer.from(take.audio, "base64"));
+  return cachedLine(a, "fallback", (s ?? (await getWelcomeSettings(a))).fallbackText);
+}
+
+/** Vocal de relance du compte (MP3) : vrai vocal « Netflix » de Sienna, sinon généré dans la langue du compte */
+export async function followUpAudio(a: OfAccount = SIENNA, s?: WelcomeSettings): Promise<Buffer> {
+  if (a.legacy) return realAudio(REAL_FOLLOWUP);
+  return cachedLine(a, "followup", (s ?? (await getWelcomeSettings(a))).followUpText);
 }
 
 // ── Assemblage du vocal d'un fan ───────────────────────────────────────────
@@ -311,25 +400,26 @@ export async function toMp3(audio: Buffer): Promise<Buffer> {
  */
 export async function buildWelcomeVoice(
   displayName: string,
-  username = ""
+  username = "",
+  a: OfAccount = SIENNA
 ): Promise<{ name: string; mp3: Buffer }> {
   const name = await fanFirstName(displayName, username);
+  if (!a.legacy) return { name, mp3: name ? await voiceForName(name, null, a) : await unreadableAudio(a) };
   return { name, mp3: await voiceForName(name, name ? await getChosenTake("fixed") : await getChosenTake("fallback")) };
 }
 
 /** Prénom + prise fixe, ou (prénom vide) la prise de repli telle quelle. MP3. */
-export async function voiceForName(name: string, take: ChosenTake | null): Promise<Buffer> {
+export async function voiceForName(name: string, take: ChosenTake | null, a: OfAccount = SIENNA): Promise<Buffer> {
   if (!name) {
     if (!take) throw new Error("Aucune prise « pseudo illisible » choisie dans l'interface.");
     return toMp3(Buffer.from(take.audio, "base64"));
   }
   // Mode par défaut depuis le 14/10/2026 (tests à l'aveugle de Teva) : UNE phrase complète Drama 3,
   // « Coucou {prénom}… Bienvenue sur ma page ! », avec consignes de jeu. WELCOME_LINE_MODE=fixed → ancien mode.
-  if ((process.env.WELCOME_LINE_MODE?.trim() || "drama") === "drama") {
-    const text =
-      `[Young woman, relaxed on the couch, close to the mic, reading his name off her screen for the first time, a small smile] Coucou ${name}… ` +
-      `[a little warmer, smiling, gently cheerful, a light lift on the word page] Bienvenue sur ma page !`;
-    return toMp3(await generateVoice(text, voiceId(), { model: process.env.WELCOME_LINE_MODEL?.trim() || "drama-3" }));
+  // Lena et Jade : toujours la phrase complète, dans leur langue (pas de prise fixe enregistrée)
+  if (!a.legacy || (process.env.WELCOME_LINE_MODE?.trim() || "drama") === "drama") {
+    const text = WELCOME_TEXTS[a.lang].line(name);
+    return toMp3(await generateVoice(text, voiceId(a), { model: lineModel() }));
   }
   const fixed = take;
   if (!fixed) throw new Error("Aucune prise de la partie fixe choisie dans l'interface.");
@@ -343,7 +433,7 @@ export async function voiceForName(name: string, take: ChosenTake | null): Promi
     const trimmed = await trimSilence(hello);
     return toMp3(await joinFixedAndName(Buffer.from(fixed.audio, "base64"), trimmed, "before", 0.12, 0));
   }
-  const intro = await getRedis().get<string>("welcome:intro");
+  const intro = await getRedis().get<string>(scoped("welcome:intro", a));
   // Comme le bot PPV : le clone dit « Alex… moi c'est Sienna » en entier pour une
   // intonation naturelle, on ne garde que le prénom (1er bloc avant la pause), avec
   // les mêmes réglages de voix que le PPV. Repli : le prénom dit seul.
@@ -370,15 +460,29 @@ export async function voiceForName(name: string, take: ChosenTake | null): Promi
 
 // ── Envoi à un nouvel abonné ───────────────────────────────────────────────
 
-export async function readWelcomeLog(): Promise<WelcomeLog[]> {
-  const rows = await getRedis().lrange<string | WelcomeLog>("welcome:log", 0, 99);
+export async function readWelcomeLog(a: OfAccount = SIENNA): Promise<WelcomeLog[]> {
+  const rows = await getRedis().lrange<string | WelcomeLog>(logKey(a), 0, 99);
   return rows.map((r) => parse<WelcomeLog>(r)!);
 }
 
-async function addLog(entry: WelcomeLog): Promise<void> {
+async function addLog(entry: WelcomeLog, a: OfAccount): Promise<void> {
   const r = getRedis();
-  await r.lpush("welcome:log", JSON.stringify(entry));
-  await r.ltrim("welcome:log", 0, 199);
+  await r.lpush(logKey(a), JSON.stringify(entry));
+  await r.ltrim(logKey(a), 0, 199);
+}
+
+/** Comptes dont la bienvenue est activée — Sienna toujours incluse (comportement d'origine) */
+export async function activeWelcomeAccounts(): Promise<OfAccount[]> {
+  const out: OfAccount[] = [];
+  for (const a of ACCOUNTS) if (a.legacy || (await getWelcomeSettings(a)).enabled) out.push(a);
+  return out;
+}
+
+/** Plafond journalier de crédits atteint : alerte Telegram une seule fois par jour */
+export async function alertCapOnce(used: number, cap: number): Promise<void> {
+  const k = `ofapi:capalert:${new Date().toISOString().slice(0, 10)}`;
+  if ((await getRedis().set(k, "1", { nx: true, ex: 2 * 24 * 3600 })) !== "OK") return;
+  await alertAdmin(`⛔ Plafond journalier OnlyFansAPI atteint (${used}/${cap} crédits aujourd'hui, tous comptes) : vocaux de bienvenue et PPV auto arrêtés jusqu'à minuit UTC. Réglable dans /api/welcome.`);
 }
 
 async function alertAdmin(message: string): Promise<void> {
@@ -395,9 +499,11 @@ export async function handleNewSub(
   fanId: string,
   displayName: string,
   username = "",
-  opts: { subscribedAt?: number; force?: boolean } = {}
+  opts: { subscribedAt?: number; force?: boolean; account?: OfAccount } = {}
 ): Promise<void> {
-  const s = await getWelcomeSettings();
+  const a = opts.account ?? (await resolveAccount(accountId));
+  if (!a) return;
+  const s = await getWelcomeSettings(a);
   if (!s.accountId || s.accountId !== accountId) return;
   if (!s.enabled && !opts.force) return;
   const since = opts.subscribedAt ?? Date.now();
@@ -432,7 +538,7 @@ export async function handleNewSub(
     if (group === "none" && !opts.force) {
       log.status = "control";
       log.ok = true;
-      await addLog(log);
+      await addLog(log, a);
       return;
     }
   }
@@ -442,18 +548,24 @@ export async function handleNewSub(
     if (used >= STOP_AT) {
       throw new Error(`Quota OnlyFansAPI presque atteint (${used}/${MONTHLY_LIMIT}) : envoi bloqué.`);
     }
+    // Plafond journalier GLOBAL de crédits (tous comptes + mass-dm-of), réglable dans l'interface
+    const cap = await creditsCapReached();
+    if (cap.over && !opts.force) {
+      await alertCapOnce(cap.used, cap.cap).catch(() => {});
+      throw new Error(`Plafond journalier OnlyFansAPI atteint (${cap.used}/${cap.cap} crédits aujourd'hui) : envoi bloqué.`);
+    }
     const name = await fanFirstName(displayName, username);
     log.name = name;
     // Groupe « selfie » (Teva, 08/10) : le selfie SEUL avec son texte, pas de vocal ; si le selfie
     // échoue (pseudo illisible, IA en panne), le vocal part à la place pour que le fan ait quelque chose
     let selfie = withSelfie
-      ? await makeSelfie(name).catch((err) => {
+      ? await makeSelfie(name, {}, a).catch((err) => {
           log.selfieError = String((err as Error)?.message ?? err).slice(0, 200);
           return null;
         })
       : null;
     if (withSelfie && !selfie && !log.selfieError) log.selfieError = name ? "selfie désactivé ou sans photo" : "pseudo illisible → vocal de repli";
-    const mp3 = selfie ? null : name ? await voiceForName(name, await getChosenTake("fixed")) : await realAudio(REAL_UNREADABLE);
+    const mp3 = selfie ? null : name ? await voiceForName(name, await getChosenTake("fixed", a), a) : await unreadableAudio(a, s);
     if (selfie) {
       log.selfie = selfie.how;
       if (selfie.aiError) log.selfieError = selfie.aiError;
@@ -467,7 +579,7 @@ export async function handleNewSub(
     if (wait > 0) await new Promise((r) => setTimeout(r, wait * 1000));
     if (tooLate()) throw new Error(`Trop tard : ${Math.round(elapsed())} s après l'abonnement (max ${s.maxDelaySec} s)`);
     if (selfie) {
-      const sc = await getSelfieSettings();
+      const sc = await getSelfieSettings(a);
       const text = sc.caption.replace(/\{pr[ée]nom\}/gi, name);
       const mediaId = await uploadMedia(accountId, selfie.jpeg, "selfie.jpg");
       await sendChatMessage(accountId, fanId, text, [mediaId]);
@@ -479,7 +591,7 @@ export async function handleNewSub(
         try {
           const flo = Math.min(s.followUpMinSec, s.followUpMaxSec), fhi = Math.max(s.followUpMinSec, s.followUpMaxSec);
           const gap = flo + Math.random() * (fhi - flo);
-          const followId = await uploadMedia(accountId, await realAudio(REAL_FOLLOWUP), "voice.mp3");
+          const followId = await uploadMedia(accountId, await followUpAudio(a, s), "voice.mp3");
           if (gap > 0) await new Promise((r) => setTimeout(r, gap * 1000));
           await sendChatMessage(accountId, fanId, "", [followId]);
           log.followUp = true;
@@ -501,12 +613,13 @@ export async function handleNewSub(
     if (log.error.startsWith("Trop tard")) {
       // Pas envoyé, et on n'enverra pas tout seul (le fan a déjà bougé) ; renvoi manuel possible
       log.status = "late";
-      await addLog(log);
+      await addLog(log, a);
       return;
     }
     // Échec : on libère le fan pour pouvoir le renvoyer depuis l'interface
     await getRedis().del(sentKey);
-    await alertAdmin(`⚠️ Vocal de bienvenue non envoyé (fan ${displayName || username || fanId}) : ${log.error}`);
+    // Plafond atteint : signalé une seule fois par jour (alertCapOnce), pas une alerte par fan
+    if (!log.error.startsWith("Plafond journalier")) await alertAdmin(`${tagOf(a)}⚠️ Vocal de bienvenue non envoyé (fan ${displayName || username || fanId}) : ${log.error}`);
   }
-  await addLog(log);
+  await addLog(log, a);
 }
