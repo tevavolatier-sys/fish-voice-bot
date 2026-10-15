@@ -1,11 +1,14 @@
-// Interface web du vocal de bienvenue (Sienna) : https://<projet>.vercel.app/api/welcome
+// Interface web du vocal de bienvenue : https://<projet>.vercel.app/api/welcome
+// Multi-comptes (15/10/2026) : sélecteur de modèle en haut (Sienna, Lena, Jade) ; chaque action
+// reçoit « account » (clé du compte, Sienna par défaut = comportement d'origine).
 // GET  → la page (aucune donnée dedans)
 // POST → actions, protégées par le mot de passe WELCOME_ADMIN_PASSWORD (Vercel)
 import { timingSafeEqual } from "node:crypto";
 import { abReset, abStats, backfillRevenue } from "../lib/ab.js";
 import { fanFirstName, llmProviders } from "../lib/fan-name.js";
 import { aiProviders, clearHandwriting, getSelfiePhoto, getSelfieSettings, hasHandwriting, hasSelfiePhoto, makeSelfie, saveHandwriting, saveSelfiePhoto, saveSelfieSettings, selfieGuide, selfieMaskPreview, type SelfieSettings } from "../lib/selfie.js";
-import { ensureWebhook, getFanSpend, requestsThisMonth } from "../lib/onlyfans.js";
+import { creditsToday, ensureWebhook, getCreditsCap, getFanSpend, lastCreditsBalance, listWebhooks, requestsThisMonth, setCreditsCap } from "../lib/onlyfans.js";
+import { ACCOUNTS, accountByKey, scoped } from "../lib/accounts.js";
 import { getRedis } from "../lib/redis.js";
 import {
   alertConfigured,
@@ -40,6 +43,10 @@ import {
   realAudio,
   REAL_FOLLOWUP,
   REAL_UNREADABLE,
+  WELCOME_TEXTS,
+  accountIdOf,
+  followUpAudio,
+  unreadableAudio,
 } from "../lib/welcome.js";
 
 export const maxDuration = 60;
@@ -58,97 +65,122 @@ const kindOf = (v: unknown): TakeKind => (v === "fallback" ? "fallback" : "fixed
 export async function POST(req: Request): Promise<Response> {
   if (!authorized(req)) return Response.json({ ok: false, error: "Mot de passe incorrect." }, { status: 401 });
   const a = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+  // Compte choisi dans l'interface (Sienna si absent : comportement d'origine)
+  const acc = accountByKey(a.account);
   try {
     switch (a.action) {
       case "load": {
-        const [settings, fixed, fallback, used, log] = await Promise.all([
-          getWelcomeSettings(),
-          getChosenTake("fixed"),
-          getChosenTake("fallback"),
+        const [settings, fixed, fallback, used, log, creditsUsed, cap, balance] = await Promise.all([
+          getWelcomeSettings(acc),
+          getChosenTake("fixed", acc),
+          getChosenTake("fallback", acc),
           requestsThisMonth(),
-          readWelcomeLog(),
+          readWelcomeLog(acc),
+          creditsToday().catch(() => 0),
+          getCreditsCap().catch(() => 0),
+          lastCreditsBalance().catch(() => null),
         ]);
         const current = currentAbTest(settings);
         const abView = a.abView === "abc" || a.abView === "v90" ? a.abView : current;
         const ab = settings.accountId ? await abStats(settings.accountId, abView) : null;
-        return Response.json({ ok: true, settings, takes: { fixed, fallback }, used, limit: MONTHLY_LIMIT, stopAt: STOP_AT, log, ab, abView, abCurrent: current });
+        const account = { key: acc.key, modelName: acc.modelName, handle: acc.handle, lang: acc.lang, legacy: acc.legacy, acct: acc.acct };
+        const accounts = await Promise.all(ACCOUNTS.map(async (x) => ({ key: x.key, modelName: x.modelName, handle: x.handle, lang: x.lang, enabled: (await getWelcomeSettings(x)).enabled })));
+        return Response.json({
+          ok: true, settings, takes: { fixed, fallback }, used, limit: MONTHLY_LIMIT, stopAt: STOP_AT, log, ab, abView, abCurrent: current,
+          account, accounts, linePreview: WELCOME_TEXTS[acc.lang].linePreview, credits: { today: creditsUsed, cap, balance },
+        });
+      }
+      case "capSave": {
+        // Plafond journalier GLOBAL de crédits OnlyFansAPI (tous comptes + mass-dm-of)
+        return Response.json({ ok: true, cap: await setCreditsCap(Number(a.cap)) });
+      }
+      case "seqAudio": {
+        // Vocaux de la séquence du compte (repli « pseudo illisible », relance), rien n'est envoyé
+        const mp3 = a.which === "followup" ? await followUpAudio(acc) : await unreadableAudio(acc);
+        return Response.json({ ok: true, audio: mp3.toString("base64") });
+      }
+      case "webhookList": {
+        // Lecture seule : webhooks OnlyFansAPI existants (1 requête)
+        const hooks = await listWebhooks();
+        return Response.json({ ok: true, hooks: hooks.map((h) => ({ id: h.id, url: h.url, events: h.events, enabled: h.enabled, scope: (h as unknown as { account_scope?: unknown }).account_scope ?? null, accounts: (h as unknown as { account_ids?: unknown; accounts?: unknown }).account_ids ?? (h as unknown as { accounts?: unknown }).accounts ?? null })) });
       }
       case "abBackfill": {
         // CA rétroactif des fans du test, par tranches (une fonction Vercel = 60 s max)
-        const s = await getWelcomeSettings();
+        const s = await getWelcomeSettings(acc);
         if (!s.accountId) throw new Error("compte acct_ manquant");
         const t = a.abView === "v90" ? "v90" : a.abView === "abc" ? "abc" : currentAbTest(s);
         const r = await backfillRevenue(s.accountId, Number(a.offset) || 0, Math.min(40, Number(a.limit) || 30), (id) => getFanSpend(s.accountId, id), t);
         return Response.json({ ok: true, ...r });
       }
       case "abReset": {
-        const s = await getWelcomeSettings();
+        const s = await getWelcomeSettings(acc);
         if (s.accountId) await abReset(s.accountId, a.abView === "v90" ? "v90" : a.abView === "abc" ? "abc" : currentAbTest(s));
         return Response.json({ ok: true });
       }
       case "save":
-        await saveWelcomeSettings(a.settings as Partial<WelcomeSettings>);
+        await saveWelcomeSettings(a.settings as Partial<WelcomeSettings>, acc);
         return Response.json({ ok: true });
       case "generate": {
         const kind = kindOf(a.kind);
         const text = String(a.text ?? "");
-        await saveWelcomeSettings(kind === "fixed" ? { fixedText: text } : { fallbackText: text });
-        return Response.json({ ok: true, takes: await generateTakes(kind, text) });
+        await saveWelcomeSettings(kind === "fixed" ? { fixedText: text } : { fallbackText: text }, acc);
+        return Response.json({ ok: true, takes: await generateTakes(kind, text, acc) });
       }
       case "choose":
-        await chooseTake(kindOf(a.kind), Math.max(0, Math.min(TAKE_COUNT - 1, Number(a.i) || 0)));
+        await chooseTake(kindOf(a.kind), Math.max(0, Math.min(TAKE_COUNT - 1, Number(a.i) || 0)), acc);
         return Response.json({ ok: true });
       case "intro": {
         // Enregistrement « Enchantée » de la modèle (base64), collé devant le prénom
         const b64 = String(a.audio ?? "");
         if (b64.length < 1000 || b64.length > 900_000) throw new Error("Audio invalide (1 s à 600 Ko).");
-        await getRedis().set("welcome:intro", b64);
+        await getRedis().set(scoped("welcome:intro", acc), b64);
         return Response.json({ ok: true });
       }
       case "upload": {
         // Vrai enregistrement de la modèle comme prise (fixe ou repli)
         const b64 = String(a.audio ?? "");
         if (b64.length < 1000 || b64.length > 900_000) throw new Error("Audio invalide (1 s à 600 Ko).");
-        await uploadTake(kindOf(a.kind), String(a.text ?? ""), b64);
+        await uploadTake(kindOf(a.kind), String(a.text ?? ""), b64, acc);
         return Response.json({ ok: true });
       }
       case "test": {
-        const { name, mp3 } = await buildWelcomeVoice(String(a.pseudo ?? ""));
+        const { name, mp3 } = await buildWelcomeVoice(String(a.pseudo ?? ""), "", acc);
         return Response.json({ ok: true, name, audio: mp3.toString("base64") });
       }
       case "selfieLoad":
-        return Response.json({ ok: true, settings: await getSelfieSettings(), hasPhoto: await hasSelfiePhoto(), hasHandwriting: await hasHandwriting(), providers: aiProviders() });
+        return Response.json({ ok: true, settings: await getSelfieSettings(acc), hasPhoto: await hasSelfiePhoto(acc), hasHandwriting: await hasHandwriting(acc), providers: aiProviders() });
       case "selfiePhoto": {
         const b64 = String(a.image ?? "");
         if (b64.length < 1000 || b64.length > 5_500_000) throw new Error("Photo invalide (max 4 Mo après réduction).");
-        return Response.json({ ok: true, ...(await saveSelfiePhoto(Buffer.from(b64, "base64"))) });
+        return Response.json({ ok: true, ...(await saveSelfiePhoto(Buffer.from(b64, "base64"), acc)) });
       }
       case "selfieSave": {
         const st = a.settings as Partial<SelfieSettings>;
-        if (st?.enabled && !(await hasSelfiePhoto())) throw new Error("Installe d'abord la photo de base avant d'activer le selfie.");
-        await saveSelfieSettings(st);
+        if (st?.enabled && !(await hasSelfiePhoto(acc))) throw new Error("Installe d'abord la photo de base avant d'activer le selfie.");
+        await saveSelfieSettings(st, acc);
         return Response.json({ ok: true });
       }
       // ── PPV perso automatique ──
       case "ppvLoad": {
-        const [settings, log, ready, pending] = await Promise.all([getPpvAutoSettings(), readPpvAutoLog(), ppvReady(), pendingCleanups()]);
+        const [settings, log, ready, pending] = await Promise.all([getPpvAutoSettings(acc), readPpvAutoLog(acc), ppvReady(acc), pendingCleanups()]);
         return Response.json({ ok: true, settings, log, ready, pending, alert: alertConfigured() });
       }
       case "ppvSave":
-        await savePpvAutoSettings(a.settings as Partial<PpvAutoSettings>);
+        await savePpvAutoSettings(a.settings as Partial<PpvAutoSettings>, acc);
         return Response.json({ ok: true });
       case "ppvTest": {
         // Fabrique les vidéos pour un prénom et les envoie dans le groupe Telegram d'alerte (rien sur OF)
         const name = cleanFanName(String(a.name ?? ""));
         if (!name) throw new Error("Prénom invalide (lettres, 2 à 20 caractères).");
-        const b = await buildPpvForFan(name);
-        await sendAlertVideo(b.preview.video, `preview-${name}.mp4`, `🧪 TEST — free preview · ${name}`);
-        await sendAlertVideo(b.paid1.video, `ppv1-${name}.mp4`, `🧪 TEST — PPV 1 · ${name}`);
+        const b = await buildPpvForFan(name, acc);
+        const who = acc.legacy ? "" : ` (${acc.modelName})`;
+        await sendAlertVideo(b.preview.video, `preview-${name}.mp4`, `🧪 TEST — free preview · ${name}${who}`);
+        await sendAlertVideo(b.paid1.video, `ppv1-${name}.mp4`, `🧪 TEST — PPV 1 · ${name}${who}`);
         return Response.json({ ok: true, name });
       }
       case "ppvRedo": {
         // Refaire pour un fan du journal (prénom corrigé possible), dossier + alerte comme en vrai
-        const s = await getWelcomeSettings();
+        const s = { accountId: await accountIdOf(acc) };
         const name = cleanFanName(String(a.name ?? ""));
         if (!name) throw new Error("Prénom invalide (lettres, 2 à 20 caractères).");
         const log = await producePpvForFan({
@@ -179,31 +211,31 @@ export async function POST(req: Request): Promise<Response> {
       }
       case "selfieZone": {
         // Aperçu de la zone d'écriture : masque (zone claire, reste assombri) ou liseré rouge
-        await saveSelfieSettings(a.settings as Partial<SelfieSettings>);
-        const photo = await getSelfiePhoto();
+        await saveSelfieSettings(a.settings as Partial<SelfieSettings>, acc);
+        const photo = await getSelfiePhoto(acc);
         if (!photo) throw new Error("Aucune photo de base : charge d'abord le selfie.");
-        const cfg = await getSelfieSettings();
+        const cfg = await getSelfieSettings(acc);
         const img = a.style === "outline" ? await selfieGuide(photo, cfg) : await selfieMaskPreview(photo, cfg);
         return Response.json({ ok: true, image: img.toString("base64") });
       }
       case "selfieHandwriting": {
         // Échantillon de la vraie écriture de la modèle (base64) ; vide = retirer
         const b64 = String(a.image ?? "");
-        if (!b64) { await clearHandwriting(); return Response.json({ ok: true, removed: true }); }
+        if (!b64) { await clearHandwriting(acc); return Response.json({ ok: true, removed: true }); }
         if (b64.length < 1000 || b64.length > 5_500_000) throw new Error("Image invalide (max 4 Mo après réduction).");
-        return Response.json({ ok: true, ...(await saveHandwriting(Buffer.from(b64, "base64"))) });
+        return Response.json({ ok: true, ...(await saveHandwriting(Buffer.from(b64, "base64"), acc)) });
       }
       case "selfieTest": {
         const name = await fanFirstName(String(a.pseudo ?? ""));
         if (!name) return Response.json({ ok: true, name: "", image: null });
         const ai = { model: String(a.model ?? ""), quality: String(a.quality ?? ""), style: String(a.style ?? ""), noReference: Boolean(a.noReference), method: a.method === "edit" ? "edit" as const : a.method === "note" ? "note" as const : undefined };
-        const r = await makeSelfie(name, { force: true, mode: a.mode === "text" ? "text" : a.mode === "ai" ? "ai" : undefined, ai });
+        const r = await makeSelfie(name, { force: true, mode: a.mode === "text" ? "text" : a.mode === "ai" ? "ai" : undefined, ai }, acc);
         if (!r) throw new Error("Aucune photo de base : charge d'abord le selfie.");
         return Response.json({ ok: true, name, how: r.how, provider: r.provider, note: r.note, aiError: r.aiError, image: r.jpeg.toString("base64") });
       }
       case "retry": {
-        const s = await getWelcomeSettings();
-        await handleNewSub(s.accountId, String(a.fan ?? ""), String(a.display ?? ""), String(a.username ?? ""), { force: true });
+        const s = await getWelcomeSettings(acc);
+        await handleNewSub(s.accountId, String(a.fan ?? ""), String(a.display ?? ""), String(a.username ?? ""), { force: true, account: acc });
         return Response.json({ ok: true });
       }
       default:
@@ -235,7 +267,7 @@ const PAGE = /* html */ `<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Vocal de bienvenue — Sienna</title>
+<title>Vocal de bienvenue</title>
 <style>
 :root{--bg:#f4f4f1;--card:#fff;--ink:#1b1b1a;--mute:#6d6d68;--line:#e3e3de;--accent:#c2416b;--soft:#fbeef2;--ok:#1f8a54;--okbg:#e6f6ec;--warn:#b7791f;--warnbg:#fdf3e1;--ko:#c0392b;--kobg:#fdecea}
 @media (prefers-color-scheme:dark){:root{--bg:#141413;--card:#1e1e1c;--ink:#ecece8;--mute:#9a9a93;--line:#30302d;--accent:#ec6f97;--soft:#2b1d22;--ok:#4cc286;--okbg:#17301f;--warn:#e2a93b;--warnbg:#332a14;--ko:#ef6b5d;--kobg:#3a1c19}}
@@ -302,7 +334,7 @@ details{margin-top:10px}summary{cursor:pointer;color:var(--mute);font-size:13px}
 <body>
 <main>
   <div id="login" class="card" hidden>
-    <h2>Vocal de bienvenue — Sienna</h2>
+    <h2>Vocal de bienvenue</h2>
     <label for="pw">Mot de passe</label>
     <input id="pw" type="password" autocomplete="current-password">
     <div class="row" style="margin-top:12px"><button class="main" id="go">Entrer</button></div>
@@ -311,8 +343,8 @@ details{margin-top:10px}summary{cursor:pointer;color:var(--mute);font-size:13px}
 
   <div id="app" hidden>
     <div class="top">
-      <div><h1>Vocal de bienvenue — Sienna</h1><div class="hint">Chaque nouvel abonné reçoit un vocal « Enchantée <b>Prénom</b>… moi c'est Sienna, bienvenue ».</div></div>
-      <div class="row"><span class="pill" id="pill"><i></i><span id="pillText"></span></span><button class="main" id="toggle" style="min-width:110px">…</button><button id="refresh">↻ Actualiser</button></div>
+      <div><h1>Vocal de bienvenue — <span class="mname">Sienna</span></h1><div class="hint" id="topHint">Chaque nouvel abonné reçoit un vocal de bienvenue avec son prénom.</div></div>
+      <div class="row"><select id="acct" style="width:auto;font-weight:600" title="Modèle (compte OnlyFans)"></select><span class="pill" id="pill"><i></i><span id="pillText"></span></span><button class="main" id="toggle" style="min-width:110px">…</button><button id="refresh">↻ Actualiser</button></div>
     </div>
 
     <div class="card">
@@ -330,9 +362,10 @@ details{margin-top:10px}summary{cursor:pointer;color:var(--mute);font-size:13px}
       <h2>Séquence envoyée</h2>
       <p class="lead">Ce que reçoit un fan (hors groupe témoin), dans l’ordre :</p>
       <ol style="margin:6px 0 10px;padding-left:20px">
-        <li><b>Entre <span data-seq="min"></span> et <span data-seq="max"></span> s</b> après l’abonnement : vocal « Coucou {prénom}… Bienvenue sur ma page ! » (Drama 3), ou si le pseudo est illisible, le vrai vocal :<br><audio controls preload="none" src="?audio=unreadable"></audio></li>
-        <li><b><span data-seq="fmin"></span>-<span data-seq="fmax"></span> s</b> plus tard : la relance Netflix (vrai vocal) :<br><audio controls preload="none" src="?audio=followup"></audio></li>
+        <li><b>Entre <span data-seq="min"></span> et <span data-seq="max"></span> s</b> après l’abonnement : vocal « <span class="linePrev">Coucou {prénom}… Bienvenue sur ma page !</span> » (Drama 3), ou si le pseudo est illisible, <span class="legacyOnly">le vrai vocal</span><span class="newOnly">le vocal de repli (carte « Vocal de repli »)</span> :<br><span id="seqUnreadable"><audio controls preload="none" src="?audio=unreadable"></audio></span></li>
+        <li><b><span data-seq="fmin"></span>-<span data-seq="fmax"></span> s</b> plus tard : la relance Netflix (<span class="legacyOnly">vrai vocal</span><span class="newOnly">voix Fish, texte ci-dessous</span>) :<br><span id="seqFollow"><audio controls preload="none" src="?audio=followup"></audio></span></li>
       </ol>
+      <div class="newOnly"><label for="followUpText">Texte de la relance (langue de la modèle, tags acceptés)</label><textarea id="followUpText"></textarea></div>
       <div class="grid2">
         <div><label for="sendMinSec">1er vocal : délai min (s)</label><input id="sendMinSec" type="number" min="0" max="110"></div>
         <div><label for="sendMaxSec">1er vocal : délai max (s)</label><input id="sendMaxSec" type="number" min="0" max="110"></div>
@@ -384,6 +417,14 @@ details{margin-top:10px}summary{cursor:pointer;color:var(--mute);font-size:13px}
     </div>
 
     <div class="card">
+      <h2>Crédits OnlyFansAPI aujourd'hui (tous comptes)</h2>
+      <p class="lead">Compteur commun à Sienna, Lena, Jade et au site mass-dm-of. Au-delà du plafond, les vocaux de bienvenue et le PPV auto s'arrêtent jusqu'à minuit UTC.</p>
+      <div class="head" style="margin-top:6px"><span id="credToday"></span><span class="hint" id="credBal"></span></div>
+      <div class="gauge"><div id="credGauge"></div></div>
+      <div class="row" style="margin-top:8px"><label for="capInput" style="margin:0">Plafond journalier</label><input id="capInput" type="number" min="1" step="100" style="width:140px"><button class="sm" id="capSave">Enregistrer</button><span class="msg" id="capMsg" style="margin:0"></span></div>
+    </div>
+
+    <div class="card">
       <h2>Requêtes OnlyFansAPI ce mois</h2>
       <div class="head" style="margin-top:6px"><span id="quota"></span><span class="hint" id="quotaLeft"></span></div>
       <div class="gauge"><div id="gauge"></div></div>
@@ -401,7 +442,7 @@ details{margin-top:10px}summary{cursor:pointer;color:var(--mute);font-size:13px}
       <div id="testAudio"></div>
     </div>
 
-    <div class="card" data-kind="fixed">
+    <div class="card legacyOnly" data-kind="fixed">
       <h2>Partie fixe : « moi c'est Sienna, bienvenue »</h2>
       <p class="lead">Dite après « Enchantée Prénom… », la même pour tous. Soit un vrai enregistrement de Sienna (le mieux), soit une prise Fish.</p>
       <div class="current" data-current></div>
@@ -467,7 +508,7 @@ details{margin-top:10px}summary{cursor:pointer;color:var(--mute);font-size:13px}
 
     <div class="card" data-kind="fallback">
       <h2>Vocal de repli : pseudo illisible</h2>
-      <p class="lead">Envoyé tel quel quand aucun prénom n'est lisible (« u48392011 », « xkq77 »…).</p>
+      <p class="lead">Envoyé tel quel quand aucun prénom n'est lisible (« u48392011 », « xkq77 »…).<span class="newOnly"> Sans prise installée, le texte ci-dessous est dit par la voix Fish de la modèle.</span></p>
       <div class="current" data-current></div>
       <h3>Remplacer par un vrai enregistrement</h3>
       <div class="row"><input type="file" accept="audio/*" data-file style="flex:1;min-width:200px"><button data-upload>Installer</button></div>
@@ -491,12 +532,15 @@ details{margin-top:10px}summary{cursor:pointer;color:var(--mute);font-size:13px}
 const $ = (s, el = document) => el.querySelector(s);
 let KEY = "";
 try { KEY = localStorage.getItem("welcomeKey") || ""; } catch {}
+// Modèle affichée (compte OnlyFans) : retenue dans le navigateur
+let ACCT = "sienna";
+try { ACCT = localStorage.getItem("welcomeAccount") || "sienna"; } catch {}
 
 async function call(action, data = {}) {
   const r = await fetch(location.pathname, {
     method: "POST",
     headers: { "Content-Type": "application/json", "x-admin-key": KEY },
-    body: JSON.stringify({ action, ...data }),
+    body: JSON.stringify({ action, account: ACCT, ...data }),
   });
   const j = await r.json().catch(() => ({ ok: false, error: "Erreur " + r.status + (r.status === 413 ? " : fichier trop lourd pour le serveur" : r.status === 504 ? " : délai dépassé" : "") }));
   if (r.status === 401) { showLogin(KEY ? "Mot de passe incorrect." : ""); throw new Error(j.error); }
@@ -528,10 +572,29 @@ const imageB64 = (f) => new Promise((res, rej) => {
 $("#go").onclick = () => { KEY = $("#pw").value; try { localStorage.setItem("welcomeKey", KEY); } catch {} load(); };
 $("#pw").onkeydown = (e) => { if (e.key === "Enter") $("#go").click(); };
 $("#refresh").onclick = () => load();
+$("#acct").onchange = () => { ACCT = $("#acct").value; try { localStorage.setItem("welcomeAccount", ACCT); } catch {} $("#testAudio").innerHTML = ""; $("#sfOut").innerHTML = ""; $("#seqUnreadable").innerHTML = ""; $("#seqFollow").innerHTML = ""; document.querySelectorAll("[data-takes]").forEach((x) => x.innerHTML = ""); load(); };
+$("#capSave").onclick = async (e) => {
+  e.target.disabled = true;
+  try { const r = await call("capSave", { cap: Number($("#capInput").value) }); say($("#capMsg"), "Plafond : " + r.cap.toLocaleString("fr-FR") + " ✓", true); load(); } catch (err) { say($("#capMsg"), err.message, false); }
+  e.target.disabled = false;
+};
+// Vocaux de la séquence pour Lena / Jade (générés à la demande, rien n'est envoyé)
+function seqPlayer(which) {
+  return '<button class="sm" data-seqaudio="' + which + '">▶ Écouter</button>';
+}
+document.addEventListener("click", async (e) => {
+  const b = e.target.closest && e.target.closest("[data-seqaudio]");
+  if (!b) return;
+  const box = b.parentElement;
+  b.disabled = true; b.textContent = "Fabrication… (10-20 s)";
+  try { const r = await call("seqAudio", { which: b.dataset.seqaudio }); box.innerHTML = player(r.audio); $("audio", box).play().catch(() => {}); }
+  catch (err) { b.disabled = false; b.textContent = "▶ Écouter"; alert(err.message); }
+});
 // Bouton ON/OFF en haut : enregistre tout de suite, sans passer par « Enregistrer »
 $("#toggle").onclick = async (e) => {
   const on = !DATA.settings.enabled;
-  if (on && (!DATA.takes.fixed || !DATA.takes.fallback)) return alert("Installe d'abord la partie fixe ET le vocal de repli.");
+  if (on && DATA.account.legacy && (!DATA.takes.fixed || !DATA.takes.fallback)) return alert("Installe d'abord la partie fixe ET le vocal de repli.");
+  if (on && !DATA.account.legacy && !confirm("Activer l'envoi automatique pour " + DATA.account.modelName + " ? Ses nouveaux abonnés recevront le vocal.")) return;
   e.target.disabled = true;
   try { await call("save", { settings: { enabled: on } }); } catch (err) { alert(err.message); }
   await load(); e.target.disabled = false;
@@ -552,6 +615,7 @@ function renderSeq(s) {
 }
 $("#seqSave").onclick = async (e) => {
   const st = { followUpEnabled: $("#followUpEnabled").checked };
+  if (!DATA.account.legacy) st.followUpText = $("#followUpText").value;
   for (const k of SEQ) st[k] = Number($("#" + k).value);
   e.target.disabled = true;
   try { await call("save", { settings: st }); say($("#seqMsg"), "Enregistré ✓", true); load(); } catch (err) { say($("#seqMsg"), err.message, false); }
@@ -622,12 +686,12 @@ function renderAbChart(daily, two) {
 
 const AB_LEAD = {
   abc: "Trois groupes au hasard (⅓ chacun) : vocal seul, rien, selfie seul (+ son texte). On compare qui a écrit dans les 72 h. Les chatters ne voient rien.",
-  v90: "9 nouveaux abonnés sur 10 reçoivent le vocal de bienvenue (« Coucou {prénom}… Bienvenue sur ma page ! », ou le vocal « pseudo illisible ») puis, 5-6 s après, la relance Netflix ; 1 sur 10 rien (groupe témoin). On compare qui a écrit et ce qu’ils dépensent dans les 72 h.",
+  v90: "9 nouveaux abonnés sur 10 reçoivent le vocal de bienvenue (« {LINE} », ou le vocal « pseudo illisible ») puis, 5-6 s après, la relance Netflix ; 1 sur 10 rien (groupe témoin). On compare qui a écrit et ce qu’ils dépensent dans les 72 h.",
 };
 function renderAbHeader(d) {
   const s = d.settings;
   if (document.activeElement !== $("#abView")) $("#abView").value = d.abView;
-  $("#abLead").textContent = AB_LEAD[d.abView];
+  $("#abLead").textContent = AB_LEAD[d.abView].replace("{LINE}", d.linePreview || "");
   const sw = s.abSwitchAt && d.abCurrent === "abc" ? " · bascule auto vers le test 2 le " + new Date(s.abSwitchAt).toLocaleString("fr-FR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "";
   $("#abCurrent").textContent = "Nouveaux abonnés → " + (d.abCurrent === "v90" ? "test 2" : "test 1") + sw;
 }
@@ -676,7 +740,7 @@ $("#save").onclick = async (e) => {
   const s = { enabled: $("#enabled").checked, accountId: $("#accountId").value, caption: $("#caption").value,
     delayMax: Number($("#delayMax").value), maxDelaySec: Number($("#maxDelaySec").value) };
   if (s.enabled && !s.accountId.trim()) return say($("#saveMsg"), "Pour activer : renseigne le compte acct_… (Avancé).", false);
-  if (s.enabled && (!DATA.takes.fixed || !DATA.takes.fallback)) return say($("#saveMsg"), "Pour activer : installe d'abord la partie fixe ET le vocal de repli.", false);
+  if (s.enabled && DATA.account.legacy && (!DATA.takes.fixed || !DATA.takes.fallback)) return say($("#saveMsg"), "Pour activer : installe d'abord la partie fixe ET le vocal de repli.", false);
   e.target.disabled = true;
   try { await call("save", { settings: s }); say($("#saveMsg"), "Enregistré ✓", true); load(); }
   catch (err) { say($("#saveMsg"), err.message, false); }
@@ -827,15 +891,42 @@ async function load() {
   try { DATA = await call("load", { abView: (() => { try { return localStorage.getItem("abView") || undefined; } catch { return undefined; } })() }); } catch (err) { if ($("#login").hidden) alert(err.message); return; }
   const d = DATA, s = d.settings;
   $("#login").hidden = true; $("#app").hidden = false;
-  const ready = s.enabled && s.accountId && d.takes.fixed && d.takes.fallback && d.used < d.stopAt;
+  // Sélecteur de modèle + parties propres à Sienna (vrais vocaux, partie fixe) ou aux autres comptes
+  ACCT = d.account.key;
+  $("#acct").innerHTML = d.accounts.map((x) => '<option value="' + x.key + '">' + esc(x.modelName) + " · @" + esc(x.handle) + " " + ({ fr: "🇫🇷", de: "🇩🇪", en: "🇺🇸" }[x.lang] || "") + (x.enabled ? " · ON" : " · OFF") + "</option>").join("");
+  $("#acct").value = d.account.key;
+  document.querySelectorAll(".mname").forEach((x) => x.textContent = d.account.modelName);
+  document.title = "Vocal de bienvenue — " + d.account.modelName;
+  document.querySelectorAll(".legacyOnly").forEach((x) => x.hidden = !d.account.legacy);
+  document.querySelectorAll(".newOnly").forEach((x) => x.hidden = d.account.legacy);
+  document.querySelectorAll(".linePrev").forEach((x) => x.textContent = d.linePreview);
+  if (!d.account.legacy) {
+    if (!$("#seqUnreadable [data-seqaudio]") && !$("#seqUnreadable audio[src^='data:']")) $("#seqUnreadable").innerHTML = seqPlayer("fallback");
+    if (!$("#seqFollow [data-seqaudio]") && !$("#seqFollow audio[src^='data:']")) $("#seqFollow").innerHTML = seqPlayer("followup");
+    if (document.activeElement !== $("#followUpText")) $("#followUpText").value = s.followUpText || "";
+  } else {
+    $("#seqUnreadable").innerHTML = '<audio controls preload="none" src="?audio=unreadable"></audio>';
+    $("#seqFollow").innerHTML = '<audio controls preload="none" src="?audio=followup"></audio>';
+  }
+  const c = d.credits || {};
+  $("#credToday").innerHTML = "<b>" + (c.today || 0).toLocaleString("fr-FR") + "</b> / " + (c.cap || 0).toLocaleString("fr-FR") + " crédits aujourd'hui";
+  $("#credBal").textContent = c.balance == null ? "" : "Solde : " + c.balance.toLocaleString("fr-FR");
+  const cp = c.cap ? Math.min(100, (100 * (c.today || 0)) / c.cap) : 0;
+  $("#credGauge").style.width = cp + "%";
+  $("#credGauge").style.background = cp >= 100 ? "var(--ko)" : cp > 70 ? "var(--warn)" : "var(--ok)";
+  if (document.activeElement !== $("#capInput")) $("#capInput").value = c.cap || "";
+  const capped = c.cap && (c.today || 0) >= c.cap;
+  const needTakes = d.account.legacy;
+  const ready = s.enabled && s.accountId && (!needTakes || (d.takes.fixed && d.takes.fallback)) && d.used < d.stopAt && !capped;
   $("#pill").className = "pill " + (ready ? "on" : "off");
   $("#pillText").textContent = ready ? "En marche : les nouveaux abonnés reçoivent le vocal" : "Arrêté : rien n'est envoyé";
   const why = [];
   if (!s.enabled) why.push("l'envoi automatique est désactivé (Réglages)");
   if (!s.accountId) why.push("le compte acct_… n'est pas renseigné");
-  if (!d.takes.fixed) why.push("la partie fixe n'est pas installée");
-  if (!d.takes.fallback) why.push("le vocal de repli n'est pas installé");
+  if (needTakes && !d.takes.fixed) why.push("la partie fixe n'est pas installée");
+  if (needTakes && !d.takes.fallback) why.push("le vocal de repli n'est pas installé");
   if (d.used >= d.stopAt) why.push("le quota OnlyFansAPI est atteint");
+  if (capped) why.push("le plafond journalier de crédits est atteint");
   $("#blockers").innerHTML = why.length ? "⚠️ Pour que ça parte : " + why.join(" · ") + "." : "";
   $("#enabled").checked = s.enabled; $("#enabled").onchange();
   $("#abEnabled").checked = s.abEnabled; renderAbHeader(d); renderAb(d.ab, s.abEnabled, d.abView); renderSeq(s);
