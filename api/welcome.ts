@@ -37,6 +37,9 @@ import {
   type TakeKind,
   type WelcomeSettings,
   currentAbTest,
+  realAudio,
+  REAL_FOLLOWUP,
+  REAL_UNREADABLE,
 } from "../lib/welcome.js";
 
 export const maxDuration = 60;
@@ -212,6 +215,12 @@ export async function POST(req: Request): Promise<Response> {
 }
 
 export async function GET(req?: Request): Promise<Response> {
+  // Écoute des vrais vocaux (relance Netflix, pseudo illisible) depuis l'interface
+  const audio = req ? new URL(req.url).searchParams.get("audio") : null;
+  if (audio === "followup" || audio === "unreadable") {
+    const buf = await realAudio(audio === "followup" ? REAL_FOLLOWUP : REAL_UNREADABLE);
+    return new Response(new Uint8Array(buf), { headers: { "Content-Type": "audio/mpeg", "Cache-Control": "public, max-age=3600" } });
+  }
   // Contrôle de santé de l'IA des prénoms (pseudo fixe, rien de secret) : /api/welcome?check=name
   if (req && new URL(req.url).searchParams.get("check") === "name") {
     const name = await fanFirstName("Alex2595839Xxx");
@@ -318,11 +327,28 @@ details{margin-top:10px}summary{cursor:pointer;color:var(--mute);font-size:13px}
     </div>
 
     <div class="card">
+      <h2>Séquence envoyée</h2>
+      <p class="lead">Ce que reçoit un fan (hors groupe témoin), dans l’ordre :</p>
+      <ol style="margin:6px 0 10px;padding-left:20px">
+        <li><b>Entre <span data-seq="min"></span> et <span data-seq="max"></span> s</b> après l’abonnement : vocal « Coucou {prénom}… Bienvenue sur ma page ! » (Drama 3), ou si le pseudo est illisible, le vrai vocal :<br><audio controls preload="none" src="?audio=unreadable"></audio></li>
+        <li><b><span data-seq="fmin"></span>-<span data-seq="fmax"></span> s</b> plus tard : la relance Netflix (vrai vocal) :<br><audio controls preload="none" src="?audio=followup"></audio></li>
+      </ol>
+      <div class="grid2">
+        <div><label for="sendMinSec">1er vocal : délai min (s)</label><input id="sendMinSec" type="number" min="0" max="110"></div>
+        <div><label for="sendMaxSec">1er vocal : délai max (s)</label><input id="sendMaxSec" type="number" min="0" max="110"></div>
+        <div><label for="followUpMinSec">Relance : écart min (s)</label><input id="followUpMinSec" type="number" min="0" max="60"></div>
+        <div><label for="followUpMaxSec">Relance : écart max (s)</label><input id="followUpMaxSec" type="number" min="0" max="60"></div>
+      </div>
+      <div class="row" style="margin-top:12px"><label class="switch" style="margin:0"><input type="checkbox" id="followUpEnabled"> Relance Netflix active</label>
+        <button class="main" id="seqSave">Enregistrer</button><span class="msg" id="seqMsg" style="margin:0"></span></div>
+    </div>
+
+    <div class="card">
       <div class="head"><h2>Tests du message de bienvenue</h2>
         <label class="switch"><input type="checkbox" id="abEnabled"> <span id="abLabel">Test</span></label></div>
       <div class="row" style="margin:6px 0 4px">
         <label for="abView" style="margin:0">Afficher</label>
-        <select id="abView" style="width:auto"><option value="abc">Test 1 : ⅓ vocal · ⅓ rien · ⅓ selfie</option><option value="v90">Test 2 : 90 % vocal · 10 % rien</option></select>
+        <select id="abView" style="width:auto"><option value="abc">Test 1 : ⅓ vocal · ⅓ rien · ⅓ selfie</option><option value="v90">Test 2 : 90 % vocal + relance Netflix · 10 % rien</option></select>
         <span class="hint" id="abCurrent"></span>
       </div>
       <p class="lead" id="abLead"></p>
@@ -518,6 +544,19 @@ $("#abEnabled").onchange = async (e) => {
   try { await call("save", { settings: { abEnabled: on } }); } catch (err) { alert(err.message); }
   await load(); e.target.disabled = false;
 };
+const SEQ = ["sendMinSec", "sendMaxSec", "followUpMinSec", "followUpMaxSec"];
+function renderSeq(s) {
+  for (const k of SEQ) if (document.activeElement !== $("#" + k)) $("#" + k).value = s[k];
+  $("#followUpEnabled").checked = s.followUpEnabled;
+  document.querySelectorAll("[data-seq]").forEach((e) => { e.textContent = { min: s.sendMinSec, max: s.sendMaxSec, fmin: s.followUpMinSec, fmax: s.followUpMaxSec }[e.dataset.seq]; });
+}
+$("#seqSave").onclick = async (e) => {
+  const st = { followUpEnabled: $("#followUpEnabled").checked };
+  for (const k of SEQ) st[k] = Number($("#" + k).value);
+  e.target.disabled = true;
+  try { await call("save", { settings: st }); say($("#seqMsg"), "Enregistré ✓", true); load(); } catch (err) { say($("#seqMsg"), err.message, false); }
+  e.target.disabled = false;
+};
 $("#abView").onchange = () => { try { localStorage.setItem("abView", $("#abView").value); } catch {} load(); };
 $("#abReset").onclick = async () => {
   if (!confirm("Effacer tous les fans du test A/B et repartir de zéro ?")) return;
@@ -583,7 +622,7 @@ function renderAbChart(daily) {
 
 const AB_LEAD = {
   abc: "Trois groupes au hasard (⅓ chacun) : vocal seul, rien, selfie seul (+ son texte). On compare qui a écrit dans les 72 h. Les chatters ne voient rien.",
-  v90: "9 nouveaux abonnés sur 10 reçoivent le vocal de bienvenue, 1 sur 10 rien (groupe témoin). On compare qui a écrit et ce qu’ils dépensent dans les 72 h.",
+  v90: "9 nouveaux abonnés sur 10 reçoivent le vocal de bienvenue (« Coucou {prénom}… Bienvenue sur ma page ! », ou le vocal « pseudo illisible ») puis, 5-6 s après, la relance Netflix ; 1 sur 10 rien (groupe témoin). On compare qui a écrit et ce qu’ils dépensent dans les 72 h.",
 };
 function renderAbHeader(d) {
   const s = d.settings;
@@ -798,7 +837,7 @@ async function load() {
   if (d.used >= d.stopAt) why.push("le quota OnlyFansAPI est atteint");
   $("#blockers").innerHTML = why.length ? "⚠️ Pour que ça parte : " + why.join(" · ") + "." : "";
   $("#enabled").checked = s.enabled; $("#enabled").onchange();
-  $("#abEnabled").checked = s.abEnabled; renderAbHeader(d); renderAb(d.ab, s.abEnabled);
+  $("#abEnabled").checked = s.abEnabled; renderAbHeader(d); renderAb(d.ab, s.abEnabled); renderSeq(s);
   $("#toggle").textContent = s.enabled ? "⏻ ON → couper" : "⏻ OFF → activer";
   $("#toggle").className = "main " + (s.enabled ? "on" : "off");
   $("#accountId").value = s.accountId; $("#caption").value = s.caption;

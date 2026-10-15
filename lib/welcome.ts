@@ -46,6 +46,21 @@ export interface WelcomeSettings {
   abTest: AbTest;
   /** Bascule automatique vers « v90 » à cette date (ms), 0 = pas de bascule prévue */
   abSwitchAt: number;
+  /** 1er vocal envoyé au hasard entre ces deux délais après l'abonnement (s) — Teva 14/10 : 30-60 s */
+  sendMinSec: number;
+  sendMaxSec: number;
+  /** Vocal de relance (« Netflix », vrai enregistrement de Sienna) envoyé juste après le 1er */
+  followUpEnabled: boolean;
+  /** Écart entre le 1er vocal et la relance (s), au hasard entre min et max — Teva : 5-6 s */
+  followUpMinSec: number;
+  followUpMaxSec: number;
+}
+
+/** Vrais enregistrements de Sienna (assets/vocaux) : relance Netflix et pseudo illisible */
+export const REAL_FOLLOWUP = "2_netflix_Sienna-76609.mp3";
+export const REAL_UNREADABLE = "3_pseudo_illisible_Sienna-61830.mp3";
+export async function realAudio(file: string): Promise<Buffer> {
+  return readFile(join(process.cwd(), "assets", "vocaux", file));
 }
 
 /** Test qui reçoit les nouveaux abonnés maintenant (la bascule programmée s'applique d'elle-même) */
@@ -66,6 +81,11 @@ export const DEFAULT_SETTINGS: WelcomeSettings = {
   abEnabled: false,
   abTest: "abc",
   abSwitchAt: 0,
+  sendMinSec: 30,
+  sendMaxSec: 60,
+  followUpEnabled: true,
+  followUpMinSec: 5,
+  followUpMaxSec: 6,
 };
 
 /** Forfait OnlyFansAPI : requêtes par mois, et seuil où l'on coupe tout */
@@ -99,6 +119,9 @@ export interface WelcomeLog {
   selfieError?: string;
   /** Remarque de la génération (ex. 2e essai car prénom coupé) */
   selfieNote?: string;
+  /** Vocal de relance (Netflix) envoyé, ou l'erreur */
+  followUp?: boolean;
+  followUpError?: string;
 }
 
 // ── Réglages ────────────────────────────────────────────────────────────────
@@ -130,6 +153,11 @@ export async function saveWelcomeSettings(s: Partial<WelcomeSettings>): Promise<
     abEnabled: Boolean(s.abEnabled ?? cur.abEnabled),
     abTest: s.abTest === "v90" || s.abTest === "abc" ? s.abTest : cur.abTest,
     abSwitchAt: Math.max(0, Number(s.abSwitchAt ?? cur.abSwitchAt) || 0),
+    sendMinSec: Math.max(0, Math.min(110, Number(s.sendMinSec ?? cur.sendMinSec) || 0)),
+    sendMaxSec: Math.max(0, Math.min(110, Number(s.sendMaxSec ?? cur.sendMaxSec) || 0)),
+    followUpEnabled: Boolean(s.followUpEnabled ?? cur.followUpEnabled),
+    followUpMinSec: Math.max(0, Math.min(60, Number(s.followUpMinSec ?? cur.followUpMinSec) || 0)),
+    followUpMaxSec: Math.max(0, Math.min(60, Number(s.followUpMaxSec ?? cur.followUpMaxSec) || 0)),
   };
   await getRedis().set(cfgKey, JSON.stringify(clean));
 }
@@ -374,9 +402,9 @@ export async function handleNewSub(
   if (!s.enabled && !opts.force) return;
   const since = opts.subscribedAt ?? Date.now();
   const elapsed = () => Math.round((Date.now() - since) / 10) / 100;
-  // Budget de la fonction Vercel (60 s) : secondes qu'il reste pour finir proprement
+  // Budget de la fonction Vercel (300 s, vercel.json) : secondes qu'il reste pour finir proprement
   const t0 = Date.now();
-  const left = () => 55 - (Date.now() - t0) / 1000;
+  const left = () => 280 - (Date.now() - t0) / 1000;
 
   // Un seul vocal de bienvenue par fan, même s'il se réabonne (sauf renvoi manuel).
   // Verrou de 10 min d'abord ; rendu permanent seulement après l'envoi réussi, pour
@@ -425,16 +453,18 @@ export async function handleNewSub(
         })
       : null;
     if (withSelfie && !selfie && !log.selfieError) log.selfieError = name ? "selfie désactivé ou sans photo" : "pseudo illisible → vocal de repli";
-    const mp3 = selfie ? null : await voiceForName(name, await getChosenTake(name ? "fixed" : "fallback"));
+    const mp3 = selfie ? null : name ? await voiceForName(name, await getChosenTake("fixed")) : await realAudio(REAL_UNREADABLE);
     if (selfie) {
       log.selfie = selfie.how;
       if (selfie.aiError) log.selfieError = selfie.aiError;
       if (selfie.note) log.selfieNote = selfie.note;
     }
-    // Attente « naturelle », mais jamais au-delà de la limite ni du budget Vercel
-    const room = Math.max(0, s.maxDelaySec - elapsed() - 15);
-    const wait = Math.min(s.delayMax, opts.force ? 0 : room, Math.max(0, left() - 15));
-    if (wait > 0) await new Promise((r) => setTimeout(r, Math.random() * wait * 1000));
+    // Envoi au hasard entre sendMinSec et sendMaxSec après l'abonnement (Teva : 30-60 s),
+    // jamais au-delà de la limite « trop tard » ni du budget de la fonction
+    const lo = Math.min(s.sendMinSec, s.sendMaxSec), hi = Math.max(s.sendMinSec, s.sendMaxSec);
+    const target = lo + Math.random() * (hi - lo);
+    const wait = opts.force ? 0 : Math.max(0, Math.min(target - elapsed(), s.maxDelaySec - elapsed() - 15, left() - 30));
+    if (wait > 0) await new Promise((r) => setTimeout(r, wait * 1000));
     if (tooLate()) throw new Error(`Trop tard : ${Math.round(elapsed())} s après l'abonnement (max ${s.maxDelaySec} s)`);
     if (selfie) {
       const sc = await getSelfieSettings();
@@ -444,6 +474,19 @@ export async function handleNewSub(
     } else {
       const mediaId = await uploadMedia(accountId, mp3!, "voice.mp3");
       await sendChatMessage(accountId, fanId, s.caption, [mediaId]);
+      // Relance « Netflix » (vrai vocal de Sienna), 5-6 s après ; un échec ici n'annule pas le 1er vocal
+      if (s.followUpEnabled) {
+        try {
+          const flo = Math.min(s.followUpMinSec, s.followUpMaxSec), fhi = Math.max(s.followUpMinSec, s.followUpMaxSec);
+          const gap = flo + Math.random() * (fhi - flo);
+          const followId = await uploadMedia(accountId, await realAudio(REAL_FOLLOWUP), "voice.mp3");
+          if (gap > 0) await new Promise((r) => setTimeout(r, gap * 1000));
+          await sendChatMessage(accountId, fanId, "", [followId]);
+          log.followUp = true;
+        } catch (err) {
+          log.followUpError = String((err as Error)?.message ?? err).slice(0, 200);
+        }
+      }
     }
     log.ok = true;
     log.status = "sent";
