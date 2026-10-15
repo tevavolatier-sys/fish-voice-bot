@@ -567,11 +567,11 @@ const pct = (r) => r == null ? "–" : Math.round(r * 100) + " %";
 const eur = (x) => x == null ? "–" : (Math.round(x * 100) / 100).toLocaleString("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " $";
 // Courbe du reply rate par jour d'abonnement : une ligne par groupe + la moyenne (noir épais),
 // barres du nombre de fans par jour, valeurs au survol, jour en cours en pointillé
-function renderAbChart(daily) {
+function renderAbChart(daily, two) {
   const box = $("#abChart");
   const days = Object.keys(daily || {}).sort();
   if (!days.length) { box.innerHTML = ""; return; }
-  const G = [["voice", "Vocal seul", "#3b82f6"], ["none", "Rien", "#9ca3af"], ["selfie", "Selfie seul", "#e0457b"]];
+  const G = two ? [["voice", "Vocal + relance", "#3b82f6"], ["none", "Rien", "#9ca3af"]] : [["voice", "Vocal seul", "#3b82f6"], ["none", "Rien", "#9ca3af"], ["selfie", "Selfie seul", "#e0457b"]];
   const today = new Date().toISOString().slice(0, 10);
   const avg = days.map((d) => { const n = G.reduce((a, [k]) => a + daily[d][k].n, 0), r = G.reduce((a, [k]) => a + daily[d][k].r, 0); return { n, r }; });
   const W = 720, H = 300, L = 44, R = 16, T = 16, B = 74, BAR = 40;
@@ -632,24 +632,25 @@ function renderAbHeader(d) {
   $("#abCurrent").textContent = "Nouveaux abonnés → " + (d.abCurrent === "v90" ? "test 2" : "test 1") + sw;
 }
 
-function renderAb(ab, on) {
+function renderAb(ab, on, view) {
+  const two = view === "v90"; // test 2 : seulement « vocal + relance » contre « rien »
   $("#abLabel").textContent = on ? "Test A/B : EN COURS" : "Test A/B : arrêté (tout le monde reçoit le vocal)";
   if (!ab) { $("#abStats").innerHTML = ""; $("#abTable").innerHTML = ""; $("#abHint").textContent = "Renseigne le compte acct_… pour démarrer."; return; }
   const v = ab.voice, n = ab.none, sf = ab.selfie;
-  renderAbChart(ab.daily);
+  renderAbChart(ab.daily, two);
   const sign = (x) => (x > 0 ? "+" : "") + x;
   const mins = (m) => m == null ? "–" : m < 60 ? Math.round(m) + " min" : m < 1440 ? (m / 60).toFixed(1).replace(".0", "") + " h" : (m / 1440).toFixed(1).replace(".0", "") + " j";
   const conf = ab.confidence == null ? null : Math.round(ab.confidence * 100);
   $("#abStats").innerHTML =
-    '<div class="stat ok"><b>' + pct(v.rate ?? v.soFar) + '</b><span>répondent AVEC vocal' + (v.rate == null && v.soFar != null ? ' <i>(provisoire)</i>' : '') + '</span></div>' +
+    '<div class="stat ok"><b>' + pct(v.rate ?? v.soFar) + '</b><span>répondent AVEC ' + (two ? "vocal + relance" : "vocal") + ' ' + (v.rate == null && v.soFar != null ? ' <i>(provisoire)</i>' : '') + '</span></div>' +
     '<div class="stat"><b>' + pct(n.rate ?? n.soFar) + '</b><span>répondent SANS rien' + (n.rate == null && n.soFar != null ? ' <i>(provisoire)</i>' : '') + '</span></div>' +
-    '<div class="stat ok"><b>' + pct(sf.rate ?? sf.soFar) + '</b><span>répondent avec SELFIE seul' + (sf.rate == null && sf.soFar != null ? ' <i>(provisoire)</i>' : '') + '</span></div>' +
+    (two ? "" : '<div class="stat ok"><b>' + pct(sf.rate ?? sf.soFar) + '</b><span>répondent avec SELFIE seul' + (sf.rate == null && sf.soFar != null ? ' <i>(provisoire)</i>' : '') + '</span></div>') +
     (() => { const d = ab.diffPts != null ? ab.diffPts : (v.soFar != null && n.soFar != null ? (v.soFar - n.soFar) * 100 : null); const prov = ab.diffPts == null && d != null;
       return '<div class="stat ' + (d > 0 ? "ok" : d < 0 ? "ko" : "") + '"><b>' + (d == null ? "–" : sign(Math.round(d)) + " pts") + '</b><span>écart' + (ab.ratio ? " (×" + ab.ratio.toFixed(1).replace(".0", "") + ")" : "") + (prov ? " <i>(provisoire)</i>" : "") + '</span></div>'; })() +
     '<div class="stat ' + (conf >= 95 ? "ok" : conf >= 80 ? "warn" : "") + '"><b>' + (conf == null ? "–" : conf + " %") + '</b><span>confiance que l’écart est réel<div class="bar"><div style="width:' + (conf || 0) + '%;background:' + (conf >= 95 ? "var(--ok)" : "var(--warn)") + '"></div></div></span></div>';
-  const row = (label, a, b, c = "") => "<tr><td>" + label + "</td><td>" + a + "</td><td>" + b + "</td><td>" + c + "</td></tr>";
+  const row = (label, a, b, c = "") => "<tr><td>" + label + "</td><td>" + a + "</td><td>" + b + "</td>" + (two ? "" : "<td>" + c + "</td>") + "</tr>";
   const share = (k, g) => g.done ? "<b>" + g[k] + "</b> <span class=hint>(" + Math.round(g[k] / g.done * 100) + " %)</span>" : "–";
-  $("#abTable").innerHTML = "<thead><tr><th></th><th>🎙️ Vocal seul</th><th>🚫 Rien</th><th>🖼️ Selfie seul</th></tr></thead><tbody>" +
+  $("#abTable").innerHTML = "<thead><tr><th></th>" + (two ? "<th>🎙️ Vocal + relance Netflix (90 %)</th><th>🚫 Rien (10 %)</th>" : "<th>🎙️ Vocal seul</th><th>🚫 Rien</th><th>🖼️ Selfie seul</th>") + "</tr></thead><tbody>" +
     row("Fans terminés (72 h passées)", "<b>" + v.done + "</b>", "<b>" + n.done + "</b>", "<b>" + sf.done + "</b>") +
     row("Ont répondu", share("replied", v), share("replied", n), share("replied", sf)) +
     row("… en moins d’1 h", share("within1h", v), share("within1h", n), share("within1h", sf)) +
@@ -837,7 +838,7 @@ async function load() {
   if (d.used >= d.stopAt) why.push("le quota OnlyFansAPI est atteint");
   $("#blockers").innerHTML = why.length ? "⚠️ Pour que ça parte : " + why.join(" · ") + "." : "";
   $("#enabled").checked = s.enabled; $("#enabled").onchange();
-  $("#abEnabled").checked = s.abEnabled; renderAbHeader(d); renderAb(d.ab, s.abEnabled); renderSeq(s);
+  $("#abEnabled").checked = s.abEnabled; renderAbHeader(d); renderAb(d.ab, s.abEnabled, d.abView); renderSeq(s);
   $("#toggle").textContent = s.enabled ? "⏻ ON → couper" : "⏻ OFF → activer";
   $("#toggle").className = "main " + (s.enabled ? "on" : "off");
   $("#accountId").value = s.accountId; $("#caption").value = s.caption;
