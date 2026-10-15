@@ -8,7 +8,7 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { enroll, markSent } from "./ab.js";
+import { enroll, markSent, type AbTest } from "./ab.js";
 import { getSelfieSettings, makeSelfie } from "./selfie.js";
 import { ADMIN_ID, modelByKey } from "./config.js";
 import { fanFirstName } from "./fan-name.js";
@@ -42,6 +42,15 @@ export interface WelcomeSettings {
   maxDelaySec: number;
   /** Test A/B : un abonné sur deux ne reçoit PAS le vocal (lib/ab.ts) */
   abEnabled: boolean;
+  /** Test en cours (« abc » ⅓ vocal / ⅓ rien / ⅓ selfie, ou « v90 » 90 % vocal / 10 % rien) */
+  abTest: AbTest;
+  /** Bascule automatique vers « v90 » à cette date (ms), 0 = pas de bascule prévue */
+  abSwitchAt: number;
+}
+
+/** Test qui reçoit les nouveaux abonnés maintenant (la bascule programmée s'applique d'elle-même) */
+export function currentAbTest(s: WelcomeSettings, now = Date.now()): AbTest {
+  return s.abSwitchAt && now >= s.abSwitchAt ? "v90" : s.abTest;
 }
 
 export const DEFAULT_SETTINGS: WelcomeSettings = {
@@ -55,6 +64,8 @@ export const DEFAULT_SETTINGS: WelcomeSettings = {
   delayMax: 20,
   maxDelaySec: 120,
   abEnabled: false,
+  abTest: "abc",
+  abSwitchAt: 0,
 };
 
 /** Forfait OnlyFansAPI : requêtes par mois, et seuil où l'on coupe tout */
@@ -117,6 +128,8 @@ export async function saveWelcomeSettings(s: Partial<WelcomeSettings>): Promise<
     delayMax: Math.max(0, Math.min(30, Number(s.delayMax ?? cur.delayMax) || 0)),
     maxDelaySec: Math.max(10, Math.min(3600, Number(s.maxDelaySec ?? cur.maxDelaySec) || 120)),
     abEnabled: Boolean(s.abEnabled ?? cur.abEnabled),
+    abTest: s.abTest === "v90" || s.abTest === "abc" ? s.abTest : cur.abTest,
+    abSwitchAt: Math.max(0, Number(s.abSwitchAt ?? cur.abSwitchAt) || 0),
   };
   await getRedis().set(cfgKey, JSON.stringify(clean));
 }
@@ -378,7 +391,7 @@ export async function handleNewSub(
   // Test A/B/C : vocal seul / rien / vocal + selfie. Groupe « rien » → on n'envoie rien (sauf renvoi manuel)
   let withSelfie = true;
   if (s.abEnabled || opts.force) {
-    const group = await enroll(accountId, fanId, since, displayName || username);
+    const group = await enroll(accountId, fanId, since, displayName || username, currentAbTest(s));
     withSelfie = group === "selfie" || opts.force === true;
     if (group === "none" && !opts.force) {
       log.status = "control";

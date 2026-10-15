@@ -27,7 +27,14 @@ interface AbEntry {
   buys?: number;
 }
 
-const key = (accountId: string) => `welcome:ab:${accountId}`;
+/**
+ * Tests successifs, chacun dans son propre hash (les stats d'un test ne touchent jamais l'autre) :
+ *   abc = 08/10 → : ⅓ vocal seul, ⅓ rien, ⅓ selfie seul
+ *   v90 = 2e test (Teva, 14/10) : 9 fans sur 10 reçoivent le vocal, 1 sur 10 rien
+ */
+export type AbTest = "abc" | "v90";
+export const AB_TESTS: AbTest[] = ["abc", "v90"];
+const key = (accountId: string, test: AbTest = "abc") => (test === "abc" ? `welcome:ab:${accountId}` : `welcome:ab:${accountId}:${test}`);
 
 function parse(raw: unknown): AbEntry | null {
   if (raw == null) return null;
@@ -35,49 +42,65 @@ function parse(raw: unknown): AbEntry | null {
 }
 
 /** 50/50, toujours le même groupe pour un même fan (webhook renvoyé, renvoi…) */
-export function groupFor(fanId: string): AbGroup {
+export function groupFor(fanId: string, test: AbTest = "abc"): AbGroup {
   const h = createHash("sha1").update(`welcome-ab:${fanId}`).digest();
+  if (test === "v90") return h.readUInt16BE(0) % 10 === 0 ? "none" : "voice";
   return (["voice", "none", "selfie"] as const)[h[0] % 3];
 }
 
 /** Inscrit le fan dans le test (s'il n'y est pas déjà) et renvoie son groupe */
-export async function enroll(accountId: string, fanId: string, subscribedAt: number, pseudo: string): Promise<AbGroup> {
+export async function enroll(accountId: string, fanId: string, subscribedAt: number, pseudo: string, test: AbTest = "abc"): Promise<AbGroup> {
   const r = getRedis();
-  const cur = parse(await r.hget(key(accountId), fanId));
-  if (cur) return cur.g;
-  const entry: AbEntry = { g: groupFor(fanId), at: subscribedAt, n: pseudo.slice(0, 60) };
-  await r.hset(key(accountId), { [fanId]: JSON.stringify(entry) });
+  // Un fan déjà dans un test garde son groupe (réabonnement, renvoi) : on ne le remet pas dans un autre
+  for (const t of AB_TESTS) {
+    const cur = parse(await r.hget(key(accountId, t), fanId));
+    if (cur) return cur.g;
+  }
+  const entry: AbEntry = { g: groupFor(fanId, test), at: subscribedAt, n: pseudo.slice(0, 60) };
+  await r.hset(key(accountId, test), { [fanId]: JSON.stringify(entry) });
   return entry.g;
 }
 
 /** Le vocal est parti : le fan compte dans le groupe « avec vocal » */
 export async function markSent(accountId: string, fanId: string): Promise<void> {
   const r = getRedis();
-  const cur = parse(await r.hget(key(accountId), fanId));
-  if (!cur) return;
-  // Renvoi manuel à un fan « sans vocal » : il change de groupe (sinon le test serait faux)
-  await r.hset(key(accountId), { [fanId]: JSON.stringify({ ...cur, g: cur.g === "none" ? "voice" : cur.g, s: true }) });
+  for (const t of AB_TESTS) {
+    const cur = parse(await r.hget(key(accountId, t), fanId));
+    if (!cur) continue;
+    // Renvoi manuel à un fan « sans vocal » : il change de groupe (sinon le test serait faux)
+    await r.hset(key(accountId, t), { [fanId]: JSON.stringify({ ...cur, g: cur.g === "none" ? "voice" : cur.g, s: true }) });
+  }
 }
 
 /** Le fan a écrit : on note sa première réponse si elle est dans les 72 h */
 export async function recordReply(accountId: string, fanId: string, at = Date.now()): Promise<boolean> {
+  let any = false;
+  for (const t of AB_TESTS) if (await recordReplyIn(accountId, fanId, at, t)) any = true;
+  return any;
+}
+async function recordReplyIn(accountId: string, fanId: string, at: number, test: AbTest): Promise<boolean> {
   const r = getRedis();
-  const cur = parse(await r.hget(key(accountId), fanId));
+  const cur = parse(await r.hget(key(accountId, test), fanId));
   if (!cur || cur.r || at < cur.at || at - cur.at > AB_WINDOW_MS) return false;
-  await r.hset(key(accountId), { [fanId]: JSON.stringify({ ...cur, r: at }) });
+  await r.hset(key(accountId, test), { [fanId]: JSON.stringify({ ...cur, r: at }) });
   return true;
 }
 
 /** Le fan a payé (tip, PPV…) : ajouté à son CA si dans la fenêtre */
 export async function recordRevenue(accountId: string, fanId: string, amount: number, at = Date.now()): Promise<boolean> {
   if (!(amount > 0)) return false;
+  let any = false;
+  for (const t of AB_TESTS) if (await recordRevenueIn(accountId, fanId, amount, at, t)) any = true;
+  return any;
+}
+async function recordRevenueIn(accountId: string, fanId: string, amount: number, at: number, test: AbTest): Promise<boolean> {
   const r = getRedis();
-  const cur = parse(await r.hget(key(accountId), fanId));
+  const cur = parse(await r.hget(key(accountId, test), fanId));
   if (!cur || at < cur.at) return false;
   const ltv = Math.round(((cur.ltv ?? cur.rev ?? 0) + amount) * 100) / 100;
   const inWindow = at - cur.at <= AB_WINDOW_MS;
   const next = inWindow ? { ...cur, ltv, rev: Math.round(((cur.rev ?? 0) + amount) * 100) / 100, buys: (cur.buys ?? 0) + 1 } : { ...cur, ltv };
-  await r.hset(key(accountId), { [fanId]: JSON.stringify(next) });
+  await r.hset(key(accountId, test), { [fanId]: JSON.stringify(next) });
   return true;
 }
 
@@ -85,9 +108,9 @@ export async function recordRevenue(accountId: string, fanId: string, amount: nu
  * Rattrapage du CA (rétroactif) : pour une tranche de fans du test, lit leur dépense sur OF et
  * la stocke comme CA (remplace la somme des webhooks : le total OF les inclut déjà).
  */
-export async function backfillRevenue(accountId: string, offset: number, limit: number, spend: (fanId: string) => Promise<number | null>): Promise<{ done: number; total: number; next: number | null; errors: number }> {
+export async function backfillRevenue(accountId: string, offset: number, limit: number, spend: (fanId: string) => Promise<number | null>, test: AbTest = "abc"): Promise<{ done: number; total: number; next: number | null; errors: number }> {
   const r = getRedis();
-  const all = (await r.hgetall<Record<string, string | AbEntry>>(key(accountId))) ?? {};
+  const all = (await r.hgetall<Record<string, string | AbEntry>>(key(accountId, test))) ?? {};
   const ids = Object.keys(all).sort();
   const slice = ids.slice(offset, offset + limit);
   let errors = 0;
@@ -95,12 +118,12 @@ export async function backfillRevenue(accountId: string, offset: number, limit: 
     try {
       const v = await spend(id);
       if (v == null) { errors++; continue; }
-      const cur = parse(await r.hget(key(accountId), id));
+      const cur = parse(await r.hget(key(accountId, test), id));
       if (!cur) continue;
       // le total OF = LTV ; c'est aussi le CA 72 h tant que le fan est dans sa fenêtre
       const inWindow = Date.now() - cur.at <= AB_WINDOW_MS;
       const upd = inWindow ? { ...cur, ltv: v, rev: v, buys: v > 0 ? Math.max(1, cur.buys ?? 0) : 0, bf: 1 } : { ...cur, ltv: v, bf: 1 };
-      await r.hset(key(accountId), { [id]: JSON.stringify(upd) });
+      await r.hset(key(accountId, test), { [id]: JSON.stringify(upd) });
     } catch { errors++; }
   }
   const next = offset + slice.length < ids.length ? offset + slice.length : null;
@@ -253,12 +276,12 @@ export function computeStats(entries: AbEntry[], now = Date.now()): AbStats {
   return { daily, voice, none, selfie, excluded, since: since === null ? null : new Date(since).toISOString(), significant, confidence, diffPts, ratio, needPerGroup, all };
 }
 
-export async function abStats(accountId: string): Promise<AbStats> {
-  const all = (await getRedis().hgetall<Record<string, string | AbEntry>>(key(accountId))) ?? {};
+export async function abStats(accountId: string, test: AbTest = "abc"): Promise<AbStats> {
+  const all = (await getRedis().hgetall<Record<string, string | AbEntry>>(key(accountId, test))) ?? {};
   return computeStats(Object.values(all).map((v) => parse(v)!));
 }
 
 /** Remise à zéro du test (nouveau départ) */
-export async function abReset(accountId: string): Promise<void> {
-  await getRedis().del(key(accountId));
+export async function abReset(accountId: string, test: AbTest = "abc"): Promise<void> {
+  await getRedis().del(key(accountId, test));
 }

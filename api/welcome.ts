@@ -36,6 +36,7 @@ import {
   saveWelcomeSettings,
   type TakeKind,
   type WelcomeSettings,
+  currentAbTest,
 } from "../lib/welcome.js";
 
 export const maxDuration = 60;
@@ -64,19 +65,22 @@ export async function POST(req: Request): Promise<Response> {
           requestsThisMonth(),
           readWelcomeLog(),
         ]);
-        const ab = settings.accountId ? await abStats(settings.accountId) : null;
-        return Response.json({ ok: true, settings, takes: { fixed, fallback }, used, limit: MONTHLY_LIMIT, stopAt: STOP_AT, log, ab });
+        const current = currentAbTest(settings);
+        const abView = a.abView === "abc" || a.abView === "v90" ? a.abView : current;
+        const ab = settings.accountId ? await abStats(settings.accountId, abView) : null;
+        return Response.json({ ok: true, settings, takes: { fixed, fallback }, used, limit: MONTHLY_LIMIT, stopAt: STOP_AT, log, ab, abView, abCurrent: current });
       }
       case "abBackfill": {
         // CA rétroactif des fans du test, par tranches (une fonction Vercel = 60 s max)
         const s = await getWelcomeSettings();
         if (!s.accountId) throw new Error("compte acct_ manquant");
-        const r = await backfillRevenue(s.accountId, Number(a.offset) || 0, Math.min(40, Number(a.limit) || 30), (id) => getFanSpend(s.accountId, id));
+        const t = a.abView === "v90" ? "v90" : a.abView === "abc" ? "abc" : currentAbTest(s);
+        const r = await backfillRevenue(s.accountId, Number(a.offset) || 0, Math.min(40, Number(a.limit) || 30), (id) => getFanSpend(s.accountId, id), t);
         return Response.json({ ok: true, ...r });
       }
       case "abReset": {
         const s = await getWelcomeSettings();
-        if (s.accountId) await abReset(s.accountId);
+        if (s.accountId) await abReset(s.accountId, a.abView === "v90" ? "v90" : a.abView === "abc" ? "abc" : currentAbTest(s));
         return Response.json({ ok: true });
       }
       case "save":
@@ -314,9 +318,14 @@ details{margin-top:10px}summary{cursor:pointer;color:var(--mute);font-size:13px}
     </div>
 
     <div class="card">
-      <div class="head"><h2>Test A/B/C : quel message de bienvenue ?</h2>
+      <div class="head"><h2>Tests du message de bienvenue</h2>
         <label class="switch"><input type="checkbox" id="abEnabled"> <span id="abLabel">Test</span></label></div>
-      <p class="lead">Trois groupes au hasard (⅓ chacun) : vocal seul, rien, selfie seul (+ son texte). On compare ensuite qui a écrit dans les 72 h. Les chatters ne voient rien.</p>
+      <div class="row" style="margin:6px 0 4px">
+        <label for="abView" style="margin:0">Afficher</label>
+        <select id="abView" style="width:auto"><option value="abc">Test 1 : ⅓ vocal · ⅓ rien · ⅓ selfie</option><option value="v90">Test 2 : 90 % vocal · 10 % rien</option></select>
+        <span class="hint" id="abCurrent"></span>
+      </div>
+      <p class="lead" id="abLead"></p>
       <div class="stats" id="abStats"></div>
       <div class="ab-wrap"><table id="abTable" class="ab"></table></div>
       <div class="chart" id="abChart"></div>
@@ -509,9 +518,10 @@ $("#abEnabled").onchange = async (e) => {
   try { await call("save", { settings: { abEnabled: on } }); } catch (err) { alert(err.message); }
   await load(); e.target.disabled = false;
 };
+$("#abView").onchange = () => { try { localStorage.setItem("abView", $("#abView").value); } catch {} load(); };
 $("#abReset").onclick = async () => {
   if (!confirm("Effacer tous les fans du test A/B et repartir de zéro ?")) return;
-  try { await call("abReset"); } catch (err) { alert(err.message); }
+  try { await call("abReset", { abView: $("#abView").value }); } catch (err) { alert(err.message); }
   load();
 };
 const pct = (r) => r == null ? "–" : Math.round(r * 100) + " %";
@@ -569,6 +579,18 @@ function renderAbChart(daily) {
   box.innerHTML = '<div style="font-weight:600;margin-bottom:4px">Reply rate par jour d’abonnement</div><div class="hint" style="margin-bottom:8px">Part des fans abonnés ce jour-là qui ont répondu (à ce jour). Ligne noire = moyenne tous groupes. Jour en cours en pointillé (incomplet). Barres = nombre de fans.</div>' + svg +
     '<div class="lg"><span><i style="background:#111"></i><b>Moyenne</b></span>' + G.map(([, l, c]) => '<span><i style="background:' + c + '"></i>' + l + "</span>").join("") + "</div>" +
     '<div class="ab-wrap" style="margin-top:10px"><table class="ab"><thead><tr><th>Jour</th><th>Moyenne</th>' + G.map(([, l]) => "<th>" + l + "</th>").join("") + "</tr></thead><tbody>" + rows + "</tbody></table></div>";
+}
+
+const AB_LEAD = {
+  abc: "Trois groupes au hasard (⅓ chacun) : vocal seul, rien, selfie seul (+ son texte). On compare qui a écrit dans les 72 h. Les chatters ne voient rien.",
+  v90: "9 nouveaux abonnés sur 10 reçoivent le vocal de bienvenue, 1 sur 10 rien (groupe témoin). On compare qui a écrit et ce qu’ils dépensent dans les 72 h.",
+};
+function renderAbHeader(d) {
+  const s = d.settings;
+  if (document.activeElement !== $("#abView")) $("#abView").value = d.abView;
+  $("#abLead").textContent = AB_LEAD[d.abView];
+  const sw = s.abSwitchAt && d.abCurrent === "abc" ? " · bascule auto vers le test 2 le " + new Date(s.abSwitchAt).toLocaleString("fr-FR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "";
+  $("#abCurrent").textContent = "Nouveaux abonnés → " + (d.abCurrent === "v90" ? "test 2" : "test 1") + sw;
 }
 
 function renderAb(ab, on) {
@@ -762,7 +784,7 @@ function renderLog(log) {
 
 let DATA = null;
 async function load() {
-  try { DATA = await call("load"); } catch (err) { if ($("#login").hidden) alert(err.message); return; }
+  try { DATA = await call("load", { abView: (() => { try { return localStorage.getItem("abView") || undefined; } catch { return undefined; } })() }); } catch (err) { if ($("#login").hidden) alert(err.message); return; }
   const d = DATA, s = d.settings;
   $("#login").hidden = true; $("#app").hidden = false;
   const ready = s.enabled && s.accountId && d.takes.fixed && d.takes.fallback && d.used < d.stopAt;
@@ -776,7 +798,7 @@ async function load() {
   if (d.used >= d.stopAt) why.push("le quota OnlyFansAPI est atteint");
   $("#blockers").innerHTML = why.length ? "⚠️ Pour que ça parte : " + why.join(" · ") + "." : "";
   $("#enabled").checked = s.enabled; $("#enabled").onchange();
-  $("#abEnabled").checked = s.abEnabled; renderAb(d.ab, s.abEnabled);
+  $("#abEnabled").checked = s.abEnabled; renderAbHeader(d); renderAb(d.ab, s.abEnabled);
   $("#toggle").textContent = s.enabled ? "⏻ ON → couper" : "⏻ OFF → activer";
   $("#toggle").className = "main " + (s.enabled ? "on" : "off");
   $("#accountId").value = s.accountId; $("#caption").value = s.caption;
