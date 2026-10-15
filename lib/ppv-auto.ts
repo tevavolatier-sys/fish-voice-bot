@@ -20,6 +20,9 @@ import {
 } from "./onlyfans.js";
 import { buildPpvForFan, ppvReady } from "./ppv-build.js";
 import { getRedis } from "./redis.js";
+import { ACCOUNTS, SIENNA, scoped, tagOf, type OfAccount } from "./accounts.js";
+import { creditsCapReached } from "./onlyfans.js";
+import { alertCapOnce, resolveAccount } from "./welcome.js";
 
 export interface PpvAutoSettings {
   enabled: boolean;
@@ -65,38 +68,55 @@ interface Cleanup {
   listDone?: boolean;
 }
 
-const CFG_KEY = "ppvauto:cfg";
-const LOG_KEY = "ppvauto:log";
+// Réglages, journal et contexte par compte (Sienna : clés d'origine). Nettoyage et nouveaux
+// essais : files communes (chaque entrée garde son compte acct_…).
+const CFG_KEY = (a: OfAccount) => scoped("ppvauto:cfg", a);
+const LOG_KEY = (a: OfAccount) => scoped("ppvauto:log", a);
 const CLEAN_KEY = "ppvauto:cleanup";
 const RETRY_KEY = "ppvauto:retry";
 
+/** Début du PPV de bienvenue par langue (à remplacer par le vrai texte des chatters de Lena / Jade) */
+const TRIGGER_BY_LANG: Record<OfAccount["lang"], string> = {
+  fr: DEFAULT_PPV_AUTO.triggerText,
+  de: "MACH DAS AUF und warte 5 Min",
+  en: "OPEN THIS and wait 5 min",
+};
+const defaultPpvAuto = (a: OfAccount): PpvAutoSettings => ({ ...DEFAULT_PPV_AUTO, triggerText: TRIGGER_BY_LANG[a.lang] });
+
 const parse = <T>(raw: unknown): T | null => (raw == null ? null : typeof raw === "string" ? (JSON.parse(raw) as T) : (raw as T));
 
-export async function getPpvAutoSettings(): Promise<PpvAutoSettings> {
-  const cfg = parse<Partial<PpvAutoSettings>>(await getRedis().get(CFG_KEY));
-  return { ...DEFAULT_PPV_AUTO, ...(cfg ?? {}) };
+export async function getPpvAutoSettings(a: OfAccount = SIENNA): Promise<PpvAutoSettings> {
+  const cfg = parse<Partial<PpvAutoSettings>>(await getRedis().get(CFG_KEY(a)));
+  return { ...defaultPpvAuto(a), ...(cfg ?? {}) };
 }
 
-export async function savePpvAutoSettings(s: Partial<PpvAutoSettings>): Promise<void> {
-  const cur = await getPpvAutoSettings();
+/** Comptes dont le PPV auto est activé (pour le rapport et le cron) */
+export async function activePpvAccounts(): Promise<OfAccount[]> {
+  const out: OfAccount[] = [];
+  for (const a of ACCOUNTS) if ((await getPpvAutoSettings(a)).enabled) out.push(a);
+  return out;
+}
+
+export async function savePpvAutoSettings(s: Partial<PpvAutoSettings>, a: OfAccount = SIENNA): Promise<void> {
+  const cur = await getPpvAutoSettings(a);
   const clean: PpvAutoSettings = {
     enabled: Boolean(s.enabled ?? cur.enabled),
-    triggerText: String(s.triggerText ?? cur.triggerText).trim().slice(0, 300) || DEFAULT_PPV_AUTO.triggerText,
+    triggerText: String(s.triggerText ?? cur.triggerText).trim().slice(0, 300) || defaultPpvAuto(a).triggerText,
     listMinutes: Math.max(5, Math.min(1440, Number(s.listMinutes ?? cur.listMinutes) || 30)),
     mediaHours: Math.max(1, Math.min(240, Number(s.mediaHours ?? cur.mediaHours) || 24)),
   };
-  await getRedis().set(CFG_KEY, JSON.stringify(clean));
+  await getRedis().set(CFG_KEY(a), JSON.stringify(clean));
 }
 
-export async function readPpvAutoLog(): Promise<PpvAutoLog[]> {
-  const rows = await getRedis().lrange<string | PpvAutoLog>(LOG_KEY, 0, 99);
+export async function readPpvAutoLog(a: OfAccount = SIENNA): Promise<PpvAutoLog[]> {
+  const rows = await getRedis().lrange<string | PpvAutoLog>(LOG_KEY(a), 0, 99);
   return rows.map((r) => parse<PpvAutoLog>(r)!);
 }
 
-async function addLog(entry: PpvAutoLog): Promise<void> {
+async function addLog(entry: PpvAutoLog, a: OfAccount): Promise<void> {
   const r = getRedis();
-  await r.lpush(LOG_KEY, JSON.stringify(entry));
-  await r.ltrim(LOG_KEY, 0, 199);
+  await r.lpush(LOG_KEY(a), JSON.stringify(entry));
+  await r.ltrim(LOG_KEY(a), 0, 199);
 }
 
 /** Texte comparable : minuscules, sans accents, emojis ni ponctuation, espaces réduits */
@@ -134,17 +154,20 @@ export async function sendAlert(text: string, markup?: unknown): Promise<void> {
   if (!r.ok) throw new Error(`Telegram ${r.status} : ${(await r.text()).slice(0, 200)}`);
 }
 
-/** Bouton « refaire avec le bon prénom » sous les alertes (géré par api/ppv-bot.ts) */
-export const redoButton = (fanId: string, label = "✏️ Wrong name? Redo with the right one") => ({
-  inline_keyboard: [[{ text: label, callback_data: `redo:${fanId}` }]],
+/**
+ * Bouton « refaire avec le bon prénom » sous les alertes (géré par api/ppv-bot.ts).
+ * Sienna : « redo:<fan> » (inchangé) ; autres comptes : « redo:<compte>:<fan> ».
+ */
+export const redoButton = (fanId: string, label = "✏️ Wrong name? Redo with the right one", a: OfAccount = SIENNA) => ({
+  inline_keyboard: [[{ text: label, callback_data: a.legacy ? `redo:${fanId}` : `redo:${a.key}:${fanId}` }]],
 });
 
 /** Contexte d'un achat, gardé 7 jours pour pouvoir le refaire depuis Telegram */
-export async function saveContext(p: PpvPurchase): Promise<void> {
-  await getRedis().set(`ppvauto:ctx:${p.fanId}`, JSON.stringify(p), { ex: 7 * 24 * 3600 });
+export async function saveContext(p: PpvPurchase, a: OfAccount = SIENNA): Promise<void> {
+  await getRedis().set(scoped(`ppvauto:ctx:${p.fanId}`, a), JSON.stringify(p), { ex: 7 * 24 * 3600 });
 }
-export async function getContext(fanId: string): Promise<PpvPurchase | null> {
-  return parse<PpvPurchase>(await getRedis().get(`ppvauto:ctx:${fanId}`));
+export async function getContext(fanId: string, a: OfAccount = SIENNA): Promise<PpvPurchase | null> {
+  return parse<PpvPurchase>(await getRedis().get(scoped(`ppvauto:ctx:${fanId}`, a)));
 }
 
 /** Vidéo envoyée dans le groupe d'alerte (tests depuis l'interface) */
@@ -172,7 +195,9 @@ export async function runCleanup(): Promise<{ lists: number; media: number; retr
   const now = Date.now();
   // Nouveaux essais après une panne d'OnlyFans (un seul par passage : ~1 min de travail)
   let retried = 0;
-  const retry = (await r.zrange<string[]>(RETRY_KEY, 0, now, { byScore: true }))[0];
+  // Plafond journalier global de crédits atteint : pas de nouvel essai (le nettoyage, lui, continue)
+  const capped = (await creditsCapReached().catch(() => ({ over: false }))).over;
+  const retry = capped ? undefined : (await r.zrange<string[]>(RETRY_KEY, 0, now, { byScore: true }))[0];
   if (retry && (await r.zrem(RETRY_KEY, retry)) === 1) {
     const j = parse<{ p: PpvPurchase; name: string; source?: "custom" | "guessed"; tries: number }>(retry);
     if (j) { await producePpvForFan(j.p, j.name, true, j.source, j.tries); retried = 1; }
@@ -250,19 +275,21 @@ export function customFirstName(display: string): string | null {
  * `force` : renvoi manuel depuis l'interface (ignore « déjà fait »).
  */
 export async function producePpvForFan(p: PpvPurchase, name: string, force = false, source?: "custom" | "guessed", tries = 0): Promise<PpvAutoLog> {
-  const s = await getPpvAutoSettings();
+  const a = (await resolveAccount(p.accountId)) ?? SIENNA;
+  const tag = tagOf(a);
+  const s = await getPpvAutoSettings(a);
   const log: PpvAutoLog = {
     at: new Date().toISOString(), fan: p.fanId, display: p.display, username: p.username,
     name, amount: p.amount, status: "error", manual: force || undefined, source,
   };
-  if (p.display || p.username) await saveContext(p).catch(() => {});
+  if (p.display || p.username) await saveContext(p, a).catch(() => {});
   const doneKey = `ppvauto:done:${p.accountId}:${p.fanId}`;
   if (!force && (await getRedis().set(doneKey, "1", { nx: true })) !== "OK") {
     // Déjà traité pour ce fan : pas de 2e dossier
     return { ...log, status: "error", error: "Déjà fait pour ce fan" };
   }
   try {
-    const built = await buildPpvForFan(name);
+    const built = await buildPpvForFan(name, a);
     const slug = name.normalize("NFD").replace(/[^\w-]+/g, "").toLowerCase() || "fan";
     // OnlyFans renvoie parfois un 400 « Bad Request » passager (vu le 12/10 : ok au 3e essai) :
     // chaque étape est retentée 2 fois. Les uploads l'un après l'autre (moins de 400).
@@ -288,9 +315,9 @@ export async function producePpvForFan(p: PpvPurchase, name: string, force = fal
     log.listName = listName;
     log.elapsedSec = Math.round((Date.now() - p.at) / 1000);
     await sendAlert(
-      `💰 ${p.display || p.username || p.fanId}${p.username ? ` (@${p.username})` : ""} just bought the welcome PPV ($${p.amount}).\n` +
+      `${tag}💰 ${p.display || p.username || p.fanId}${p.username ? ` (@${p.username})` : ""} just bought the welcome PPV ($${p.amount}).\n` +
       `🎬 His free preview + PPV 1 videos with his name (${name}) are ready in the vault → folder “${listName}” (auto-deleted in ${s.listMinutes} min).`,
-      redoButton(p.fanId)
+      redoButton(p.fanId, undefined, a)
     ).catch((e) => console.error("alerte Telegram:", e));
   } catch (err) {
     log.error = String((err as Error)?.message ?? err).slice(0, 800);
@@ -301,29 +328,37 @@ export async function producePpvForFan(p: PpvPurchase, name: string, force = fal
       await getRedis().zadd(RETRY_KEY, { score: Date.now() + 5 * 60_000, member: JSON.stringify({ p, name, source, tries: tries + 1 }) });
       if (tries === 0) {
         await sendAlert(
-          `⏳ ${p.display || p.username || p.fanId} bought the welcome PPV (${p.amount}) but OnlyFans is down right now. ` +
+          `${tag}⏳ ${p.display || p.username || p.fanId} bought the welcome PPV (${p.amount}) but OnlyFans is down right now. ` +
           `I'll retry ${name}'s videos automatically every 5 min, you'll get an alert when they're ready.`,
-          redoButton(p.fanId, "✏️ Change the name")
+          redoButton(p.fanId, "✏️ Change the name", a)
         ).catch(() => {});
       }
       log.error = `OnlyFans en panne, nouvel essai auto dans 5 min (${tries + 1}/6) — ${log.error}`;
-      await addLog(log);
+      await addLog(log, a);
       return log;
     }
     await sendAlert(
-      `⚠️ ${p.display || p.username || p.fanId} bought the welcome PPV ($${p.amount}) but the custom videos FAILED: ${log.error}\n` +
+      `${tag}⚠️ ${p.display || p.username || p.fanId} bought the welcome PPV ($${p.amount}) but the custom videos FAILED: ${log.error}\n` +
       `Make them by hand with /ppv ${name} in the voice bot, or tap the button to try again.`,
-      redoButton(p.fanId, "🔁 Try again / change the name")
+      redoButton(p.fanId, "🔁 Try again / change the name", a)
     ).catch(() => {});
   }
-  await addLog(log);
+  await addLog(log, a);
   return log;
 }
 
 /** Point d'entrée du webhook messages.ppv.unlocked */
 export async function handlePpvUnlocked(p: PpvPurchase): Promise<void> {
-  const s = await getPpvAutoSettings();
+  const a = await resolveAccount(p.accountId);
+  if (!a) return;
+  const s = await getPpvAutoSettings(a);
   if (!s.enabled) return;
+  // Plafond journalier global de crédits : on s'arrête (alerte une fois par jour)
+  const cap = await creditsCapReached();
+  if (cap.over) {
+    await alertCapOnce(cap.used, cap.cap).catch(() => {});
+    return;
+  }
   // 1 requête : le texte du message acheté → est-ce le PPV de bienvenue ?
   let text = "";
   try {
@@ -333,7 +368,7 @@ export async function handlePpvUnlocked(p: PpvPurchase): Promise<void> {
     return;
   }
   if (!isTriggerText(text, s.triggerText)) return;
-  await saveContext(p).catch(() => {});
+  await saveContext(p, a).catch(() => {});
 
   // Prénom : nom mis par le chatter sur OF s'il ressemble à un prénom (un seul mot,
   // lettres, pas une étiquette comme « Whale » ou « VIP »), sinon détection IA sur le pseudo
@@ -344,11 +379,11 @@ export async function handlePpvUnlocked(p: PpvPurchase): Promise<void> {
     await addLog({
       at: new Date().toISOString(), fan: p.fanId, display: p.display, username: p.username,
       name: "", amount: p.amount, status: "noname", error: "Prénom illisible",
-    });
+    }, a);
     await sendAlert(
-      `⚠️ ${p.display || p.username || p.fanId} bought the welcome PPV ($${p.amount}) but I can't read his first name from “${p.display || p.name || p.username}”.\n` +
+      `${tagOf(a)}⚠️ ${p.display || p.username || p.fanId} bought the welcome PPV ($${p.amount}) but I can't read his first name from “${p.display || p.name || p.username}”.\n` +
       `Ask him his name, then tap the button and type it.`,
-      redoButton(p.fanId, "✏️ Type his first name")
+      redoButton(p.fanId, "✏️ Type his first name", a)
     ).catch(() => {});
     return;
   }

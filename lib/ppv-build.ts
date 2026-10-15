@@ -4,6 +4,7 @@
 // « PPV perso à l'achat du PPV de bienvenue » (lib/ppv-auto.ts).
 // Le code du bot n'est pas modifié (demande de Teva, 11/10/2026) : les quelques
 // fonctions nécessaires sont reprises ici.
+import { SIENNA, type OfAccount } from "./accounts.js";
 import { modelByKey, type VoiceModel } from "./config.js";
 import { generateVoice } from "./fish.js";
 import {
@@ -51,11 +52,32 @@ async function telegramFile(fileId: string): Promise<Buffer> {
   return Buffer.from(await res.arrayBuffer());
 }
 
-async function loadSettings(): Promise<PpvSettings> {
-  return normalizeSettings(await getPpvSettingsRaw().catch(() => null));
+/**
+ * Phrases PPV traduites pour Lena (DE) et Jade (EN), même jeu que celles de Sienna (/ppvsettings) :
+ * preview « n'oublie pas, il faut tenir jusqu'au bout… », PPV 1 « Hmm, c'est chaud. », PPV 2 soupir.
+ */
+const PPV_LINES: Record<"de" | "en", PpvSettings["lines"]> = {
+  de: {
+    preview: { fixed: "[soft tone] [breath] vergiss nicht, du musst bis zum Schluss durchhalten…", context: "[soft tone] {name}… [breath] vergiss nicht, du musst bis zum Schluss durchhalten…", name: "before" },
+    paid1: { fixed: "[soft tone] Hmm, das ist so heiß.", context: "[soft tone] {name}… Hmm, das ist so heiß.", name: "before" },
+    paid2: { fixed: "[sighing] Mmmh…", context: "", name: "none" },
+  },
+  en: {
+    preview: { fixed: "[soft tone] [breath] don't forget, you have to last until the very end…", context: "[soft tone] {name}… [breath] don't forget, you have to last until the very end…", name: "before" },
+    paid1: { fixed: "[soft tone] Mmm, that's so hot.", context: "[soft tone] {name}… Mmm, that's so hot.", name: "before" },
+    paid2: { fixed: "[sighing] Mmmh…", context: "", name: "none" },
+  },
+};
+
+/** Réglages PPV du compte : ceux du bot pour Sienna ; pour Lena/Jade, mêmes réglages avec leur voix et leurs phrases */
+async function loadSettings(a: OfAccount = SIENNA): Promise<PpvSettings> {
+  const cfg = normalizeSettings(await getPpvSettingsRaw().catch(() => null));
+  if (a.legacy || a.lang === "fr") return cfg;
+  return { ...cfg, model: a.voiceKey, lines: PPV_LINES[a.lang] };
 }
 
-function ppvModel(cfg: PpvSettings): VoiceModel | undefined {
+function ppvModel(cfg: PpvSettings, a: OfAccount = SIENNA): VoiceModel | undefined {
+  if (!a.legacy) return modelByKey(a.voiceKey);
   return modelByKey(cfg.model) ?? modelByKey(PPV_DEFAULT_MODEL);
 }
 
@@ -84,22 +106,22 @@ async function ppvLine(model: VoiceModel, key: (typeof NAMED_KEYS)[number], fixe
 }
 
 /** Les vidéos PPV sont-elles prêtes (réglages + vidéo PPV 1 chargée par l'admin) ? */
-export async function ppvReady(): Promise<{ ok: boolean; why?: string }> {
-  const cfg = await loadSettings();
-  const model = ppvModel(cfg);
+export async function ppvReady(a: OfAccount = SIENNA): Promise<{ ok: boolean; why?: string }> {
+  const cfg = await loadSettings(a);
+  const model = ppvModel(cfg, a);
   if (!model) return { ok: false, why: "voix PPV inconnue" };
   const parts = await getPpvParts(model.key).catch(() => []);
-  if (parts.length < 1) return { ok: false, why: "vidéo PPV 1 pas chargée dans le bot Telegram" };
+  if (parts.length < 1) return { ok: false, why: `vidéo PPV 1 pas chargée dans le bot Telegram (voix ${model.key})` };
   return { ok: true };
 }
 
 /** Preview + PPV 1 avec le prénom du fan : même résultat que « /ppv Prénom ». */
-export async function buildPpvForFan(name: string): Promise<BuiltPpv> {
-  const cfg = await loadSettings();
-  const model = ppvModel(cfg);
+export async function buildPpvForFan(name: string, a: OfAccount = SIENNA): Promise<BuiltPpv> {
+  const cfg = await loadSettings(a);
+  const model = ppvModel(cfg, a);
   if (!model) throw new Error("Voix PPV inconnue (réglages /ppvsettings).");
   const parts = await getPpvParts(model.key).catch(() => []);
-  if (parts.length < 1) throw new Error("Vidéo PPV 1 pas chargée dans le bot Telegram.");
+  if (parts.length < 1) throw new Error(a.legacy ? "Vidéo PPV 1 pas chargée dans le bot Telegram." : `Vidéo PPV 1 de ${a.modelName} pas chargée dans le bot Telegram (voix ${model.key}).`);
   const level = cfg.defaultVolume;
   const effect = cfg.effect;
   const room = roomFor(cfg, effect);
