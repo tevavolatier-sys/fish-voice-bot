@@ -295,6 +295,14 @@ export async function voiceForName(name: string, take: ChosenTake | null): Promi
     if (!take) throw new Error("Aucune prise « pseudo illisible » choisie dans l'interface.");
     return toMp3(Buffer.from(take.audio, "base64"));
   }
+  // Mode par défaut depuis le 14/10/2026 (tests à l'aveugle de Teva) : UNE phrase complète Drama 3,
+  // « Coucou {prénom}… Bienvenue sur ma page ! », avec consignes de jeu. WELCOME_LINE_MODE=fixed → ancien mode.
+  if ((process.env.WELCOME_LINE_MODE?.trim() || "drama") === "drama") {
+    const text =
+      `[Young woman, relaxed on the couch, close to the mic, reading his name off her screen for the first time, a small smile] Coucou ${name}… ` +
+      `[a little warmer, smiling, gently cheerful, a light lift on the word page] Bienvenue sur ma page !`;
+    return toMp3(await generateVoice(text, voiceId(), { model: process.env.WELCOME_LINE_MODEL?.trim() || "drama-3" }));
+  }
   const fixed = take;
   if (!fixed) throw new Error("Aucune prise de la partie fixe choisie dans l'interface.");
   const tags = leadingTags(fixed.text);
