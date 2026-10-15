@@ -2,32 +2,32 @@
 // (demande de Teva, 11/10/2026). Envoyé par le cron Vercel (GET /api/daily-report).
 // Contenu : PPV perso des dernières 24 h (prénom mis par le chatter / deviné /
 // illisible, refaits, échecs), vocaux de bienvenue, test A/B, crédits OnlyFansAPI.
+// Multi-comptes (15/10/2026) : un bloc par compte actif (Sienna toujours, Lena/Jade
+// seulement si leur bienvenue ou leur PPV auto est activé), crédits globaux à la fin.
+import { ACCOUNTS, type OfAccount } from "./accounts.js";
 import { abStats } from "./ab.js";
 import { abImage, sendAbImageToAdmin } from "./ab-image.js";
-import { readPpvAutoLog, sendAlert } from "./ppv-auto.js";
+import { creditsBalanceLive, creditsToday, getCreditsCap } from "./onlyfans.js";
+import { getPpvAutoSettings, readPpvAutoLog, sendAlert } from "./ppv-auto.js";
 import { getWelcomeSettings, readWelcomeLog } from "./welcome.js";
 
 const DAY = 24 * 3600_000;
 const pct = (n: number, d: number) => (d ? `${Math.round((100 * n) / d)} %` : "–");
 
-/** Solde de crédits OnlyFansAPI (dans les métadonnées de n'importe quelle réponse) */
-async function creditsBalance(): Promise<number | null> {
-  try {
-    const r = await fetch("https://app.onlyfansapi.com/api/webhooks", {
-      headers: { Authorization: `Bearer ${process.env.ONLYFANS_API_KEY}`, Accept: "application/json" },
-      signal: AbortSignal.timeout(15_000),
-    });
-    const j = (await r.json()) as { _meta?: { _credits?: { balance?: number } } };
-    const b = j._meta?._credits?.balance;
-    return typeof b === "number" ? b : null;
-  } catch {
-    return null;
+/** Comptes du rapport : Sienna toujours, les autres si un automatisme est activé */
+export async function reportAccounts(): Promise<OfAccount[]> {
+  const out: OfAccount[] = [];
+  for (const a of ACCOUNTS) {
+    if (a.legacy) { out.push(a); continue; }
+    const [w, p] = await Promise.all([getWelcomeSettings(a), getPpvAutoSettings(a)]);
+    if (w.enabled || p.enabled) out.push(a);
   }
+  return out;
 }
 
-export async function buildDailyReport(now = Date.now()): Promise<string> {
+async function accountSection(a: OfAccount, now: number, header: string): Promise<string[]> {
   const since = now - DAY;
-  const [ppv, welcome, settings, balance] = await Promise.all([readPpvAutoLog(), readWelcomeLog(), getWelcomeSettings(), creditsBalance()]);
+  const [ppv, welcome, settings] = await Promise.all([readPpvAutoLog(a), readWelcomeLog(a), getWelcomeSettings(a)]);
   const ab = settings.accountId ? await abStats(settings.accountId).catch(() => null) : null;
 
   const p = ppv.filter((l) => Date.parse(l.at) >= since);
@@ -46,7 +46,7 @@ export async function buildDailyReport(now = Date.now()): Promise<string> {
   const control = w.filter((l) => st(l) === "control").length;
 
   const lines = [
-    `📊 Daily report — Sienna — ${new Date(now).toLocaleDateString("fr-FR", { timeZone: "Pacific/Tahiti" })} @chattingtev`,
+    header,
     "",
     `🎬 Custom PPV (last 24 h): ${done.length} made`,
     `   • name set by chatter on OF: ${custom} (${pct(custom, done.length)})`,
@@ -66,18 +66,39 @@ export async function buildDailyReport(now = Date.now()): Promise<string> {
     };
     lines.push(`🧪 A/B reply rate: ${g("voice")} · ${g("none")} · ${g("selfie")}` + (ab.significant ? " ✅ significant" : ""));
   }
-  lines.push("", `💳 OnlyFansAPI credits left this month: ${balance == null ? "unknown" : balance.toLocaleString("en-US")} / 20,000`);
+  return lines;
+}
+
+export async function buildDailyReport(now = Date.now()): Promise<string> {
+  const date = new Date(now).toLocaleDateString("fr-FR", { timeZone: "Pacific/Tahiti" });
+  const accounts = await reportAccounts();
+  const [balance, usedToday, cap] = await Promise.all([creditsBalanceLive(), creditsToday().catch(() => 0), getCreditsCap().catch(() => 0)]);
+  const lines: string[] = [];
+  for (const [i, a] of accounts.entries()) {
+    // 1er bloc : en-tête d'origine (avec @chattingtev) ; les suivants indiquent le compte
+    const header = i === 0
+      ? `📊 Daily report — ${a.modelName}${a.legacy ? "" : ` (@${a.handle})`} — ${date} @chattingtev`
+      : `📊 ${a.modelName} (@${a.handle})`;
+    if (i > 0) lines.push("", "────────");
+    lines.push(...(await accountSection(a, now, header)));
+  }
+  lines.push(
+    "",
+    `💳 OnlyFansAPI credits left this month: ${balance == null ? "unknown" : balance.toLocaleString("en-US")} / 20,000`,
+    `   • used today (all accounts): ${usedToday.toLocaleString("en-US")} / daily cap ${cap.toLocaleString("en-US")}`
+  );
   return lines.filter((l) => l !== "").join("\n");
 }
 
 export async function sendDailyReport(): Promise<string> {
   const text = await buildDailyReport();
   await sendAlert(text);
-  // Image du test A/B/C en privé à Teva, par le bot « French Influence Voice »
-  const s = await getWelcomeSettings();
-  if (s.accountId) {
+  // Image du test A/B/C en privé à Teva, par le bot « French Influence Voice » (un par compte suivi)
+  for (const a of await reportAccounts()) {
+    const s = await getWelcomeSettings(a);
+    if (!s.accountId || (!a.legacy && !s.abEnabled)) continue;
     const ab = await abStats(s.accountId);
-    await sendAbImageToAdmin(await abImage(ab), "📊 Test A/B/C — reply rate (daily)");
+    await sendAbImageToAdmin(await abImage(ab), `📊 Test A/B/C${a.legacy ? "" : ` — ${a.modelName}`} — reply rate (daily)`);
   }
   return text;
 }
