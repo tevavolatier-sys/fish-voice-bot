@@ -12,6 +12,35 @@ function fishModel(): string {
   return process.env.FISH_MODEL?.trim() || "s2.1-pro";
 }
 
+// Effet léger « téléphone / un peu éloignée » sur TOUS les vocaux générés (Teva, 15/10 : voix trop fades).
+// Bande coupée en bas et en haut + médiums relevés + petite réflexion de pièce. VOICE_FX=none dans Vercel pour couper,
+// ou une autre chaîne de filtres ffmpeg pour la remplacer. En cas d'échec, le vocal part sans effet.
+const DEFAULT_FX =
+  "highpass=f=220,lowpass=f=5200,equalizer=f=1700:t=q:w=1.2:g=3.5,aecho=0.85:0.5:28|47:0.14|0.08,volume=1.15";
+
+async function voiceFx(mp3: Buffer): Promise<Buffer> {
+  const fx = process.env.VOICE_FX?.trim() || DEFAULT_FX;
+  if (fx === "none") return mp3;
+  const { ffmpegBinary, run } = await import("./video.js");
+  const { mkdtemp, readFile, rm, writeFile } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const dir = await mkdtemp(join(tmpdir(), "fx-"));
+  try {
+    const inp = join(dir, "in.mp3");
+    const out = join(dir, "out.mp3");
+    await writeFile(inp, mp3);
+    const r = await run(await ffmpegBinary(), ["-y", "-hide_banner", "-i", inp, "-af", fx, "-c:a", "libmp3lame", "-b:a", "128k", out]);
+    if (r.code !== 0) throw new Error(r.stderr.slice(-200));
+    return await readFile(out);
+  } catch (e) {
+    console.error("[voiceFx] effet ignoré :", e);
+    return mp3;
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
 /** Erreur avec un message clair destiné à l'opérateur (en français) */
 export class FishError extends Error {
   constructor(public readonly userMessage: string, detail: string) {
@@ -128,7 +157,7 @@ export async function generateVoice(
     }
 
     if (res.ok) {
-      return Buffer.from(await res.arrayBuffer());
+      return await voiceFx(Buffer.from(await res.arrayBuffer()));
     }
 
     const body = await res.text().catch(() => "");
