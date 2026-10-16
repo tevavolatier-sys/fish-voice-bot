@@ -66,7 +66,7 @@ export const REAL_UNREADABLE = "3_pseudo_illisible_Sienna-61830.mp3";
 /** Vrais vocaux « pseudo illisible » des autres comptes (Teva, 15/10 : Jade) */
 const REAL_UNREADABLE_BY_ACCOUNT: Record<string, string> = { jade: "3_pseudo_illisible_Jade-32131.mp3" };
 /** Vrai vocal de bienvenue : le prénom du fan est généré (voix du compte) et placé AU DÉBUT (Teva, 15/10 : Jade) */
-const REAL_WELCOME_BY_ACCOUNT: Record<string, string> = { jade: "1_bienvenue_Jade-74188.mp3" };
+const REAL_WELCOME_BY_ACCOUNT: Record<string, string> = { jade: "1_bienvenue_Jade-41438.mp3" };
 /** Ce que dit la voix avant le vrai vocal ; {name} = prénom du fan */
 const NAME_INTRO: Record<string, string> = { en: "Hey {name}…", de: "Hey {name}…", fr: "Coucou {name}…" };
 /** Comptes sans relance après la bienvenue (Teva, 15/10 : pas de relance Netflix pour Jade) */
