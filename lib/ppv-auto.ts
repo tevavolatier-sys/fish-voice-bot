@@ -39,7 +39,7 @@ export interface PpvAutoSettings {
 export const DEFAULT_PPV_AUTO: PpvAutoSettings = {
   enabled: false,
   // Début court : plusieurs versions du script circulent (« jme » / « je me », « pr » / « pour »), vu le 12/10
-  triggerText: "OUVRE CA et attends 5 min",
+  triggerText: "OUVRE CA et attends 5 min | OUVRE CA et donne moi genre",
   listMinutes: 30,
   mediaHours: 24,
 };
@@ -133,9 +133,10 @@ export function normalizeText(s: string): string {
 
 /** Le message acheté est-il le PPV de bienvenue ? */
 export function isTriggerText(messageText: string, trigger: string): boolean {
-  const t = normalizeText(trigger);
-  if (!t) return false;
-  return normalizeText(messageText).startsWith(t);
+  // Plusieurs versions du PPV de bienvenue circulent (16/10 : « …et donne moi genre 5-6 min… ») :
+  // plusieurs débuts possibles, séparés par « | » ou un retour à la ligne
+  const msg = normalizeText(messageText);
+  return trigger.split(/[|\n]/).map(normalizeText).some((t) => t.length > 0 && msg.startsWith(t));
 }
 
 // ── Alerte Telegram (bot dédié) ─────────────────────────────────────────────
