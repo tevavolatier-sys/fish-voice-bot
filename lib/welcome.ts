@@ -13,6 +13,7 @@ import { getSelfieSettings, makeSelfie } from "./selfie.js";
 import { ADMIN_ID, modelByKey } from "./config.js";
 import { fanFirstName } from "./fan-name.js";
 import { generateVoice } from "./fish.js";
+import { enrichWithEmotionTags } from "./enrich.js";
 import { creditsCapReached, requestsThisMonth, sendChatMessage, uploadMedia } from "./onlyfans.js";
 import { ACCOUNTS, SIENNA, accountByAcct, scoped, tagOf, type OfAccount } from "./accounts.js";
 import { EFFECT_PRESETS, isEffectKey, roomVoiceSameLevel, type RoomParams } from "./ppv.js";
@@ -265,6 +266,24 @@ export async function uploadTake(kind: TakeKind, text: string, audioB64: string,
 const lineModel = () => process.env.WELCOME_LINE_MODEL?.trim() || "drama-3";
 
 /**
+ * Anglais (Jade) : vocal fabriqué EXACTEMENT comme le bot Telegram (Teva, 15/10 : les voix de bienvenue
+ * faisaient fades) — texte sans consignes, mise en scène par l'IA, Drama 3 preview, température 1.
+ * Français et allemand : inchangés.
+ */
+const BOT_STYLE_VERSION = "bot1";
+const BOT_VOICE_MODEL = process.env.FISH_VOICE_MODEL?.trim() || "drama-3-preview";
+async function botStyleVoice(text: string, a: OfAccount): Promise<Buffer> {
+  const plain = text.replace(/\[[^\]]*\]\s*/g, "").replace(/\s+/g, " ").trim();
+  const staged = await enrichWithEmotionTags(plain, 1, false, undefined, a.lang);
+  return generateVoice(staged, voiceId(a), { model: BOT_VOICE_MODEL, temperature: 1, top_p: 0.95, speed: 1 }).catch((err) => {
+    console.error("[welcome] Drama 3 preview échoué, repli s2.1-pro :", err);
+    return generateVoice(staged, voiceId(a));
+  });
+}
+const genVoice = (text: string, a: OfAccount) =>
+  a.lang === "en" ? botStyleVoice(text, a) : generateVoice(text, voiceId(a), { model: lineModel() });
+
+/**
  * Phrase complète générée une fois puis gardée (MP3 prêt à envoyer), refaite si le texte change.
  * Sert aux comptes sans vrais enregistrements (Lena, Jade) : vocal « pseudo illisible » et relance.
  */
@@ -273,9 +292,10 @@ async function cachedLine(a: OfAccount, kind: "fallback" | "followup", text: str
   if (!clean) throw new Error(`Texte ${kind === "fallback" ? "« pseudo illisible »" : "de relance"} vide.`);
   const k = `welcome:gen:${a.key}:${kind}`;
   const hit = parse<{ text: string; audio: string }>(await getRedis().get(k));
-  if (hit && hit.text === clean) return Buffer.from(hit.audio, "base64");
-  const mp3 = await toMp3(await generateVoice(clean, voiceId(a), { model: lineModel() }));
-  await getRedis().set(k, JSON.stringify({ text: clean, audio: mp3.toString("base64") }));
+  const tag = a.lang === "en" ? `${clean}|${BOT_STYLE_VERSION}` : clean; // nouvelle méthode → regénéré une fois
+  if (hit && hit.text === tag) return Buffer.from(hit.audio, "base64");
+  const mp3 = await toMp3(await genVoice(clean, a));
+  await getRedis().set(k, JSON.stringify({ text: tag, audio: mp3.toString("base64") }));
   return mp3;
 }
 
@@ -420,7 +440,7 @@ export async function voiceForName(name: string, take: ChosenTake | null, a: OfA
   // Lena et Jade : toujours la phrase complète, dans leur langue (pas de prise fixe enregistrée)
   if (!a.legacy || (process.env.WELCOME_LINE_MODE?.trim() || "drama") === "drama") {
     const text = WELCOME_TEXTS[a.lang].line(name);
-    return toMp3(await generateVoice(text, voiceId(a), { model: lineModel() }));
+    return toMp3(await genVoice(text, a));
   }
   const fixed = take;
   if (!fixed) throw new Error("Aucune prise de la partie fixe choisie dans l'interface.");
