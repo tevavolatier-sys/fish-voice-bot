@@ -65,6 +65,10 @@ export const REAL_FOLLOWUP = "2_netflix_Sienna-76609.mp3";
 export const REAL_UNREADABLE = "3_pseudo_illisible_Sienna-61830.mp3";
 /** Vrais vocaux « pseudo illisible » des autres comptes (Teva, 15/10 : Jade) */
 const REAL_UNREADABLE_BY_ACCOUNT: Record<string, string> = { jade: "3_pseudo_illisible_Jade-32131.mp3" };
+/** Vrai vocal de bienvenue : le prénom du fan est généré (voix du compte) et placé AU DÉBUT (Teva, 15/10 : Jade) */
+const REAL_WELCOME_BY_ACCOUNT: Record<string, string> = { jade: "1_bienvenue_Jade-74188.mp3" };
+/** Ce que dit la voix avant le vrai vocal ; {name} = prénom du fan */
+const NAME_INTRO: Record<string, string> = { en: "Hey {name}…", de: "Hey {name}…", fr: "Coucou {name}…" };
 /** Comptes sans relance après la bienvenue (Teva, 15/10 : pas de relance Netflix pour Jade) */
 const NO_FOLLOWUP = new Set(["jade"]);
 export async function realAudio(file: string): Promise<Buffer> {
@@ -442,7 +446,14 @@ export async function voiceForName(name: string, take: ChosenTake | null, a: OfA
   }
   // Mode par défaut depuis le 14/10/2026 (tests à l'aveugle de Teva) : UNE phrase complète Drama 3,
   // « Coucou {prénom}… Bienvenue sur ma page ! », avec consignes de jeu. WELCOME_LINE_MODE=fixed → ancien mode.
-  // Lena et Jade : toujours la phrase complète, dans leur langue (pas de prise fixe enregistrée)
+  // Compte avec un vrai vocal de bienvenue (Jade) : « Hey {prénom}… » généré + le vrai vocal
+  if (REAL_WELCOME_BY_ACCOUNT[a.key]) {
+    const intro = (process.env[`WELCOME_NAME_INTRO_${a.key.toUpperCase()}`]?.trim() || NAME_INTRO[a.lang]).replace("{name}", name);
+    const hello = await generateVoice(`[soft tone] ${intro}`, voiceId(a), voiceOpts(defaultSettings()));
+    const trimmed = await trimSilence(hello);
+    return toMp3(await joinFixedAndName(await realAudio(REAL_WELCOME_BY_ACCOUNT[a.key]), trimmed, "before", 0.12, 0));
+  }
+  // Lena : phrase complète générée, dans sa langue (pas de vrai vocal enregistré)
   if (!a.legacy || (process.env.WELCOME_LINE_MODE?.trim() || "drama") === "drama") {
     const text = WELCOME_TEXTS[a.lang].line(name);
     return toMp3(await genVoice(text, a));
