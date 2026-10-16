@@ -261,8 +261,9 @@ export async function GET(req?: Request): Promise<Response> {
     return Response.json({ name, llm, viaLlm: llm.length > 0 && name === "Alex" });
   }
   // page simple par défaut ; tous les réglages : ?avance=1
-  const full = req ? new URL(req.url).searchParams.has("avance") : false;
-  return new Response(full ? PAGE : SIMPLE_PAGE, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+  const qs = req ? new URL(req.url).searchParams : new URLSearchParams();
+  const page = qs.has("stats") ? PAGE.replace("<body>", '<body class="statsOnly">') : qs.has("avance") ? PAGE : SIMPLE_PAGE;
+  return new Response(page, { headers: { "Content-Type": "text/html; charset=utf-8" } });
 }
 
 const PAGE = /* html */ `<!doctype html>
@@ -332,6 +333,8 @@ details{margin-top:10px}summary{cursor:pointer;color:var(--mute);font-size:13px}
 #login{max-width:360px;margin:15vh auto}
 .steps{margin:8px 0 0;padding-left:18px;color:var(--mute);font-size:14px}
 .steps li{margin:3px 0}
+/* page Statistiques (?stats=1) : seulement les tests A/B, rien de modifiable */
+body.statsOnly #app > .card:not(#abCard), body.statsOnly #toggle, body.statsOnly #abReset, body.statsOnly #abCard .switch, body.statsOnly #topHint{display:none!important}
 </style>
 </head>
 <body>
@@ -379,7 +382,7 @@ details{margin-top:10px}summary{cursor:pointer;color:var(--mute);font-size:13px}
         <button class="main" id="seqSave">Enregistrer</button><span class="msg" id="seqMsg" style="margin:0"></span></div>
     </div>
 
-    <div class="card">
+    <div class="card" id="abCard">
       <div class="head"><h2>Tests du message de bienvenue</h2>
         <label class="switch"><input type="checkbox" id="abEnabled"> <span id="abLabel">Test</span></label></div>
       <div class="row" style="margin:6px 0 4px">

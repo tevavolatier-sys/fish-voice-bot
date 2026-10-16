@@ -36,6 +36,7 @@ a{color:var(--acc)}
     <div class="row"><input id="name" placeholder="ex. Mike ou mike_2595xx"><button class="btn" id="play">▶ Écouter</button></div>
     <div id="out"></div>
   </div>
+  <a class="btn" href="?stats=1" style="display:block;text-align:center;text-decoration:none;margin-bottom:14px">📊 Statistiques (tous les tests, avec graphiques)</a>
   <div class="card"><b>Résultat du test</b><p class="mute" id="ab" style="margin:6px 0 0">…</p></div>
   <p class="mute">Crédits OnlyFansAPI aujourd'hui : <span id="cred">…</span> · <a href="?avance=1">Réglages avancés</a></p>
 </div>
