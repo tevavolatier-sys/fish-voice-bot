@@ -244,7 +244,19 @@ const idOf = (r: unknown): string => {
 export async function uploadToVault(accountId: string, file: Buffer, filename: string): Promise<string> {
   const form = new FormData();
   form.set("file", new Blob([new Uint8Array(file)], { type: "video/mp4" }), filename);
-  const r = await api<{ media?: { id?: unknown }; data?: { media?: { id?: unknown }; id?: unknown } }>(accountId, "/media/vault", { method: "POST", body: form });
+  // Envoi DIFFÉRÉ (async=true) : depuis le 15/10 OnlyFans met ~50 s à répondre en direct, au-delà
+  // de la limite de 45 s → « operation was aborted due to timeout ». On suit l'envoi via polling_url.
+  form.set("async", "true");
+  type Up = { status?: string; error?: string; polling_url?: string; media?: { id?: unknown }; data?: { media?: { id?: unknown }; id?: unknown } };
+  let r = await api<Up>(accountId, "/media/vault", { method: "POST", body: form });
+  for (let i = 0; i < 60 && r.polling_url && r.status !== "completed" && !(r.media?.id ?? r.data?.media?.id); i++) {
+    if (r.status === "failed") throw new Error(`OnlyFansAPI 503 upload vault : ${String(r.error ?? "échec").slice(0, 200)}`);
+    await new Promise((res) => setTimeout(res, 3000));
+    await count();
+    const p = await fetch(r.polling_url, { headers: { Authorization: `Bearer ${process.env.ONLYFANS_API_KEY}`, Accept: "application/json" }, signal: AbortSignal.timeout(30_000) }).catch(() => null);
+    if (p?.ok) r = { ...r, ...((await p.json().catch(() => ({}))) as Up) };
+  }
+  if (r.status === "failed") throw new Error(`OnlyFansAPI 503 upload vault : ${String(r.error ?? "échec").slice(0, 200)}`);
   const id = r.media?.id ?? r.data?.media?.id ?? r.data?.id;
   if (id === undefined || id === null) throw new Error("OnlyFansAPI : upload vault sans id de média");
   const mediaId = String(id);
