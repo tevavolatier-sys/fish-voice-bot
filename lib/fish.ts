@@ -12,11 +12,9 @@ function fishModel(): string {
   return process.env.FISH_MODEL?.trim() || "s2.1-pro";
 }
 
-// Effet léger « téléphone / un peu éloignée » sur TOUS les vocaux générés (Teva, 15/10 : voix trop fades).
-// Bande coupée en bas et en haut + médiums relevés + petite réflexion de pièce. VOICE_FX=none dans Vercel pour couper,
-// ou une autre chaîne de filtres ffmpeg pour la remplacer. En cas d'échec, le vocal part sans effet.
-const DEFAULT_FX =
-  "highpass=f=220,lowpass=f=5200,equalizer=f=1700:t=q:w=1.2:g=3.5,aecho=0.85:0.5:28|47:0.14|0.08,volume=1.15";
+// Effet sur les vocaux générés : COUPÉ par défaut (Teva, 15/10 : l'effet téléphone était mauvais).
+// VOICE_FX dans Vercel = une chaîne de filtres ffmpeg pour en remettre un.
+const DEFAULT_FX = "none";
 
 async function voiceFx(mp3: Buffer): Promise<Buffer> {
   const fx = process.env.VOICE_FX?.trim() || DEFAULT_FX;
