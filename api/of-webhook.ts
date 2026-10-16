@@ -9,6 +9,7 @@ import { waitUntil } from "@vercel/functions";
 import { recordReply, recordRevenue } from "../lib/ab.js";
 import { getRedis } from "../lib/redis.js";
 import { handlePpvUnlocked, runCleanup } from "../lib/ppv-auto.js";
+import { trackSent } from "../lib/ppv-track.js";
 import { accountFromParam } from "../lib/accounts.js";
 import { getWelcomeSettings, handleNewSub, resolveAccount } from "../lib/welcome.js";
 
@@ -111,6 +112,16 @@ export async function POST(req: Request): Promise<Response> {
         display: str(f.display_name) || str(f.name), name: str(f.name), username: str(f.username),
         amount: Number(p?.amountGross ?? 0) || 0, at,
       }));
+    }
+  } else if (body?.event === "messages.sent") {
+    // Unlock rate des PPV perso : le chatter a-t-il envoyé le PPV qui contient les vidéos du bot ?
+    const p = body?.payload ?? {};
+    const accountId = acctOf();
+    const fanId = str(p?.toUser?.id ?? p?.chat_id ?? p?.withUser?.id);
+    const media = (Array.isArray(p?.media) ? p.media : []).map((m: Any) => str(m?.id)).filter(Boolean);
+    const price = Number(p?.price ?? 0) || 0;
+    if (accountId && fanId && media.length && price > 0) {
+      waitUntil(trackSent(accountId, fanId, str(p?.id), media, price).catch((e) => console.error("suivi envoi:", e)));
     }
   } else if (body?.event === "messages.received") {
     // Test A/B : un fan du test a écrit → on note sa première réponse (si dans les 72 h)

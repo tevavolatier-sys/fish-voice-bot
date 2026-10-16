@@ -10,6 +10,7 @@ import { abImage, sendAbImageToAdmin } from "./ab-image.js";
 import { creditsBalanceLive, creditsToday, getCreditsCap } from "./onlyfans.js";
 import { getPpvAutoSettings, readPpvAutoLog, sendAlert } from "./ppv-auto.js";
 import { getWelcomeSettings, readWelcomeLog } from "./welcome.js";
+import { trackStats } from "./ppv-track.js";
 
 const DAY = 24 * 3600_000;
 const pct = (n: number, d: number) => (d ? `${Math.round((100 * n) / d)} %` : "–");
@@ -59,6 +60,14 @@ async function accountSection(a: OfAccount, now: number, header: string): Promis
     "",
     `🎙️ Welcome (last 24 h): ${sent} sent · ${late} too late · ${werr} failed · ${control} without voice (A/B)`,
   ];
+  // Unlock rate des PPV perso : envoyés par le chatter (contiennent les vidéos du bot) → achetés
+  if (settings.accountId) {
+    const [d1, d7] = await Promise.all([trackStats(settings.accountId, now - DAY), trackStats(settings.accountId, now - 7 * DAY)]);
+    const line = (t: Awaited<ReturnType<typeof trackStats>>) =>
+      `${t.sent} sent · ${t.bought} bought → ${t.rate == null ? "–" : Math.round(t.rate * 100) + " %"}${t.revenue ? ` (${t.revenue})` : ""}`;
+    lines.push(`💸 Custom PPV unlock rate — 24 h: ${line(d1)} · 7 days: ${line(d7)}`);
+    if (d1.made > d1.sent) lines.push(`   ⚠️ ${d1.made - d1.sent} custom PPV made but NOT sent by the chatters`);
+  }
   if (ab) {
     const g = (k: "voice" | "none" | "selfie") => {
       const s = ab[k];

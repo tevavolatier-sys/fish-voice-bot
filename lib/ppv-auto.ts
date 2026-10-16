@@ -15,6 +15,7 @@ import {
   createVaultList,
   deleteVaultList,
   deleteVaultMedia,
+  getChatMessageInfo,
   getChatMessageText,
   uploadToVault,
 } from "./onlyfans.js";
@@ -23,6 +24,7 @@ import { getRedis } from "./redis.js";
 import { ACCOUNTS, SIENNA, scoped, tagOf, type OfAccount } from "./accounts.js";
 import { creditsCapReached } from "./onlyfans.js";
 import { alertCapOnce, resolveAccount } from "./welcome.js";
+import { isTracked, trackBought, trackMade } from "./ppv-track.js";
 
 export interface PpvAutoSettings {
   enabled: boolean;
@@ -316,6 +318,7 @@ export async function producePpvForFan(p: PpvPurchase, name: string, force = fal
       acct: p.accountId, listId, mediaIds: [previewId, paid1Id],
       listAt: Date.now() + s.listMinutes * 60_000, mediaAt: Date.now() + s.mediaHours * 3600_000,
     });
+    await trackMade(p.accountId, p.fanId, name, [previewId, paid1Id]).catch((e) => console.error("suivi:", e));
     log.status = "done";
     log.listName = listName;
     log.elapsedSec = Math.round((Date.now() - p.at) / 1000);
@@ -364,13 +367,18 @@ export async function handlePpvUnlocked(p: PpvPurchase): Promise<void> {
     await alertCapOnce(cap.used, cap.cap).catch(() => {});
     return;
   }
-  // 1 requête : le texte du message acheté → est-ce le PPV de bienvenue ?
+  // 1 requête : le message acheté (texte + médias) → est-ce le PPV de bienvenue ? ou un PPV perso suivi ?
   let text = "";
+  let mediaIds: string[] = [];
   try {
-    text = await getChatMessageText(p.accountId, p.chatId, p.messageId);
+    ({ text, mediaIds } = await getChatMessageInfo(p.accountId, p.chatId, p.messageId));
   } catch (err) {
-    console.error("texte du PPV acheté illisible:", err);
+    console.error("message du PPV acheté illisible:", err);
     return;
+  }
+  // Unlock rate des PPV perso : le fan vient-il d'acheter le PPV contenant SES vidéos ?
+  if (await isTracked(p.accountId, p.fanId).catch(() => false)) {
+    await trackBought(p.accountId, p.fanId, p.messageId, p.amount, mediaIds).catch((e) => console.error("suivi achat:", e));
   }
   if (!isTriggerText(text, s.triggerText)) return;
   await saveContext(p, a).catch(() => {});

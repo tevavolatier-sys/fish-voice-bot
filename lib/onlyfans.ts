@@ -286,3 +286,12 @@ export async function deleteVaultList(accountId: string, listId: string): Promis
 export async function deleteVaultMedia(accountId: string, mediaIds: string[]): Promise<void> {
   await api(accountId, "/media/vault/delete-media", { method: "DELETE", body: JSON.stringify({ mediaIds: mediaIds.map(Number) }) });
 }
+
+/** Texte brut + ids des médias d'un message du chat (1 requête) */
+export async function getChatMessageInfo(accountId: string, chatId: string, messageId: string): Promise<{ text: string; mediaIds: string[] }> {
+  const r = await api<{ data?: { text?: string; media?: { id?: unknown }[] }; text?: string; media?: { id?: unknown }[] }>(accountId, `/chats/${chatId}/messages/${messageId}`, { method: "GET" });
+  const html = String(r.data?.text ?? r.text ?? "");
+  const text = html.replace(/<br\s*\/?>/gi, "\n").replace(/<[^>]+>/g, "").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&#0?39;/g, "'").replace(/&quot;/g, '"').trim();
+  const mediaIds = (r.data?.media ?? r.media ?? []).map((m) => String(m?.id ?? "")).filter(Boolean);
+  return { text, mediaIds };
+}

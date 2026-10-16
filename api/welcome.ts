@@ -207,7 +207,7 @@ export async function POST(req: Request): Promise<Response> {
       case "webhookSetup": {
         // Déclare / complète le webhook OnlyFansAPI de ce déploiement (API, pas de console)
         const url = `${new URL(req.url).origin}/api/of-webhook`;
-        const r = await ensureWebhook(url, ["subscriptions.new", "messages.received", "transactions.new", "messages.ppv.unlocked"]);
+        const r = await ensureWebhook(url, ["subscriptions.new", "messages.received", "transactions.new", "messages.ppv.unlocked", "messages.sent"]);
         return Response.json({ ok: true, url, ...r });
       }
       case "selfieZone": {
