@@ -63,6 +63,10 @@ export interface WelcomeSettings {
 /** Vrais enregistrements de Sienna (assets/vocaux) : relance Netflix et pseudo illisible */
 export const REAL_FOLLOWUP = "2_netflix_Sienna-76609.mp3";
 export const REAL_UNREADABLE = "3_pseudo_illisible_Sienna-61830.mp3";
+/** Vrais vocaux « pseudo illisible » des autres comptes (Teva, 15/10 : Jade) */
+const REAL_UNREADABLE_BY_ACCOUNT: Record<string, string> = { jade: "3_pseudo_illisible_Jade-32131.mp3" };
+/** Comptes sans relance après la bienvenue (Teva, 15/10 : pas de relance Netflix pour Jade) */
+const NO_FOLLOWUP = new Set(["jade"]);
 export async function realAudio(file: string): Promise<Buffer> {
   return readFile(join(process.cwd(), "assets", "vocaux", file));
 }
@@ -127,7 +131,7 @@ export function defaultWelcomeSettings(a: OfAccount = SIENNA): WelcomeSettings {
   if (a.legacy) return DEFAULT_SETTINGS;
   const t = WELCOME_TEXTS[a.lang];
   // test A/B actif d'office (Teva, 15/10) : 9 fans sur 10 vocal perso dans la voix de la modèle, 1 sur 10 rien
-  return { ...DEFAULT_SETTINGS, enabled: false, accountId: a.acct, abEnabled: true, abTest: "v90", fixedText: t.fixed(a.modelName), fallbackText: t.fallback, followUpText: t.followUp };
+  return { ...DEFAULT_SETTINGS, enabled: false, accountId: a.acct, followUpEnabled: !NO_FOLLOWUP.has(a.key), abEnabled: true, abTest: "v90", fixedText: t.fixed(a.modelName), fallbackText: t.fallback, followUpText: t.followUp };
 }
 
 /** Forfait OnlyFansAPI : requêtes par mois, et seuil où l'on coupe tout */
@@ -302,6 +306,7 @@ async function cachedLine(a: OfAccount, kind: "fallback" | "followup", text: str
 /** Vocal « pseudo illisible » du compte (MP3) : vrai vocal de Sienna, sinon prise choisie, sinon généré */
 export async function unreadableAudio(a: OfAccount = SIENNA, s?: WelcomeSettings): Promise<Buffer> {
   if (a.legacy) return realAudio(REAL_UNREADABLE);
+  if (REAL_UNREADABLE_BY_ACCOUNT[a.key]) return realAudio(REAL_UNREADABLE_BY_ACCOUNT[a.key]);
   const take = await getChosenTake("fallback", a);
   if (take) return toMp3(Buffer.from(take.audio, "base64"));
   return cachedLine(a, "fallback", (s ?? (await getWelcomeSettings(a))).fallbackText);
@@ -608,7 +613,7 @@ export async function handleNewSub(
       const mediaId = await uploadMedia(accountId, mp3!, "voice.mp3");
       await sendChatMessage(accountId, fanId, s.caption, [mediaId]);
       // Relance « Netflix » (vrai vocal de Sienna), 5-6 s après ; un échec ici n'annule pas le 1er vocal
-      if (s.followUpEnabled) {
+      if (s.followUpEnabled && !NO_FOLLOWUP.has(a.key)) {
         try {
           const flo = Math.min(s.followUpMinSec, s.followUpMaxSec), fhi = Math.max(s.followUpMinSec, s.followUpMaxSec);
           const gap = flo + Math.random() * (fhi - flo);
