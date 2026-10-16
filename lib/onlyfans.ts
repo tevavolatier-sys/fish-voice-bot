@@ -62,8 +62,9 @@ export async function setCreditsCap(n: number): Promise<number> {
 }
 /** Plafond journalier global atteint ? (les automatismes s'arrêtent) */
 export async function creditsCapReached(): Promise<{ over: boolean; used: number; cap: number }> {
+  // Plafond retiré à la demande de Teva (16/10) : plus rien ne s'arrête dans le voice bot
   const [used, cap] = await Promise.all([creditsToday(), getCreditsCap()]);
-  return { over: used >= cap, used, cap };
+  return { over: false, used, cap };
 }
 
 async function api<T>(accountId: string, route: string, init: RequestInit): Promise<T> {
