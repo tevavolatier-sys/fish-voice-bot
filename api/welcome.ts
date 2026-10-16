@@ -3,6 +3,7 @@
 // reçoit « account » (clé du compte, Sienna par défaut = comportement d'origine).
 // GET  → la page (aucune donnée dedans)
 // POST → actions, protégées par le mot de passe WELCOME_ADMIN_PASSWORD (Vercel)
+import { SIMPLE_PAGE } from "../lib/welcome-simple-page.js";
 import { timingSafeEqual } from "node:crypto";
 import { abReset, abStats, backfillRevenue } from "../lib/ab.js";
 import { fanFirstName, llmProviders } from "../lib/fan-name.js";
@@ -259,7 +260,9 @@ export async function GET(req?: Request): Promise<Response> {
     const llm = llmProviders();
     return Response.json({ name, llm, viaLlm: llm.length > 0 && name === "Alex" });
   }
-  return new Response(PAGE, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+  // page simple par défaut ; tous les réglages : ?avance=1
+  const full = req ? new URL(req.url).searchParams.has("avance") : false;
+  return new Response(full ? PAGE : SIMPLE_PAGE, { headers: { "Content-Type": "text/html; charset=utf-8" } });
 }
 
 const PAGE = /* html */ `<!doctype html>
