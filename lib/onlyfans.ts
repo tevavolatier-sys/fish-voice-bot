@@ -249,16 +249,17 @@ export async function uploadToVault(accountId: string, file: Buffer, filename: s
   form.set("async", "true");
   type Up = { status?: string; error?: string; polling_url?: string; media?: { id?: unknown }; data?: { media?: { id?: unknown }; id?: unknown } };
   let r = await api<Up>(accountId, "/media/vault", { method: "POST", body: form });
-  for (let i = 0; i < 60 && r.polling_url && r.status !== "completed" && !(r.media?.id ?? r.data?.media?.id); i++) {
+  for (let i = 0; i < 16 && r.polling_url && r.status !== "completed" && !(r.media?.id ?? r.data?.media?.id); i++) {
     if (r.status === "failed") throw new Error(`OnlyFansAPI 503 upload vault : ${String(r.error ?? "échec").slice(0, 200)}`);
-    await new Promise((res) => setTimeout(res, 3000));
+    await new Promise((res) => setTimeout(res, i < 3 ? 5000 : 15000)); // chaque suivi coûte 1 crédit : espacé
     await count();
     const p = await fetch(r.polling_url, { headers: { Authorization: `Bearer ${process.env.ONLYFANS_API_KEY}`, Accept: "application/json" }, signal: AbortSignal.timeout(30_000) }).catch(() => null);
     if (p?.ok) r = { ...r, ...((await p.json().catch(() => ({}))) as Up) };
   }
   if (r.status === "failed") throw new Error(`OnlyFansAPI 503 upload vault : ${String(r.error ?? "échec").slice(0, 200)}`);
   const id = r.media?.id ?? r.data?.media?.id ?? r.data?.id;
-  if (id === undefined || id === null) throw new Error("OnlyFansAPI : upload vault sans id de média");
+  // Toujours en traitement chez OnlyFans : erreur « 503 » → la file de nouveaux essais (toutes les 5 min) prend le relais
+  if (id === undefined || id === null) throw new Error(`OnlyFansAPI 503 upload vault : encore en traitement chez OnlyFans (${r.status ?? "?"})`);
   const mediaId = String(id);
   for (let i = 0; i < 12; i++) {
     const m = await api<{ data?: { isReady?: boolean; hasError?: boolean } }>(accountId, `/media/vault/${mediaId}`, { method: "GET" }).catch(() => null);

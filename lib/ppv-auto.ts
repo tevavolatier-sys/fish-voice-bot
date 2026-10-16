@@ -304,8 +304,11 @@ export async function producePpvForFan(p: PpvPurchase, name: string, force = fal
         }
       }
     };
-    const previewId = await again(() => uploadToVault(p.accountId, built.preview.video, `preview-${slug}.mp4`));
-    const paid1Id = await again(() => uploadToVault(p.accountId, built.paid1.video, `ppv1-${slug}.mp4`));
+    // Les 2 envois en parallèle (en différé, chacun suivi jusqu'à ~4 min)
+    const [previewId, paid1Id] = await Promise.all([
+      again(() => uploadToVault(p.accountId, built.preview.video, `preview-${slug}.mp4`)),
+      again(() => uploadToVault(p.accountId, built.paid1.video, `ppv1-${slug}.mp4`)),
+    ]);
     const listName = `PPV1 - ${name}`;
     const listId = await again(() => createVaultList(p.accountId, listName));
     await again(() => addToVaultList(p.accountId, listId, [previewId, paid1Id]));
