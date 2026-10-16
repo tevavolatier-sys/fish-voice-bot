@@ -299,7 +299,7 @@ export async function producePpvForFan(p: PpvPurchase, name: string, force = fal
       for (let i = 0; ; i++) {
         try { return await f(); } catch (e) {
           // 503 « OnlyFans is currently experiencing issues » : panne de quelques dizaines de s (vu le 12/10)
-          if (i >= 4 || !/OnlyFansAPI (400|5\d\d)/.test(String(e))) throw e;
+          if (i >= 4 || !/OnlyFansAPI (400|5\d\d)/.test(String(e)) || /en traitement/.test(String(e))) throw e;
           await new Promise((r) => setTimeout(r, [5000, 10000, 20000, 30000][i]));
         }
       }
