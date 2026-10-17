@@ -86,8 +86,24 @@ export const ACTIVE_MODELS: VoiceModel[] = MODELS.filter(
   (m) => !m.referenceId.startsWith("REFERENCE_ID_")
 );
 
+/**
+ * Lecteurs (ex. le CEO) : utilisent le bot, voient /stats et /credits et
+ * reçoivent les rapports, sans pouvoir rien régler. IDs Telegram dans la
+ * variable Vercel VIEWER_IDS, séparés par des virgules.
+ */
+export const VIEWER_IDS: number[] = (process.env.VIEWER_IDS ?? "")
+  .split(",")
+  .map((s) => Number(s.trim()))
+  .filter((n) => Number.isSafeInteger(n) && n > 0);
+
+/** Admin ou lecteur : peut regarder les stats et reçoit les rapports */
+export function canView(userId: number | undefined): boolean {
+  return userId === ADMIN_ID || (userId !== undefined && VIEWER_IDS.includes(userId));
+}
+
 const allowedUsers = new Set<number>(OPERATORS.map((o) => o.id));
 allowedUsers.add(ADMIN_ID);
+for (const id of VIEWER_IDS) allowedUsers.add(id);
 
 const allowedGroups = new Set<number>(ALLOWED_GROUP_IDS);
 
@@ -105,5 +121,6 @@ export function modelByKey(key: string): VoiceModel | undefined {
 export function operatorName(userId: number | string): string {
   const id = Number(userId);
   if (id === ADMIN_ID) return "Admin";
+  if (VIEWER_IDS.includes(id)) return "CEO";
   return OPERATORS.find((o) => o.id === id)?.name ?? String(userId);
 }

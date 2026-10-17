@@ -5,7 +5,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Resvg } from "@resvg/resvg-js";
 import satori from "satori";
-import { ADMIN_ID } from "./config.js";
+import { ADMIN_ID, VIEWER_IDS } from "./config.js";
 import type { AbGroup, AbStats } from "./ab.js";
 
 type El = { type: string; props: Record<string, unknown> };
@@ -137,12 +137,18 @@ export async function abImage(ab: AbStats, now = Date.now()): Promise<Buffer> {
   return Buffer.from(new Resvg(svg, { fitTo: { mode: "width", value: W + 64 } }).render().asPng());
 }
 
-/** Envoie la photo en privé à Teva via le bot vocal (BOT_TOKEN) */
+/** Envoie la photo en privé à Teva (et aux lecteurs) via le bot vocal (BOT_TOKEN) */
 export async function sendAbImageToAdmin(png: Buffer, caption: string): Promise<void> {
+  await sendAbImageTo(ADMIN_ID, png, caption);
+  // Un lecteur qui n'a jamais ouvert le bot fait échouer l'envoi : sans effet sur Teva.
+  for (const id of VIEWER_IDS) await sendAbImageTo(id, png, caption).catch(() => {});
+}
+
+async function sendAbImageTo(chatId: number, png: Buffer, caption: string): Promise<void> {
   const token = process.env.BOT_TOKEN;
   if (!token) throw new Error("BOT_TOKEN manquant");
   const form = new FormData();
-  form.set("chat_id", String(ADMIN_ID));
+  form.set("chat_id", String(chatId));
   form.set("caption", caption);
   form.set("document", new Blob([new Uint8Array(png)], { type: "image/png" }), "test-ab.png");
   const r = await fetch(`https://api.telegram.org/bot${token}/sendDocument`, { method: "POST", body: form, signal: AbortSignal.timeout(30_000) });

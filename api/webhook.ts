@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import {
   ACTIVE_MODELS,
   ADMIN_ID,
+  canView,
   MAX_CHARS,
   VoiceModel,
   isAllowed,
@@ -715,10 +716,16 @@ function createBot(): Bot {
 
   const bot = new Bot(token);
 
-  // Whitelist stricte : on ignore silencieusement les inconnus
+  // Whitelist stricte : on ignore les inconnus, sauf /start en privé où on
+  // leur donne leur ID Telegram (à transmettre à Teva pour être ajouté).
   bot.use(async (ctx, next) => {
     const id = ctx.from?.id;
-    if (!id || !isAllowed(id, ctx.chat?.id)) return;
+    if (!id || !isAllowed(id, ctx.chat?.id)) {
+      if (id && ctx.chat?.type === "private" && ctx.message?.text?.startsWith("/start")) {
+        await ctx.reply(`🔒 Access not enabled yet.\nYour Telegram ID: ${id}\nSend this number to Teva.`).catch(() => {});
+      }
+      return;
+    }
     await next();
   });
 
@@ -773,7 +780,7 @@ function createBot(): Bot {
 
   // 💳 Solde de crédits Fish Audio (admin) — le modèle s1 est payant
   bot.command(["credits", "credit"], async (ctx) => {
-    if (ctx.from?.id !== ADMIN_ID) return; // réservé admin, silencieux
+    if (!canView(ctx.from?.id)) return; // admin + lecteurs, silencieux pour les autres
     const credits = await getFishCredits();
     await ctx.reply(
       credits === null
@@ -783,9 +790,10 @@ function createBot(): Bot {
   });
 
   bot.command("stats", async (ctx) => {
-    if (ctx.from?.id !== ADMIN_ID) return; // réservé admin, silencieux pour les autres
+    if (!canView(ctx.from?.id)) return; // admin + lecteurs, silencieux pour les autres
 
     if (ctx.match?.trim().toLowerCase() === "reset") {
+      if (ctx.from?.id !== ADMIN_ID) return; // remise à zéro : admin seulement
       await resetStats();
       await ctx.reply("🧹 Stats reset to zero.");
       return;
