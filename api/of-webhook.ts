@@ -8,7 +8,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { waitUntil } from "@vercel/functions";
 import { recordReply, recordRevenue } from "../lib/ab.js";
 import { getRedis } from "../lib/redis.js";
-import { handlePpvUnlocked, runCleanup } from "../lib/ppv-auto.js";
+import { handleMessagePayment, handlePpvUnlocked, runCleanup } from "../lib/ppv-auto.js";
 import { trackSent } from "../lib/ppv-track.js";
 import { accountFromParam } from "../lib/accounts.js";
 import { getWelcomeSettings, handleNewSub, resolveAccount } from "../lib/welcome.js";
@@ -98,6 +98,10 @@ export async function POST(req: Request): Promise<Response> {
     const kind = String(p?.type ?? p?.transactionType ?? p?.description ?? "").toLowerCase();
     if (fan.id && accountId && amount > 0 && !/subscri|abonn/.test(kind)) {
       waitUntil(sameAccount(accountId).then((ok) => (ok ? recordRevenue(accountId, fan.id, amount) : false)));
+    }
+    // Filet de sécurité PPV auto : paiement d'un message → le PPV de bienvenue a-t-il été acheté ?
+    if (fan.id && accountId && amount > 0 && /message/.test(kind)) {
+      waitUntil(handleMessagePayment(accountId, fan.id, amount).catch((e) => console.error("rattrapage PPV:", e)));
     }
   } else if (body?.event === "messages.ppv.unlocked") {
     // PPV perso automatique : achat du PPV de bienvenue → preview + PPV 1 avec le prénom

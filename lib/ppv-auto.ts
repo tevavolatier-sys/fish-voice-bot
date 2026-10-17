@@ -16,6 +16,8 @@ import {
   deleteVaultList,
   deleteVaultMedia,
   getChatMessageInfo,
+  getFanNames,
+  recentChatMessages,
   getChatMessageText,
   uploadToVault,
 } from "./onlyfans.js";
@@ -313,7 +315,9 @@ export async function producePpvForFan(p: PpvPurchase, name: string, force = fal
       again(() => uploadToVault(p.accountId, built.paid1.video, `ppv1-${slug}.mp4`)),
     ]);
     const listName = `PPV1 - ${name}`;
-    const listId = await again(() => createVaultList(p.accountId, listName));
+    // « Media list with the same name already exists » (un dossier du même prénom n'est pas encore supprimé) → suffixe
+    const listId = await again(() => createVaultList(p.accountId, listName).catch((e) =>
+      /same name/i.test(String(e)) ? createVaultList(p.accountId, `${listName} (${new Date().toISOString().slice(11, 16)})`) : Promise.reject(e)));
     await again(() => addToVaultList(p.accountId, listId, [previewId, paid1Id]));
     await scheduleCleanup({
       acct: p.accountId, listId, mediaIds: [previewId, paid1Id],
@@ -405,3 +409,23 @@ export async function handlePpvUnlocked(p: PpvPurchase): Promise<void> {
 }
 
 export { ppvReady };
+
+/**
+ * Filet de sécurité (17/10/2026) : OnlyFansAPI n'envoie pas toujours « messages.ppv.unlocked »
+ * (cas de Jean : seul « transactions.new » est arrivé). À chaque paiement d'un MESSAGE, on regarde
+ * (après 45 s, le temps que la voie normale passe) si le fan vient d'acheter le PPV de bienvenue.
+ */
+export async function handleMessagePayment(accountId: string, fanId: string, amount: number): Promise<void> {
+  const a = await resolveAccount(accountId);
+  if (!a) return;
+  const s = await getPpvAutoSettings(a);
+  if (!s.enabled) return;
+  await new Promise((r) => setTimeout(r, 45_000));
+  if (await getRedis().exists(`ppvauto:done:${accountId}:${fanId}`)) return; // déjà fait (voie normale)
+  const msgs = await recentChatMessages(accountId, fanId, 15).catch(() => []);
+  const bought = msgs.find((m) => m.price > 0 && m.opened && Date.now() - m.at < 2 * 3600_000 && isTriggerText(m.text, s.triggerText));
+  if (!bought) return;
+  const u = await getFanNames(accountId, fanId).catch(() => ({ display: "", name: "", username: "" }));
+  console.log("PPV de bienvenue rattrapé via transactions.new :", fanId);
+  await handlePpvUnlocked({ accountId, fanId, chatId: fanId, messageId: bought.id, display: u.display || u.name, name: u.name, username: u.username, amount: amount || bought.price, at: Date.now() });
+}

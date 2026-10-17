@@ -296,3 +296,23 @@ export async function getChatMessageInfo(accountId: string, chatId: string, mess
   const mediaIds = (r.data?.media ?? r.media ?? []).map((m) => String(m?.id ?? "")).filter(Boolean);
   return { text, mediaIds };
 }
+
+/** Derniers messages d'un chat (texte brut, prix, ouvert/acheté) — 1 requête */
+export async function recentChatMessages(accountId: string, fanId: string, limit = 15): Promise<{ id: string; text: string; price: number; opened: boolean; at: number }[]> {
+  const r = await api<{ data?: { list?: Record<string, unknown>[] } | Record<string, unknown>[] }>(accountId, `/chats/${fanId}/messages?limit=${limit}&order=desc`, { method: "GET" });
+  const list = (Array.isArray(r.data) ? r.data : r.data?.list) ?? [];
+  return list.map((m) => ({
+    id: String(m.id ?? ""),
+    text: String(m.text ?? "").replace(/<[^>]+>/g, "").replace(/&amp;/g, "&").trim(),
+    price: Number(m.price ?? 0) || 0,
+    opened: Boolean(m.isOpened) && m.canPurchase === false,
+    at: Date.parse(String(m.createdAt ?? "")) || 0,
+  }));
+}
+
+/** Noms d'un fan : nom mis par le chatter (displayName), nom OF, pseudo — 1 requête */
+export async function getFanNames(accountId: string, fanId: string): Promise<{ display: string; name: string; username: string }> {
+  const r = await api<{ data?: Record<string, unknown> }>(accountId, `/users/${fanId}`, { method: "GET" });
+  const d = r.data ?? {};
+  return { display: String(d.displayName ?? d.display_name ?? ""), name: String(d.name ?? ""), username: String(d.username ?? "") };
+}
