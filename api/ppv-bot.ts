@@ -26,7 +26,8 @@ async function tg(method: string, body: Record<string, unknown>): Promise<Any> {
 
 const ASK = (chat: number | string, msg: number) => `ppvbot:ask:${chat}:${msg}`;
 /** Dernière demande de prénom du groupe (15 min) : un simple message « Kevin » suffit, sans « Répondre » */
-const LAST = (chat: number | string) => `ppvbot:last:${chat}`;
+// par personne : seul le chatter qui a cliqué peut taper le prénom sans « Répondre » (16/10 : « Redone » pris pour un prénom)
+const LAST = (chat: number | string, user: number | string) => `ppvbot:last:${chat}:${user}`;
 
 export async function POST(req: Request): Promise<Response> {
   if (req.headers.get("x-telegram-bot-api-secret-token") !== process.env.CRON_SECRET) {
@@ -56,7 +57,7 @@ export async function POST(req: Request): Promise<Response> {
     console.log("ppv-bot ask sent:", JSON.stringify(sent).slice(0, 300));
     const target = acc.legacy ? fanId : `${acc.key}:${fanId}`;
     if (chat && msgId) await getRedis().set(ASK(chat, msgId), target, { ex: 24 * 3600 });
-    if (chat) await getRedis().set(LAST(chat), target, { ex: 15 * 60 });
+    if (chat && cb.from?.id) await getRedis().set(LAST(chat, cb.from.id), target, { ex: 15 * 60 });
     return Response.json({ ok: true });
   }
 
@@ -68,10 +69,10 @@ export async function POST(req: Request): Promise<Response> {
   const oneWord = Boolean(m?.text) && !m.from?.is_bot && !String(m.text).startsWith("/") && String(m.text).trim().split(/\s+/).length <= 2;
   if (m?.text && (replyTo || oneWord)) {
     let raw = replyTo ? await getRedis().get<string | number>(ASK(m.chat.id, replyTo)) : null;
-    if (raw == null && oneWord) raw = await getRedis().get<string | number>(LAST(m.chat.id));
+    if (raw == null && oneWord && m.from?.id) raw = await getRedis().get<string | number>(LAST(m.chat.id, m.from.id));
     console.log("ppv-bot reply lookup:", replyTo, "→", raw);
     if (raw == null) return Response.json({ ok: true });
-    await getRedis().del(LAST(m.chat.id));
+    if (m.from?.id) await getRedis().del(LAST(m.chat.id, m.from.id));
     const [k, f] = String(raw).includes(":") ? String(raw).split(":") : ["", String(raw)];
     const acc = accountByKey(k);
     const fanId = f;
